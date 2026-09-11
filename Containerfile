@@ -30,6 +30,7 @@ RUN apt-get update \
         xz-utils \
         zip \
     && npm install --global --omit=dev @anthropic-ai/claude-code \
+    && npm install -g @fission-ai/openspec@latest \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.npm \
     && mkdir -p /claude-home \
