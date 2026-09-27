@@ -8,6 +8,7 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         bash \
         bzip2 \
+        bubblewrap \
         ca-certificates \
         coreutils \
         curl \
@@ -22,6 +23,7 @@ RUN apt-get update \
         patch \
         podman \
         procps \
+        python3 \
         ripgrep \
         sed \
         tar \

@@ -62,6 +62,7 @@ mount the user's full home directory.
 
 ## Included tools
 
-The image includes Node.js/npm, Claude Code, the Podman client, Git, Bash,
-local search and editing tools, archive tools, JSON support, and diagnostics
-needed to work in a repository and run tests in containers.
+The image includes Node.js/npm, Claude Code, Python 3, Bubblewrap (`bwrap`), the
+Podman client, Git, Bash, local search and editing tools, archive tools, JSON
+support, and diagnostics needed to work in a repository and run tests in
+containers.
