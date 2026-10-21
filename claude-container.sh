@@ -24,6 +24,10 @@ Environment:
   CLAUDE_CONTAINER_IMAGE  image name (default: localhost/claude-code:latest)
   CLAUDE_CONFIG_DIR       Claude configuration directory (default: ~/.claude)
   CLAUDE_YOLO             enable --dangerously-skip-permissions (default: disabled)
+  CLAUDE_CONTAINER_TRUST_HOST_CA  trust a host CA bundle: 1, true, or yes (default: disabled)
+  CLAUDE_CONTAINER_CA_BUNDLE      CA bundle file to trust (default: first of
+                                  /etc/ssl/certs/ca-certificates.crt and
+                                  /etc/pki/tls/certs/ca-bundle.crt)
 EOF
 }
 
@@ -59,6 +63,37 @@ while (($#)); do
 done
 
 command -v podman >/dev/null || die "podman is not installed on the host"
+
+trust_host_ca=0
+case "${CLAUDE_CONTAINER_TRUST_HOST_CA:-}" in
+    1|true|TRUE|yes|YES) trust_host_ca=1 ;;
+    ''|0|false|FALSE|no|NO) ;;
+    *) die "CLAUDE_CONTAINER_TRUST_HOST_CA must be 0, 1, true, false, yes, or no" ;;
+esac
+
+ca_bundle=""
+if ((trust_host_ca)); then
+    if [[ -n "${CLAUDE_CONTAINER_CA_BUNDLE:-}" ]]; then
+        [[ -f "$CLAUDE_CONTAINER_CA_BUNDLE" ]] || die "CLAUDE_CONTAINER_CA_BUNDLE is not a file: $CLAUDE_CONTAINER_CA_BUNDLE"
+        ca_bundle="$(readlink -f -- "$CLAUDE_CONTAINER_CA_BUNDLE")"
+    else
+        for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+            if [[ -f "$candidate" ]]; then
+                ca_bundle="$candidate"
+                break
+            fi
+        done
+        [[ -n "$ca_bundle" ]] || die "no default CA bundle found; set CLAUDE_CONTAINER_CA_BUNDLE to a bundle file"
+    fi
+fi
+
+umask 077
+mkdir -p \
+    "${HOME}/.claude" \
+    "${HOME}/.local/share" \
+    "${HOME}/.config/openspec" \
+    "${HOME}/.cache"
+
 [[ -d "$CLAUDE_DIR" ]] || mkdir -p "$CLAUDE_DIR"
 
 claude_args=("${args[@]}")
@@ -92,8 +127,19 @@ podman_args=(
     --env CONTAINER_HOST=unix:///run/podman/podman.sock
     --volume "$WORKSPACE:$WORKSPACE:rw"
     --volume "$CLAUDE_DIR:/claude-home/.claude:rw"
+    --volume "${HOME}/.config/openspec:/claude-home/.config/openspec:rw,z"
     --volume "$socket:/run/podman/podman.sock"
 )
+
+if ((trust_host_ca)); then
+    podman_args+=(
+        --volume "$ca_bundle:/claude-home/ca/bundle.pem:ro"
+        --env "SSL_CERT_FILE=/claude-home/ca/bundle.pem"
+        --env "REQUESTS_CA_BUNDLE=/claude-home/ca/bundle.pem"
+        --env "CURL_CA_BUNDLE=/claude-home/ca/bundle.pem"
+        --env "NODE_EXTRA_CA_CERTS=/claude-home/ca/bundle.pem"
+    )
+fi
 
 if ((shell_mode)); then
     podman_args+=(--entrypoint /bin/bash)
