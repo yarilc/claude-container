@@ -23,10 +23,10 @@ The wrapper can replace `claude` through a shell alias:
 alias claude=/absolute/path/to/claude-container.sh
 ```
 
-Only `--container-build`, `--container-shell`, and `--container-help` are
-handled by the wrapper. Every other argument is forwarded unchanged, so normal
-commands such as `claude --help` and `claude resume --last` retain their
-meaning.
+The wrapper handles `--container-build`, `--container-shell`,
+`--container-git-worktree`, and `--container-help`. Every other argument is
+forwarded unchanged, so normal commands such as `claude --help` and
+`claude resume --last` retain their meaning.
 
 Each container is named from the last component of the current directory and
 the next highest numeric index among running instances, for example
@@ -35,6 +35,29 @@ the next highest numeric index among running instances, for example
 `CLAUDE_YOLO=1` starts Claude with `--dangerously-skip-permissions`, disabling
 all Claude permission checks. Use it only when the container and mounts are a
 trusted environment.
+
+### Using Git worktrees
+
+When a worktree's shared Git metadata and sibling worktrees are in its parent
+directory, run the wrapper from the worktree root with
+`--container-git-worktree`:
+
+```bash
+cd /path/to/root/main
+claude --container-git-worktree
+claude --container-git-worktree --container-shell
+```
+
+Here `claude` is the alias shown above. The option mounts `/path/to/root` at
+`/path/to/root` read/write, while Claude starts in `/path/to/root/main`.
+Because the parent and its contents are writable, sibling worktrees and other
+files beneath it are accessible too. Git metadata referenced outside that
+parent is not exposed by this option.
+
+The wrapper mounts the immediate parent of the physical directory from which
+it is launched; it does not search for a Git or worktree root. For example,
+launching from `/path/to/root/main/src` mounts `/path/to/root/main`. Use the
+flag from the worktree root when the shared metadata is in the common parent.
 
 ### Trusting a host CA
 
@@ -75,9 +98,12 @@ The process inside the container uses `--userns=keep-id` and the caller's
 UID/GID. Files created in the workspace therefore retain compatible ownership
 on the host.
 
-The current workspace is mounted at the same absolute path inside the
-container. This is required because bind mounts requested by child containers
-are resolved by the host Podman service.
+By default, the current workspace is mounted read/write at the same absolute
+path inside the container. With `--container-git-worktree`, the wrapper mounts
+the immediate parent of the current directory at that same absolute path
+instead; the container's working directory remains the original current
+directory. Preserving absolute paths is required because bind mounts requested
+by child containers are resolved by the host Podman service.
 
 Claude configuration defaults to `~/.claude`, or to `CLAUDE_CONFIG_DIR` when
 set. It is mounted read/write at `/claude-home/.claude`, and
@@ -85,13 +111,17 @@ set. It is mounted read/write at `/claude-home/.claude`, and
 Claude settings, credentials, session history, plugins, and other persistent
 state.
 
-The container root filesystem is read-only. The workspace and Claude
-configuration directory are the only persistent writable mounts; `/tmp` and
-`/run` are ephemeral tmpfs mounts.
+The container root filesystem is read-only. The selected workspace mount and
+Claude configuration directory are writable persistent mounts. The existing
+OpenSpec configuration path is also mounted read/write; `/tmp` and `/run` are
+ephemeral tmpfs mounts.
 
 The Podman socket gives Claude control over containers and volumes available
-to the host Podman user. The wrapper does not use `--privileged` and does not
-mount the user's full home directory.
+to the host Podman user. The wrapper does not use `--privileged`. By default,
+it does not mount the user's full home directory. With
+`--container-git-worktree`, the selected parent can be the home directory, and
+all files beneath that parent are writable through the workspace mount. Use
+the option from a directory whose parent you intend to expose.
 
 ## Included tools
 
