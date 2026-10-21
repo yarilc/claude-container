@@ -8,8 +8,13 @@ Claude Code:
 - `claude-container.sh` is the entry-point script and owns argument parsing,
   volume mounts, user mapping, and Podman socket validation.
 - `Containerfile` defines the Claude Code runtime image and its shell/tooling
-  baseline.
+  baseline, including `nano` with `EDITOR` and `VISUAL` set to it. The image
+  disables nano's history log in `/etc/nanorc`, because the home directory is
+  read-only.
 - `README.md` documents setup, usage, persistence, and security boundaries.
+- `openspec/` holds the OpenSpec project: `specs/` for the durable capability
+  specs (for example `host-ca-trust`) and `changes/` for in-flight changes.
+  Archived changes live in `changes/archive/`.
 - There are currently no separate source, test, or asset directories.
 
 ## Build, Test, and Development Commands
@@ -45,6 +50,15 @@ argument forwarding, image build, Claude startup, persistence of
 `~/.claude`, and a child `podman run`. Avoid embedding credentials or relying
 on a remote Git repository in tests.
 
+Changes to host CA handling must also verify both modes: with
+`CLAUDE_CONTAINER_TRUST_HOST_CA` unset, no CA mount or CA variables are
+present; with it set to `1`, the bundle is mounted read-only at
+`/claude-home/ca/bundle.pem` and the four CA variables point at it.
+
+Without Podman, stub `podman` on `PATH` and run a copy of the script to check
+the assembled arguments and the validation errors. `/tmp` may be mounted
+`noexec`, so put stubs in a non-`noexec` directory and remove them afterwards.
+
 ## Commit & Pull Request Guidelines
 
 The repository history is minimal, so use concise imperative commit subjects,
@@ -59,3 +73,7 @@ into the image, broaden mounts unnecessarily, or add `--privileged`. Preserve
 the host workspace's absolute path so containers launched by the host Podman
 service can resolve child bind mounts correctly. Claude configuration is
 intentionally writable because it contains its credentials and session state.
+
+Host CA trust is opt-in. Mount only the selected CA bundle file, read-only, at
+`/claude-home/ca/bundle.pem`. Never mount the host certificate directory
+(`/etc/ssl/certs/`), and never make it writable from the container.
