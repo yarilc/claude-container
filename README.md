@@ -99,3 +99,7 @@ The image includes Node.js/npm, Claude Code, Python 3, Bubblewrap (`bwrap`), the
 Podman client, Git, Bash, local search and editing tools, archive tools, JSON
 support, and diagnostics needed to work in a repository and run tests in
 containers.
+
+The image includes the `nano` editor, and `EDITOR` and `VISUAL` are set to
+`nano`, so commands that open an editor, such as `/memory`, work inside the
+container. The host's `EDITOR` and `VISUAL` are not forwarded.
