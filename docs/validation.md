@@ -1,5 +1,31 @@
 # Validation record
 
+## Delegated-socket carriage return rejection: 2026-11-01
+
+Checks for `reject-delegated-socket-carriage-returns` run as UID/GID 1000
+on Linux 6.6.87.2-microsoft-standard-WSL2, using Python 3.11.2, Bash 5.2.15,
+GNU coreutils timeout 9.1, OpenSpec 1.16.0, Podman client 4.3.1 and server
+4.9.3. The same-host Unix service reports Linux rootless operation. The
+existing runtime image reports Claude Code 2.1.316, OpenSpec 1.16.0,
+Python 3.11.2, Bubblewrap 0.8.0, and GNU nano 7.2.
+
+| Check | Result | Evidence and limits |
+| --- | --- | --- |
+| CR rejection | Passed | Targeted synthetic tests reject CRLF, a final CR without LF, leading CR, CR within the rootless field, CR between fields, and CR inside a host path; ordinary startup and explicit build both fail with an endpoint-specific invalid-response error before image inspection, build, or creation |
+| Response compatibility and error precedence | Passed | Existing exact-record tests retain acceptance of zero/one final LF and exact socket mount paths containing spaces, and reject additional records; new tests retain query-failure diagnostics after CR-containing stdout and confirm disabled delegation skips the separate socket query |
+| Full synthetic suite | Passed | `python3 -m unittest discover -s tests -p test_wrapper.py -v`: 52 tests pass in 156.464 seconds |
+| Full rootless runtime suite | Passed | `bash tests/run-runtime.sh`: 13 tests pass in 171.075 seconds, covering both state modes, signals, build filtering, CA, child binds, delegation, concurrency, temporary mounts, image tools, persistence, CLI, worktrees, and runtime permissions; runner cleanup succeeds |
+| Syntax, documentation, and contract | Passed | `bash -n claude-container.sh`, `git diff --check`, wrapper help, and `openspec validate reject-delegated-socket-carriage-returns --strict` pass; README and help explicitly document delegated-response CR rejection |
+| Authenticated internal sandbox | Unavailable | No credentials or model calls are used; image tool versions and wrapper/runtime checks do not establish authenticated internal sandbox compatibility |
+
+The completed change is archived at
+`openspec/changes/archive/2026-11-01-reject-delegated-socket-carriage-returns/`
+with all six tasks complete. The delegation-response delta was synchronized
+into `container-podman-access`, preserving its existing scenarios and unrelated
+content. All seven main specifications passed `openspec validate --specs --strict`.
+The named-change validation above predates archive; use main-spec validation
+after archive. `todo.md` remains excluded by `.gitignore` and is not committed.
+
 ## Session lifecycle and response hardening: 2026-11-01
 
 The completed change is archived at

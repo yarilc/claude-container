@@ -52,6 +52,8 @@ response record, with no terminator or one final LF. Additional blank or nonblan
 records, including extra trailing LF characters, stop startup before image
 inspection, explicit builds, or launch. Query failures remain failures even if
 stdout looks valid; delegated query errors identify the selected endpoint.
+Delegated socket responses containing any CR character, including a CRLF
+terminator, are rejected before field parsing or use of the reported host path.
 The endpoint must contain an absolute socket pathname beyond `/`; `unix://`,
 `unix:///`, slash-only paths, and relative Unix paths fail before any engine
 query, even when delegation is disabled or a delegation override is supplied.

@@ -61,6 +61,7 @@ Host GNU timeout is required. Shutdown is bounded to 20 seconds, with at most
 failures are reported without changing the application or first signal status.
 Engine verification replies must contain one record, with no terminator or a
 single final LF; extra blank or nonblank records stop startup before builds.
+Delegated socket verification also rejects any CR character, including CRLF.
 EOF
 }
 
@@ -129,6 +130,7 @@ if ((podman_access)); then
     socket=$(readlink -f -- "$socket")
     capture_response socket_info podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}' \
         || die "cannot query Podman socket: $socket; check the rootless service, permissions and SELinux policy"
+    [[ "$socket_info" != *$'\r'* ]] || die "invalid Podman socket response: $socket"
     socket_info=${socket_info%$'\n'}
     [[ "$socket_info" != *$'\n'* ]] || die "invalid Podman socket response: $socket"
     read -r socket_rootless host_socket <<< "$socket_info"

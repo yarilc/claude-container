@@ -535,6 +535,21 @@ class WrapperTests(unittest.TestCase):
                     self.assertIn('cannot query Podman', result.stderr)
                     self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
 
+    def test_delegated_response_rejects_carriage_returns_before_image_operations(self):
+        responses = ('true /host/socket with spaces\r\n',
+                     'true /host/podman.sock\r', '\rtrue /host/podman.sock\n',
+                     'tr\rue /host/podman.sock\n', 'true\r /host/podman.sock\n',
+                     'true \r/host/podman.sock\n', 'true /host/pod\rman.sock\n')
+        for options in ((), ('--container-build',)):
+            for raw in responses:
+                with self.subTest(options=options, raw=repr(raw)):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper(*options, CLAUDE_CONTAINER_PODMAN='1',
+                                              FAKE_SOCKET_RAW=raw)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f'invalid Podman socket response: {self.socket_path}', result.stderr)
+                    self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
+
     def test_response_validation_composes_with_launch_modes(self):
         for isolated in ('', str(self.state)):
             for shell in (False, True):
@@ -556,6 +571,23 @@ class WrapperTests(unittest.TestCase):
                             self.assertEqual(any(c[0] in ('build', 'image', 'create') for c in self.calls()), accepted)
                             if service == '0':
                                 self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
+
+    def test_delegated_cr_response_preserves_query_failure_and_disabled_access(self):
+        for raw in ('true /host/podman.sock\r\n', 'true /host/pod\rman.sock'):
+            with self.subTest(raw=repr(raw), query_failure=True):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('--container-build', CLAUDE_CONTAINER_PODMAN='1',
+                                          FAKE_SOCKET_RAW=raw, FAKE_SOCKET_STATUS='19')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f'cannot query Podman socket: {self.socket_path}', result.stderr)
+                self.assertNotIn('invalid Podman socket response', result.stderr)
+                self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
+            with self.subTest(raw=repr(raw), delegation_disabled=True):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='0', FAKE_SOCKET_RAW=raw)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
+                self.assertNotIn('CONTAINER_HOST=unix:///run/podman/podman.sock', self.create())
 
     def test_pathless_or_relative_unix_launch_endpoint_rejected_before_query(self):
         for endpoint in ('unix://', 'unix:///', 'unix://////', 'unix://relative/socket'):
