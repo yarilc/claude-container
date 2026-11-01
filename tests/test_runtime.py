@@ -3,8 +3,11 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import selectors
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 import uuid
 
@@ -273,6 +276,68 @@ RUN test -f /claude-build-context/Containerfile \\
             first.stderr.close()
             if not first.stdin.closed:
                 first.stdin.close()
+
+    def start_ready_shell(self, script, isolated):
+        proc = subprocess.Popen([str(WRAPPER), '--container-shell'], cwd=self.project,
+                                env=self.env | {'CLAUDE_CONTAINER_STATE_DIR': isolated},
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        identity = []
+        def finish():
+            if proc.poll() is None:
+                proc.terminate()
+            if proc.stdin is not None and proc.stdin.closed:
+                proc.stdin = None
+            try:
+                proc.communicate(timeout=25)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate(timeout=5)
+            if identity:
+                result = subprocess.run(['podman', 'rm', '--force', '--time', '0', '--ignore', identity[0]],
+                                        env=self.env, text=True, capture_output=True, timeout=10)
+                self.assert_success(result)
+        self.addCleanup(finish)
+        proc.stdin.write(script)
+        proc.stdin.flush()
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            self.assertTrue(selector.select(timeout=15), 'shell did not announce readiness')
+        ready = proc.stdout.readline().strip().split()
+        self.assertEqual(ready[:1], ['ready'])
+        result = subprocess.run(['podman', 'inspect', '--format', '{{.Id}}', ready[1]],
+                                env=self.env, text=True, capture_output=True, timeout=10)
+        self.assert_success(result)
+        identity.append(result.stdout.strip())
+        return proc, identity[0]
+
+    def test_bounded_signal_shutdown_preserves_other_session(self):
+        for isolated in ('', str(self.state)):
+            other, other_id = self.start_ready_shell(
+                'printf "ready %s\\n" "$HOSTNAME"\nread -r finish\n', isolated)
+            for ignore in (False, True):
+                for name, status in (('TERM', 143), ('INT', 130), ('HUP', 129)):
+                    with self.subTest(isolated=isolated, ignore=ignore, signal=name):
+                        handler = "trap '' TERM INT HUP\n" if ignore else "trap 'exit 0' TERM INT HUP\n"
+                        proc, container = self.start_ready_shell(handler +
+                            'printf "ready %s\\n" "$HOSTNAME"\n'
+                            'while :; do read -r -t 0.2 ignored || true; done\n', isolated)
+                        started = time.monotonic()
+                        proc.send_signal(getattr(signal, 'SIG' + name))
+                        stdout, stderr = proc.communicate(timeout=25)
+                        self.assertEqual(proc.returncode, status, stdout + stderr)
+                        self.assertLess(time.monotonic() - started, 22)
+                        exists = subprocess.run(['podman', 'container', 'exists', container],
+                                                env=self.env, capture_output=True, timeout=10)
+                        self.assertEqual(exists.returncode, 1, stdout + stderr)
+                        self.assertIsNone(other.poll())
+                        running = subprocess.run(['podman', 'inspect', '--format', '{{.State.Running}}', other_id],
+                                                 env=self.env, text=True, capture_output=True, timeout=10)
+                        self.assert_success(running)
+                        self.assertEqual(running.stdout.strip(), 'true')
+            other.stdin.write('finish\n')
+            other.stdin.close()
+            self.assertEqual(other.wait(timeout=25), 0)
 
     def test_native_help_and_version_without_tty(self):
         for isolated in ('', str(self.state)):

@@ -1,0 +1,21 @@
+# Tasks
+
+## 1. Bound shutdown and retain session ownership
+
+- [x] 1.1 Introduce checked GNU timeout support and a shared 20-second shutdown deadline with bounded control calls, idempotent cleanup, and saved primary status in `claude-container.sh`; extend fake-Podman tests to verify stalled/failed forwarding and removal produce diagnostics and cannot replace application or signal status.
+- [x] 1.2 Supervise creation as an interruptible child with private per-attempt CID/stdout/stderr files and a unique ownership label; add synchronized pre-ID/post-ID interruption and collision regressions verifying bounded identity recovery, no start after interruption, no name-only deletion, untouched unrelated identities, and removal of private temporary files.
+- [x] 1.3 Implement the at-most-five-second graceful allowance, forced owned-container removal, and bounded local-client termination/reaping; add cooperative/ignored TERM/INT/HUP, TERM-ignoring control-client, repeated-signal, and application exit 0/nonzero/125 regressions, verifying deadlines, first-signal status, and no leaked fake children. Adjust test harness deadlines to accommodate the production shutdown budget and include at least one real-timeout wall-clock bound check.
+- [x] 1.4 Add prerequisite/help and unrestricted healthy-session/build regressions; verify missing/unsupported timeout produces actionable failure before session resources are created, help remains side-effect free without it, normal work is not subject to shutdown timeouts, and existing stdin/TTY/exit-125 behavior passes.
+- [x] 1.5 Extend opt-in runtime tests with ready-signaling cooperative and signal-ignoring shell applications plus an unrelated concurrent session; run the targeted checks in both state modes, verifying TERM/INT/HUP statuses, the documented elapsed bound, owned-container disappearance, continued unrelated-session operation, and owned fixture cleanup without disrupting the actual engine.
+- [x] 1.6 Update wrapper help and README with GNU timeout requirements, shutdown limits, escalation, exit-status preservation, and cleanup-failure recovery by known identity; append targeted lifecycle results and environment versions to `docs/validation.md`, verifying each result is supported and unavailable checks remain incomplete.
+
+## 2. Validate exact verification-response boundaries
+
+- [x] 2.1 Introduce shared boundary-preserving capture for launch-engine and delegated-socket verification, preserving query status and stderr; extend fake-Podman raw-output controls and tests to accept valid output with zero/one final LF and reject empty, leading/embedded blank, extra trailing blank, and additional nonblank records, including failure after valid stdout. Verify every rejected case prevents image inspection, explicit build, and creation.
+- [x] 2.2 Exercise the new response checks across shared/isolated state, Claude/shell mode, build/worktree composition, enabled endpoint precedence/remapping, and disabled delegation; verify disabled access adds no socket query, valid host socket paths containing spaces retain their meaning, and existing rootful/non-Linux/malformed/query-error tests continue to pass.
+- [x] 2.3 Update affected help/README verification guidance and append exact-output regression results to `docs/validation.md`; verify documentation distinguishes the optional normal LF terminator from extra records and retains endpoint-specific query-error guidance without claiming broader sandbox compatibility.
+
+## 3. Verify integrated behavior
+
+- [x] 3.1 Run `python3 -m unittest discover -s tests -p test_wrapper.py -v`, `bash -n` on changed shell scripts, `git diff --check`, whitespace checks for new files, and `openspec validate harden-session-lifecycle-and-engine-responses --strict`; verify all pass and the pre-existing user edit to `.gitignore` is preserved.
+- [x] 3.2 Run `bash tests/run-runtime.sh` or equivalent same-host native-state execution using an existing built image; verify the full suite including new lifecycle acceptance and previous mounts/state/CA/worktree/child-bind checks, record actual client/server/image versions and pass/fail/unavailable outcomes, and leave failed or unavailable acceptance tasks unchecked.

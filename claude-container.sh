@@ -3,6 +3,17 @@ set -Eeuo pipefail
 
 die() { printf 'claude-container: %s\n' "$*" >&2; exit 1; }
 
+# Keep final LF bytes while retaining the query's own exit status and stderr.
+capture_response() {
+    local destination=$1 captured query_status
+    shift
+    if captured=$("$@"; query_status=$?; printf '\034'; exit "$query_status"); then
+        printf -v "$destination" '%s' "${captured%$'\034'}"
+    else
+        return "$?"
+    fi
+}
+
 usage() {
     cat <<'EOF'
 Usage: claude-container.sh [container option] [claude arguments...]
@@ -45,6 +56,11 @@ only. Worktree mode exposes the entire parent read/write.
 State directories must belong to the caller and deny group/other access.
 Unset CLAUDE_CONFIG_DIR when selecting an isolated home; no state is imported.
 Temporary /tmp, /run, and /var/tmp mounts are noexec, limited to 256/16/256 MiB.
+Host GNU timeout is required. Shutdown is bounded to 20 seconds, with at most
+5 seconds for graceful exit before forced owned-container removal. Cleanup
+failures are reported without changing the application or first signal status.
+Engine verification replies must contain one record, with no terminator or a
+single final LF; extra blank or nonblank records stop startup before builds.
 EOF
 }
 
@@ -77,6 +93,8 @@ trust_host_ca=$(boolean CLAUDE_CONTAINER_TRUST_HOST_CA "${CLAUDE_CONTAINER_TRUST
     || die 'CLAUDE_CONTAINER_STATE_DIR conflicts with CLAUDE_CONFIG_DIR; unset CLAUDE_CONFIG_DIR to isolate state'
 
 command -v podman >/dev/null || die 'Podman is required on the host'
+command -v timeout >/dev/null && [[ $(timeout --version 2>/dev/null) == *'GNU coreutils'* ]] \
+    || die 'GNU timeout is required on the host; install GNU coreutils'
 # Unix service access also supports running this wrapper inside another container
 # on the same host. TCP/SSH transports and Podman Machine are not supported.
 [[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'named remote connections are not supported; use local Podman or a local Unix CONTAINER_HOST'
@@ -89,7 +107,10 @@ case "${CONTAINER_HOST:-}" in
         ;;
     *) die 'remote TCP/SSH Podman contexts are not supported; use a local Unix socket' ;;
 esac
-runtime_info=$(podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}') || die 'cannot query Podman; check the local rootless service'
+capture_response runtime_info podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' \
+    || die 'cannot query Podman; check the local rootless service'
+runtime_info=${runtime_info%$'\n'}
+[[ "$runtime_info" != *$'\n'* ]] || die 'invalid Podman engine response: expected one record with at most one final LF'
 [[ "$runtime_info" == "true linux false" || "$runtime_info" == "true linux true" ]] || die 'a verified Linux rootless Podman engine is required (unexpected engine response)'
 read -r _ _ remote <<< "$runtime_info"
 if [[ "$remote" == true && "${CONTAINER_HOST:-}" != unix:///* ]]; then
@@ -106,7 +127,9 @@ if ((podman_access)); then
     [[ "$socket" == /* ]] || die "Podman socket must be an absolute path: $socket"
     [[ -S "$socket" && -r "$socket" && -w "$socket" ]] || die "Podman socket not accessible: $socket; enable 'systemctl --user start podman.socket' or start 'podman system service --time=0'"
     socket=$(readlink -f -- "$socket")
-    socket_info=$(podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}') || die "cannot query Podman socket: $socket; check the rootless service, permissions and SELinux policy"
+    capture_response socket_info podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}' \
+        || die "cannot query Podman socket: $socket; check the rootless service, permissions and SELinux policy"
+    socket_info=${socket_info%$'\n'}
     [[ "$socket_info" != *$'\n'* ]] || die "invalid Podman socket response: $socket"
     read -r socket_rootless host_socket <<< "$socket_info"
     [[ "$socket_rootless" == true ]] || die "Podman socket must serve a rootless engine: $socket"
@@ -252,41 +275,173 @@ done <<< "$names"
 # confused with a create-time naming collision. Remove only our own container.
 container_id=''
 client_pid=''
-create_error=''
-# shellcheck disable=SC2329 # Invoked by the EXIT trap.
-cleanup() {
-    [[ -z "$create_error" ]] || rm -f -- "$create_error"
-    [[ -z "$container_id" ]] || podman rm --force --ignore "$container_id" >/dev/null 2>&1 || true
+create_pid=''
+session_dir=''
+session_token=''
+cid_file=''
+create_output=''
+creation_pending=0
+shutdown_deadline=0
+ownership_label=io.claude-container.session
+
+cleanup_warning() {
+    printf 'claude-container: cleanup %s (container=%s session=%s); inspect the Podman engine for remaining session containers\n' \
+        "$*" "${container_id:-unknown}" "${session_token:-unknown}" >&2
 }
-# shellcheck disable=SC2329 # Invoked by signal traps.
-forward_signal() {
-    local signal=$1 status=$2
-    [[ -z "$container_id" ]] || podman kill --signal "$signal" "$container_id" >/dev/null 2>&1 || true
-    [[ -z "$client_pid" ]] || wait "$client_pid" 2>/dev/null || true
-    exit "$status"
+
+# All shutdown engine calls share a deadline and reserve time for local clients.
+control() {
+    local remaining=$((shutdown_deadline - SECONDS - 2)) duration status
+    if ((remaining < 2)); then
+        cleanup_warning "deadline exhausted before $1"
+        return 124
+    fi
+    duration=$((remaining - 1))
+    ((duration <= 2)) || duration=2
+    if timeout --kill-after=1s "${duration}s" podman "$@"; then
+        return 0
+    else
+        status=$?
+        cleanup_warning "$1 failed or timed out (status $status)"
+        return "$status"
+    fi
 }
-trap cleanup EXIT
-trap 'forward_signal TERM 143' TERM
-trap 'forward_signal INT 130' INT
-trap 'forward_signal HUP 129' HUP
-create_error=$(mktemp)
+
+# Consult Bash's child table, so a recycled PID cannot select another process.
+child_running() {
+    local child=$1 running
+    [[ -n "$child" ]] || return 1
+    while IFS= read -r running; do
+        [[ "$running" != "$child" ]] || return 0
+    done < <(jobs -pr)
+    return 1
+}
+
+reap_client() {
+    local child=$1 until
+    [[ -n "$child" ]] || return 0
+    if child_running "$child"; then
+        kill -TERM "$child" 2>/dev/null || true
+        until=$((SECONDS + 1))
+        while child_running "$child" && ((SECONDS < until && SECONDS < shutdown_deadline - 1)); do
+            sleep 0.05
+        done
+        if child_running "$child"; then
+            kill -KILL "$child" 2>/dev/null || true
+        fi
+    fi
+    while child_running "$child" && ((SECONDS < shutdown_deadline)); do
+        sleep 0.05
+    done
+    if child_running "$child"; then
+        cleanup_warning "local client $child did not terminate within the deadline"
+    else
+        wait "$child" 2>/dev/null || true
+    fi
+}
+
+recover_container() {
+    local candidate='' owner ids
+    [[ -z "$container_id" && "$creation_pending" == 1 ]] || return 0
+    if [[ -s "$cid_file" ]]; then
+        candidate=$(<"$cid_file")
+    elif [[ -s "$create_output" ]]; then
+        candidate=$(<"$create_output")
+    fi
+    if [[ ! "$candidate" =~ ^[a-f0-9]{64}$ ]]; then
+        if ! ids=$(control ps --all --no-trunc --filter "label=$ownership_label=$session_token" --format '{{.ID}}'); then
+            return 1
+        fi
+        candidate=$ids
+    fi
+    [[ -n "$candidate" ]] || return 0
+    [[ "$candidate" =~ ^[a-f0-9]{64}$ ]] || { cleanup_warning 'invalid recovered container identity'; return 1; }
+    if owner=$(control inspect --type container --format "{{index .Config.Labels \"$ownership_label\"}}" "$candidate") \
+        && [[ "$owner" == "$session_token" ]]; then
+        container_id=$candidate
+    else
+        cleanup_warning 'could not confirm recovered container ownership'
+        return 1
+    fi
+}
+
+# Keep collision reconciliation interruptible just like the create request.
+creation_lookup() {
+    local lookup_status=0
+    podman "$@" >"$session_dir/lookup" &
+    create_pid=$!
+    wait "$create_pid" || lookup_status=$?
+    create_pid=''
+    return "$lookup_status"
+}
+
+# shellcheck disable=SC2329 # Invoked by EXIT and signal traps.
+shutdown() {
+    local primary_status=$1 signal=${2:-} graceful_until
+    trap - EXIT
+    trap '' TERM INT HUP
+    set +e
+    shutdown_deadline=$((SECONDS + 20))
+    if [[ -n "$session_dir" ]]; then
+        recover_container
+        if [[ -n "$signal" && -n "$container_id" && -n "$client_pid" ]]; then
+            control kill --signal "$signal" "$container_id" >/dev/null
+            graceful_until=$((SECONDS + 5))
+            while child_running "$client_pid" && ((SECONDS < graceful_until && SECONDS < shutdown_deadline - 6)); do
+                sleep 0.05
+            done
+        fi
+        [[ -z "$container_id" ]] || control rm --force --time 0 --ignore "$container_id" >/dev/null
+        reap_client "$create_pid"
+        reap_client "$client_pid"
+        # Cancellation can race with the server publishing its create result.
+        if ((creation_pending)) && [[ -z "$container_id" ]]; then
+            recover_container
+            if [[ -n "$container_id" ]]; then
+                control rm --force --time 0 --ignore "$container_id" >/dev/null
+            elif [[ -n "$signal" ]]; then
+                cleanup_warning 'interrupted creation could not be reconciled'
+            fi
+        fi
+        rm -rf -- "$session_dir"
+    fi
+    exit "$primary_status"
+}
+trap 'shutdown "$?"' EXIT
+trap 'shutdown 143 TERM' TERM
+trap 'shutdown 130 INT' INT
+trap 'shutdown 129 HUP' HUP
+session_dir=$(umask 077; mktemp -d)
+session_token=${session_dir##*/}
 for ((attempt=0; attempt<20; attempt++)); do
     name="$prefix-$next_index"
-    if container_id=$(podman create --name "$name" "${container_args[@]}" "$image" "${args[@]}" 2>"$create_error"); then
+    cid_file=$session_dir/$attempt.cid
+    create_output=$session_dir/$attempt.stdout
+    create_error=$session_dir/$attempt.stderr
+    creation_pending=1
+    podman create --name "$name" --cidfile "$cid_file" --label "$ownership_label=$session_token" \
+        "${container_args[@]}" "$image" "${args[@]}" >"$create_output" 2>"$create_error" &
+    create_pid=$!
+    if wait "$create_pid"; then
+        create_pid=''
+        container_id=$(<"$create_output")
+        [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || die 'invalid container ID returned by Podman create'
+        creation_pending=0
         break
     else
         create_status=$?
-        container_id=''
-        if podman container exists "$name"; then
+        create_pid=''
+        if [[ ! -s "$cid_file" && ! -s "$create_output" ]] && creation_lookup container exists "$name" \
+            && creation_lookup inspect --type container --format "{{index .Config.Labels \"$ownership_label\"}}" "$name" \
+            && [[ $(<"$session_dir/lookup") != "$session_token" ]]; then
+            creation_pending=0
             next_index=$((next_index + 1))
         else
             cat -- "$create_error" >&2
-            rm -f -- "$create_error"
             exit "$create_status"
         fi
     fi
 done
-rm -f -- "$create_error"
 [[ -n "$container_id" ]] || die 'could not reserve a container name after 20 attempts'
 
 # Explicit stdin redirection prevents Bash from replacing stdin with /dev/null

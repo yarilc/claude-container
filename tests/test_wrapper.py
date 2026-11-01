@@ -5,10 +5,13 @@ from pathlib import Path
 import socket
 import subprocess
 import tempfile
+import time
+import signal
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / 'claude-container.sh'
+OWNED_ID = 'a' * 64
 FAKE = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys, time, signal
 args = sys.argv[1:]
@@ -20,18 +23,34 @@ if os.environ.get('FAKE_UMASK_LOG'):
         f.write(json.dumps([args[0], mask]) + '\n')
 with log.open('a') as f:
     f.write(json.dumps(args) + '\n')
+state = pathlib.Path(str(log) + '.container')
+command = args[0]
+if command in os.environ.get('FAKE_STALL', '').split(',') and (command != 'ps' or '--filter' in args):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    pathlib.Path(str(log) + '.stalled-' + command).write_text(str(os.getpid()))
+    while True:
+        time.sleep(0.05)
+if command in os.environ.get('FAKE_FAIL', '').split(','):
+    print('synthetic control failure: ' + command, file=sys.stderr)
+    sys.exit(17)
 if args[:2] == ['--remote', '--url']:
-    sys.exit(int(os.environ.get('FAKE_SOCKET_STATUS', '0'))) if os.environ.get('FAKE_SOCKET_STATUS') else None
-    print(os.environ.get('FAKE_SOCKET_ROOTLESS', 'true') + ' ' + os.environ.get('FAKE_HOST_SOCKET', '/host/podman.sock'))
+    sys.stdout.write(os.environ.get('FAKE_SOCKET_RAW',
+                     os.environ.get('FAKE_SOCKET_ROOTLESS', 'true') + ' ' +
+                     os.environ.get('FAKE_HOST_SOCKET', '/host/podman.sock') + '\n'))
+    sys.exit(int(os.environ.get('FAKE_SOCKET_STATUS', '0')))
 elif args[0] == 'info':
-    sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0'))) if os.environ.get('FAKE_INFO_STATUS') else None
-    print(os.environ.get('FAKE_INFO', 'true linux false'))
+    sys.stdout.write(os.environ.get('FAKE_INFO_RAW', os.environ.get('FAKE_INFO', 'true linux false') + '\n'))
+    sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0')))
 elif args[:2] == ['image', 'exists']:
     sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
 elif args[0] == 'build':
+    time.sleep(float(os.environ.get('FAKE_BUILD_DELAY', '0')))
     sys.exit(int(os.environ.get('FAKE_BUILD_STATUS', '0')))
 elif args[0] == 'ps':
-    print(os.environ.get('FAKE_NAMES', ''))
+    if '--filter' in args:
+        print(os.environ.get('FAKE_RECOVERY_ID', 'a' * 64) if state.exists() else '')
+    else:
+        print(os.environ.get('FAKE_NAMES', ''))
 elif args[0] == 'create':
     collision = pathlib.Path(str(log) + '.collision')
     if os.environ.get('FAKE_COLLISION') and (not collision.exists() or os.environ.get('FAKE_ALWAYS_COLLIDE')):
@@ -40,15 +59,41 @@ elif args[0] == 'create':
     if os.environ.get('FAKE_CREATE_FAILURE'):
         print('create failed', file=sys.stderr)
         sys.exit(125)
-    print('owned-test-container-id')
+    token = args[args.index('--label') + 1].split('=', 1)[1]
+    state.write_text(token)
+    pause = os.environ.get('FAKE_CREATE_PAUSE')
+    if pause != 'before':
+        pathlib.Path(args[args.index('--cidfile') + 1]).write_text('a' * 64 + '\n')
+    if pause:
+        pathlib.Path(str(log) + '.create-pid').write_text(str(os.getpid()))
+        pathlib.Path(str(log) + '.creating').touch()
+        while True:
+            time.sleep(0.05)
+    print('a' * 64)
+    sys.exit(int(os.environ.get('FAKE_CREATED_STATUS', '0')))
+elif args[0] == 'inspect':
+    print(state.read_text() if state.exists() and args[-1] == 'a' * 64 else 'foreign-session')
 elif args[:2] == ['container', 'exists']:
     sys.exit(0 if os.environ.get('FAKE_COLLISION') else 1)
 elif args[0] == 'kill':
     pid = pathlib.Path(str(log) + '.pid')
     if pid.exists():
         os.kill(int(pid.read_text()), signal.SIGTERM)
+elif args[0] == 'rm':
+    assert args[-1] == 'a' * 64, 'refusing to remove unrelated identity'
+    state.unlink(missing_ok=True)
+    pid = pathlib.Path(str(log) + '.pid')
+    if pid.exists():
+        try:
+            os.kill(int(pid.read_text()), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 elif args[0] == 'start':
+    time.sleep(float(os.environ.get('FAKE_START_DELAY', '0')))
     if os.environ.get('FAKE_WAIT'):
+        for name in ('TERM', 'INT', 'HUP'):
+            signal.signal(getattr(signal, 'SIG' + name),
+                          signal.SIG_IGN if os.environ.get('FAKE_IGNORE_SIGNALS') else signal.SIG_DFL)
         pathlib.Path(str(log) + '.pid').write_text(str(os.getpid()))
         pathlib.Path(str(log) + '.started').touch()
         time.sleep(20)
@@ -87,13 +132,54 @@ class WrapperTests(unittest.TestCase):
     def run_wrapper(self, *args, cwd=None, caller_umask=-1, **env):
         return subprocess.run([str(WRAPPER), *args], cwd=cwd or self.project,
                               env=self.env | env, input='input payload',
-                              text=True, capture_output=True, timeout=10, umask=caller_umask)
+                              text=True, capture_output=True, timeout=25, umask=caller_umask)
 
     def calls(self):
         return [json.loads(s) for s in self.log.read_text().splitlines()] if self.log.exists() else []
 
     def create(self):
         return next(c for c in self.calls() if c[0] == 'create')
+
+    def wait_marker(self, proc, suffix):
+        marker = Path(str(self.log) + suffix)
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            if proc.poll() is not None:
+                self.fail(str(proc.communicate()))
+            time.sleep(0.02)
+        self.assertTrue(marker.exists(), suffix)
+
+    def start_waiting_wrapper(self, marker='.started', **env):
+        diagnostics = self.base / 'diagnostics'
+        diagnostics.mkdir(exist_ok=True)
+        proc = subprocess.Popen([str(WRAPPER)], cwd=self.project,
+                                env=self.env | {'TMPDIR': str(diagnostics)} | env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        def finish():
+            if proc.poll() is None:
+                proc.kill()
+            proc.communicate(timeout=25)
+            pid_files = [Path(str(self.log) + suffix) for suffix in ('.pid', '.create-pid')]
+            pid_files.extend(self.base.glob('calls.jsonl.stalled-*'))
+            for pid in pid_files:
+                if pid.exists():
+                    try:
+                        child = int(pid.read_text())
+                        if str(self.bin / 'podman').encode() in Path(f'/proc/{child}/cmdline').read_bytes():
+                            os.kill(child, signal.SIGKILL)
+                    except (ProcessLookupError, FileNotFoundError):
+                        pass
+        self.addCleanup(finish)
+        self.wait_marker(proc, marker)
+        return proc, diagnostics
+
+    def assert_no_fake_client(self):
+        for suffix in ('.pid', '.create-pid'):
+            path = Path(str(self.log) + suffix)
+            if path.exists():
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(path.read_text()), 0)
 
     def test_help_without_podman_or_side_effects(self):
         help_bin = self.base / 'help-bin'
@@ -235,7 +321,157 @@ class WrapperTests(unittest.TestCase):
         for status in ('7', '125'):
             result = self.run_wrapper(FAKE_EXIT=status)
             self.assertEqual(result.returncode, int(status))
-            self.assertIn(['rm', '--force', '--ignore', 'owned-test-container-id'], self.calls())
+            self.assertIn(['rm', '--force', '--time', '0', '--ignore', OWNED_ID], self.calls())
+
+    def test_cleanup_failure_or_stall_preserves_application_status(self):
+        for mode in ('FAKE_FAIL', 'FAKE_STALL'):
+            for status in (0, 7, 125):
+                with self.subTest(mode=mode, status=status):
+                    self.log.unlink(missing_ok=True)
+                    started = time.monotonic()
+                    result = self.run_wrapper(FAKE_EXIT=str(status), **{mode: 'rm'})
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertLess(time.monotonic() - started, 22)
+                    self.assertIn('cleanup rm failed or timed out', result.stderr)
+                    self.assertIn(OWNED_ID, result.stderr)
+                    self.assertTrue(all(c[-1] == OWNED_ID for c in self.calls() if c[0] == 'rm'))
+
+    def test_ignored_signals_force_owned_removal(self):
+        for name, status in (('TERM', 143), ('INT', 130), ('HUP', 129)):
+            with self.subTest(signal=name):
+                self.log.unlink(missing_ok=True)
+                Path(str(self.log) + '.started').unlink(missing_ok=True)
+                proc, diagnostics = self.start_waiting_wrapper(FAKE_WAIT='1', FAKE_IGNORE_SIGNALS='1')
+                started = time.monotonic()
+                proc.send_signal(getattr(signal, 'SIG' + name))
+                _, stderr = proc.communicate(timeout=25)
+                self.assertEqual(proc.returncode, status, stderr)
+                self.assertGreater(time.monotonic() - started, 3.5)
+                self.assertLess(time.monotonic() - started, 22)
+                self.assertIn(['kill', '--signal', name, OWNED_ID], self.calls())
+                self.assertIn(['rm', '--force', '--time', '0', '--ignore', OWNED_ID], self.calls())
+                self.assertEqual(list(diagnostics.iterdir()), [])
+                self.assert_no_fake_client()
+
+    def test_stalled_controls_and_repeated_signal_are_bounded(self):
+        proc, diagnostics = self.start_waiting_wrapper(FAKE_WAIT='1', FAKE_IGNORE_SIGNALS='1',
+                                                       FAKE_STALL='kill,rm')
+        started = time.monotonic()
+        proc.terminate()
+        self.wait_marker(proc, '.stalled-kill')
+        proc.send_signal(signal.SIGHUP)
+        _, stderr = proc.communicate(timeout=25)
+        self.assertEqual(proc.returncode, 143, stderr)
+        self.assertLess(time.monotonic() - started, 22)
+        self.assertIn('cleanup kill failed or timed out', stderr)
+        self.assertIn('cleanup rm failed or timed out', stderr)
+        self.assertEqual(len([c for c in self.calls() if c[0] == 'rm']), 1)
+        self.assertEqual(list(diagnostics.iterdir()), [])
+        self.assert_no_fake_client()
+
+    def test_interrupted_creation_recovers_only_owned_identity(self):
+        for phase in ('before', 'after'):
+            with self.subTest(phase=phase):
+                self.log.unlink(missing_ok=True)
+                Path(str(self.log) + '.creating').unlink(missing_ok=True)
+                proc, diagnostics = self.start_waiting_wrapper('.creating', FAKE_CREATE_PAUSE=phase)
+                create = self.create()
+                cid_file = Path(create[create.index('--cidfile') + 1])
+                self.assertEqual(cid_file.parent.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(cid_file.exists(), phase == 'after')
+                proc.terminate()
+                _, stderr = proc.communicate(timeout=25)
+                self.assertEqual(proc.returncode, 143, stderr)
+                self.assertIn(['rm', '--force', '--time', '0', '--ignore', OWNED_ID], self.calls())
+                self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                self.assertEqual(list(diagnostics.iterdir()), [])
+                self.assert_no_fake_client()
+
+    def test_interrupted_creation_rejects_foreign_recovery_result(self):
+        proc, diagnostics = self.start_waiting_wrapper('.creating', FAKE_CREATE_PAUSE='before',
+                                                       FAKE_RECOVERY_ID='b' * 64)
+        proc.terminate()
+        _, stderr = proc.communicate(timeout=25)
+        self.assertEqual(proc.returncode, 143, stderr)
+        self.assertIn('could not confirm recovered container ownership', stderr)
+        self.assertFalse(any(c[0] in ('rm', 'start') for c in self.calls()))
+        self.assertEqual(list(diagnostics.iterdir()), [])
+        self.assert_no_fake_client()
+
+    def test_interrupted_creation_recovery_calls_are_bounded(self):
+        for phase, stalled in (('before', 'ps'), ('after', 'inspect')):
+            with self.subTest(phase=phase, stalled=stalled):
+                self.log.unlink(missing_ok=True)
+                Path(str(self.log) + '.creating').unlink(missing_ok=True)
+                proc, diagnostics = self.start_waiting_wrapper('.creating', FAKE_CREATE_PAUSE=phase,
+                                                               FAKE_STALL=stalled)
+                started = time.monotonic()
+                proc.terminate()
+                _, stderr = proc.communicate(timeout=25)
+                self.assertEqual(proc.returncode, 143, stderr)
+                self.assertLess(time.monotonic() - started, 22)
+                self.assertIn('failed or timed out', stderr)
+                self.assertIn('interrupted creation could not be reconciled', stderr)
+                self.assertFalse(any(c[0] in ('rm', 'start') for c in self.calls()))
+                self.assertEqual(list(diagnostics.iterdir()), [])
+                self.assert_no_fake_client()
+
+    def test_collision_reconciliation_can_be_interrupted(self):
+        proc, diagnostics = self.start_waiting_wrapper('.stalled-inspect', FAKE_COLLISION='1',
+                                                       FAKE_STALL='inspect')
+        proc.terminate()
+        _, stderr = proc.communicate(timeout=25)
+        self.assertEqual(proc.returncode, 143, stderr)
+        self.assertFalse(any(c[0] in ('rm', 'start') for c in self.calls()))
+        self.assertEqual(list(diagnostics.iterdir()), [])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(Path(str(self.log) + '.stalled-inspect').read_text()), 0)
+
+    def test_failed_create_after_id_publication_is_cleaned(self):
+        result = self.run_wrapper(FAKE_CREATED_STATUS='19')
+        self.assertEqual(result.returncode, 19, result.stderr)
+        self.assertIn(['rm', '--force', '--time', '0', '--ignore', OWNED_ID], self.calls())
+        self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+
+    def test_failed_signal_delivery_still_removes_owned_container(self):
+        proc, diagnostics = self.start_waiting_wrapper(FAKE_WAIT='1', FAKE_IGNORE_SIGNALS='1',
+                                                       FAKE_FAIL='kill')
+        proc.terminate()
+        _, stderr = proc.communicate(timeout=25)
+        self.assertEqual(proc.returncode, 143, stderr)
+        self.assertIn('cleanup kill failed or timed out', stderr)
+        self.assertIn(['rm', '--force', '--time', '0', '--ignore', OWNED_ID], self.calls())
+        self.assertEqual(list(diagnostics.iterdir()), [])
+        self.assert_no_fake_client()
+
+    def test_timeout_prerequisite_and_independent_help(self):
+        restricted = self.base / 'prerequisite-bin'
+        restricted.mkdir()
+        for name, target in (('bash', '/bin/bash'), ('cat', '/bin/cat'),
+                             ('podman', str(self.bin / 'podman'))):
+            (restricted / name).symlink_to(target)
+        for unsupported in (False, True):
+            with self.subTest(unsupported=unsupported):
+                if unsupported:
+                    timeout = restricted / 'timeout'
+                    timeout.write_text('#!/bin/sh\nprintf "unsupported timeout\\n"\n')
+                    timeout.chmod(0o755)
+                result = self.run_wrapper(PATH=str(restricted))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('GNU timeout is required', result.stderr)
+                self.assertFalse(self.calls())
+                self.assertFalse(self.state.exists())
+                help_result = self.run_wrapper('--container-help', PATH=str(restricted))
+                self.assertEqual(help_result.returncode, 0, help_result.stderr)
+
+    def test_healthy_build_and_session_outlive_shutdown_budget(self):
+        started = time.monotonic()
+        result = subprocess.run([str(WRAPPER), '--container-build'], cwd=self.project,
+                                env=self.env | {'FAKE_BUILD_DELAY': '21', 'FAKE_START_DELAY': '21'},
+                                input='healthy input', text=True, capture_output=True, timeout=55)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreater(time.monotonic() - started, 40)
+        self.assertIn('stdin:healthy input', result.stdout)
 
     def test_existing_names_and_collision_retry(self):
         result = self.run_wrapper(FAKE_NAMES='my-project-2\nmy-project-09\nother-50', FAKE_COLLISION='1')
@@ -272,6 +508,54 @@ class WrapperTests(unittest.TestCase):
                 self.assertNotEqual(run.returncode, 0)
                 self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
         self.assertNotEqual(self.run_wrapper(FAKE_INFO_STATUS='125').returncode, 0)
+
+    def test_verification_preserves_exact_record_boundaries_and_status(self):
+        for query, valid in (('INFO', 'true linux false'), ('SOCKET', 'true /host/socket with spaces')):
+            for raw, accepted in ((valid, True), (valid + '\n', True), ('', False),
+                                  (valid + '\n\n', False), (valid + '\n\n\n', False),
+                                  ('\n' + valid, False), (valid + '\n\nextra\n', False),
+                                  (valid + '\nextra\n', False)):
+                with self.subTest(query=query, raw=repr(raw)):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper('--container-build', CLAUDE_CONTAINER_PODMAN='1',
+                                              **{f'FAKE_{query}_RAW': raw})
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                    operations = [c for c in self.calls() if c[0] in ('image', 'build', 'create')]
+                    self.assertEqual(bool(operations), accepted)
+                    if query == 'SOCKET' and not accepted:
+                        self.assertIn(str(self.socket_path), result.stderr)
+                    if query == 'SOCKET' and accepted:
+                        self.assertIn('/host/socket with spaces:/run/podman/podman.sock:rw', self.create())
+            for raw in (valid, valid + '\n', valid + '\n\n'):
+                with self.subTest(query=query, failed_after_output=repr(raw)):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper('--container-build', CLAUDE_CONTAINER_PODMAN='1',
+                                              **{f'FAKE_{query}_RAW': raw, f'FAKE_{query}_STATUS': '19'})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('cannot query Podman', result.stderr)
+                    self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
+
+    def test_response_validation_composes_with_launch_modes(self):
+        for isolated in ('', str(self.state)):
+            for shell in (False, True):
+                for service in ('0', '1'):
+                    for bad_query in ('', 'INFO', 'SOCKET'):
+                        with self.subTest(isolated=isolated, shell=shell, service=service, query=bad_query):
+                            self.log.unlink(missing_ok=True)
+                            options = ['--container-build', '--container-git-worktree']
+                            if shell:
+                                options.append('--container-shell')
+                            values = {'FAKE_INFO_RAW': 'true linux false\n',
+                                      'FAKE_SOCKET_RAW': 'true /host/socket with spaces\n'}
+                            if bad_query:
+                                values[f'FAKE_{bad_query}_RAW'] += '\n'
+                            accepted = not bad_query or (bad_query == 'SOCKET' and service == '0')
+                            result = self.run_wrapper(*options, CLAUDE_CONTAINER_STATE_DIR=isolated,
+                                                      CLAUDE_CONTAINER_PODMAN=service, **values)
+                            self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                            self.assertEqual(any(c[0] in ('build', 'image', 'create') for c in self.calls()), accepted)
+                            if service == '0':
+                                self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
 
     def test_pathless_or_relative_unix_launch_endpoint_rejected_before_query(self):
         for endpoint in ('unix://', 'unix:///', 'unix://////', 'unix://relative/socket'):
@@ -539,7 +823,7 @@ class WrapperTests(unittest.TestCase):
                 proc.communicate(timeout=5)
                 self.assertEqual(proc.returncode, status)
                 self.assertTrue(any(c[:3] == ['kill', '--signal', name] for c in self.calls()))
-                self.assertIn(['rm', '--force', '--ignore', 'owned-test-container-id'], self.calls())
+                self.assertIn(['rm', '--force', '--time', '0', '--ignore', OWNED_ID], self.calls())
             finally:
                 if proc.poll() is None:
                     proc.kill()

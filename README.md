@@ -18,6 +18,10 @@ complete the administrator steps in the
 [rootless setup guide](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/rootless_tutorial.md)
 before continuing.
 
+The host also needs GNU coreutils, including GNU `timeout` with kill-after
+support. The wrapper checks this prerequisite before session operations;
+`--container-help` remains usable without it.
+
 Check that local rootless Podman works:
 
 ```bash
@@ -43,6 +47,11 @@ Named `CONTAINER_CONNECTION` contexts, implicit remote contexts, TCP/SSH,
 Podman Machine, and rootful engines are unsupported. All bind sources and build
 paths must exist on the same Linux host at their original absolute paths.
 Unix transport alone does not prove that a forwarded service is on that host.
+Launch-engine and enabled delegation verification each require exactly one
+response record, with no terminator or one final LF. Additional blank or nonblank
+records, including extra trailing LF characters, stop startup before image
+inspection, explicit builds, or launch. Query failures remain failures even if
+stdout looks valid; delegated query errors identify the selected endpoint.
 The endpoint must contain an absolute socket pathname beyond `/`; `unix://`,
 `unix:///`, slash-only paths, and relative Unix paths fail before any engine
 query, even when delegation is disabled or a delegation override is supplied.
@@ -182,6 +191,27 @@ and `my-project-1`. Concurrent name collisions are retried up to 20 times;
 existing sessions are never deleted to free a name. INT, TERM, and HUP are
 forwarded to the owned container. The wrapper preserves process exit codes
 (including 125) and removes only its own container at termination.
+
+Shutdown has one 20-second budget. After forwarding a signal, the wrapper allows
+at most 5 seconds for graceful exit, then attempts forced removal with Podman's
+stop wait set to zero. Shutdown engine calls have a 2-second soft timeout and
+at most 1 further second before forced client termination, capped by the remaining
+overall budget. Local create/attach clients are also terminated and reaped within
+that budget. Normal application and build durations are unrestricted.
+
+The first terminal signal selects status 143 (TERM), 130 (INT), or 129 (HUP);
+later signals do not restart shutdown. Otherwise the application's exit status
+is retained, including zero and 125, even if cleanup fails. Failures are reported
+on stderr with the known container ID or session ownership label. If the engine
+cannot confirm removal, inspect that identity on the host with `podman inspect`
+or filter `podman ps --all --filter label=io.claude-container.session=SESSION`,
+replacing `SESSION` with the reported session token.
+Only remove a confirmed session container. A disconnected engine can finish
+creation after bounded recovery ends; a warning does not mean it was removed.
+
+Private per-attempt CID files and a unique session label support recovery when
+creation is interrupted before its client returns an ID. A workspace name alone
+never authorizes removal, and interrupted creation never starts the application.
 
 A TTY is allocated only when stdin and stdout are terminals. Redirected stdin,
 argument order, spaces, and empty arguments are preserved, supporting pipelines

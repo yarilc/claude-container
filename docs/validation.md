@@ -1,5 +1,36 @@
 # Validation record
 
+## Session lifecycle and response hardening: 2026-11-01
+
+The completed change is archived at
+`openspec/changes/archive/2026-11-01-harden-session-lifecycle-and-engine-responses/`
+with all 11 tasks complete. Both delta specifications were synchronized into
+the main specifications, and all seven main specifications passed
+`openspec validate --specs --strict` before archive. The named-change validation
+record below predates archive; use main-spec validation after archive.
+
+Checks for `harden-session-lifecycle-and-engine-responses` use synthetic state,
+UID/GID 1000, the existing built runtime image, and the same-host rootless Unix
+service. No credentials, login, paid model call, or authenticated internal
+sandbox operation is used. The pre-existing user edit to `.gitignore` is retained.
+The environment reports Linux 6.6.87.2-microsoft-standard-WSL2, Podman client
+4.3.1, server 4.9.3, and host GNU coreutils timeout 9.1.
+The image reports Claude Code 2.1.316, OpenSpec 1.16.0, Python 3.11.2,
+Bubblewrap 0.8.0, GNU nano 7.2, and Podman client 4.3.1. These version queries
+and runtime checks do not establish authenticated internal sandbox compatibility.
+
+| Check | Result | Evidence and limits |
+| --- | --- | --- |
+| Synthetic shutdown faults | Passed | Targeted regressions cover ignored TERM/INT/HUP, failed/stalled kill/removal (including TERM-ignoring control clients), first-signal status, exit 0/nonzero/125 preservation, no leaked fake clients, and owned temporary cleanup |
+| Interrupted creation | Passed | Synchronized interruption before/after CID publication recovers only session-owned identity; a foreign label result is rejected; collision retries and post-publication create failures retain correct status and cleanup |
+| Prerequisites and normal duration | Passed | Missing/unsupported GNU timeout is rejected before resources; help works without it; a 21-second build followed by a 21-second session succeeds without a normal-work deadline |
+| Initial runtime lifecycle probe | Failed | Podman's default 10-second forced-removal stop wait outlived the control-call deadline; the unrelated-session fixture also needed to close stdin before waiting for shell exit |
+| Corrected runtime lifecycle probe | Passed | `bash tests/run-runtime.sh -k bounded_signal`: readiness-synchronized cooperative and ignored TERM/INT/HUP in both state modes pass in 45.497 seconds, including owned-container disappearance and preservation of a concurrent unrelated session; forced removal now sets `--time 0` |
+| Exact verification records | Passed | Targeted synthetic tests accept zero/one final LF and reject empty, leading/embedded blank, extra trailing blank, and nonblank records at both query sites; failure after valid stdout remains a query error and all rejected cases gate image/build/create |
+| Response-mode composition | Passed | Shared/isolated state, Claude/shell, build/worktree, delegation off/on, endpoint precedence/remapping and host socket paths containing spaces pass targeted checks; disabled delegation performs no separate socket query |
+| Full runtime suite | Passed | `bash tests/run-runtime.sh`: all 13 tests pass in 134.869 seconds, including the new signal matrix plus existing image smoke, mounts, state, CA, worktree, delegation, child binds, concurrency, CLI and runtime permissions; fixture resources cleaned up |
+| Final synthetic and structural checks | Passed | 50 wrapper tests pass in 130.427 seconds on stable sources, including interruption of collision reconciliation; Bash syntax, whitespace including new planning files, and strict named-change OpenSpec validation pass; the pre-existing `.gitignore` diff is unchanged |
+
 ## Runtime defaults hardening: 2026-11-01
 
 The completed change is archived at
