@@ -15,7 +15,8 @@ Claude Code:
 - `openspec/` holds the OpenSpec project: `specs/` for the durable capability
   specs (for example `host-ca-trust`) and `changes/` for in-flight changes.
   Archived changes live in `changes/archive/`.
-- There are currently no separate source, test, or asset directories.
+- `tests/` contains synthetic wrapper checks and opt-in rootless runtime checks.
+- `docs/validation.md` records verified environments and unavailable checks.
 
 ## Build, Test, and Development Commands
 
@@ -29,12 +30,15 @@ bash -n claude-container.sh              # Validate Bash syntax
 git diff --check                         # Detect whitespace errors
 ```
 
-Host Podman is always required. Container access to its API is opt-in with
-the exact value `CLAUDE_CONTAINER_PODMAN=1`; only enabled sessions require a
-rootless Podman socket, for example:
-`podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock`.
-The wrapper queries that exact socket and requires a successful `true` rootless
-result before image operations or container startup.
+Host Podman is always required and its launch engine must verify as Linux and
+rootless. Local use requires no API socket with delegation off; explicit same-host
+Unix `CONTAINER_HOST` use verifies that launch service regardless of delegation.
+Reject named connections and TCP/SSH contexts. Delegation requires the exact value
+`CLAUDE_CONTAINER_PODMAN=1`. Select its endpoint by explicit
+`CLAUDE_CONTAINER_PODMAN_SOCKET`, Unix `CONTAINER_HOST`, then
+`${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. Verify that exact endpoint
+before image operations, requiring rootless `true` and an absolute reported host
+socket path; bind the latter when the wrapper sees a remapped socket.
 
 ## Coding Style & Naming Conventions
 
@@ -48,21 +52,22 @@ comments, help text, and user-facing messages in English.
 
 ## Testing Guidelines
 
-There is no test framework yet. Every script change must pass `bash -n` and
-`git diff --check`; when Podman is available, verify `--container-help`, Claude
-argument forwarding, image build, Claude startup, persistence of
-`~/.claude`, and a child `podman run` with `CLAUDE_CONTAINER_PODMAN=1`.
-Verify unset, empty, and values other than the exact string `1` omit the socket
-mount and `CONTAINER_HOST`, do not require a socket, and perform no API-service
-query. With `1`, verify both are present only after the exact exposed socket
-successfully reports `true` through `podman --remote --url ... info --format
-'{{.Host.Security.Rootless}}'`. Verify a missing/non-socket path, query failure,
-`false`, empty output, and unexpected output fail before image operations or
-launch, with actionable socket-specific errors. Check that a different default
-Podman endpoint cannot redirect the explicit verification query. Cover Claude
-and shell modes and composition with build and Git worktree options.
-Avoid embedding credentials or relying
-on a remote Git repository in tests.
+Run `python3 -m unittest discover -s tests -p test_wrapper.py -v`, `bash -n`
+on changed shell scripts, and `git diff --check`. Wrapper tests use synthetic
+HOME/configuration and fake Podman on executable native temporary storage;
+`CLAUDE_TEST_TMPDIR` overrides the temporary directory. No real credentials or
+remote Git repositories belong in tests.
+
+With a built image and rootless engine, run `CLAUDE_RUNTIME_TESTS=1 python3 -m
+unittest discover -s tests -p test_runtime.py -v` or `bash tests/run-runtime.sh`.
+The latter uses disposable native state and same-host Unix service access;
+`--wrapper` runs wrapper tests there if host Python is unavailable. Verify both
+state modes, privacy failures, escaped symlinks, exact disabled socket values,
+endpoint precedence/remapping, shell/build/worktree composition, all four
+YOLO/socket combinations, engine errors, argument/stdin forwarding, name races,
+exit codes, signals, and owned cleanup. Disabled delegation skips separate
+endpoint checks, not mandatory launch-engine verification. Record runtime and
+internal sandbox checks as passed, failed, or unavailable with versions.
 
 Changes to host CA handling must also verify both modes: with
 `CLAUDE_CONTAINER_TRUST_HOST_CA` unset, no CA mount or CA variables are
@@ -89,8 +94,17 @@ service can resolve child bind mounts correctly. Claude configuration is
 intentionally writable because it contains its credentials and session state.
 
 Expose the host Podman API socket only with `CLAUDE_CONTAINER_PODMAN=1`.
-This grants access to containers and volumes available to the host Podman user.
+This grants control over containers, volumes, and additional host bind mounts
+available to the service user, beyond the selected workspace.
 
 Host CA trust is opt-in. Mount only the selected CA bundle file, read-only, at
 `/claude-home/ca/bundle.pem`. Never mount the host certificate directory
 (`/etc/ssl/certs/`), and never make it writable from the container.
+
+Keep `~/.claude`/`CLAUDE_CONFIG_DIR` and shared host OpenSpec configuration as
+the default. Nonempty `CLAUDE_CONTAINER_STATE_DIR` selects an isolated writable
+home and conflicts with nonempty host `CLAUDE_CONFIG_DIR`. Create private state,
+validate ownership/access/modes, and reject isolated configuration paths escaping
+that home. Do not recursively repair permissions or import credentials. Keep
+`noexec` tmpfs and standard seccomp/SELinux policy; do not automatically relabel
+host binds or add privileges to make an internal sandbox work.

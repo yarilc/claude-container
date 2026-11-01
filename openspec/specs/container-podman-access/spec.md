@@ -19,29 +19,34 @@ The wrapper SHALL grant access to the host Podman API only when `CLAUDE_CONTAINE
 - **AND** it does not mount the host Podman socket or set `CONTAINER_HOST` in the container
 
 #### Scenario: Access is explicitly enabled
-- **GIVEN** `/run/user/<caller-uid>/podman/podman.sock` is a Unix socket serving a reachable engine that reports rootless operation
+- **GIVEN** the selected Unix socket serves a reachable engine that reports rootless operation and an absolute host-side socket path
 - **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
-- **THEN** it mounts that socket at `/run/podman/podman.sock`
+- **THEN** it mounts the service-reported host-side socket at `/run/podman/podman.sock`
 - **AND** it sets `CONTAINER_HOST=unix:///run/podman/podman.sock` in the container
 
 ### Requirement: Socket validation is conditional
-The wrapper SHALL validate the existing rootless host socket path only when Podman API access is enabled. Disabled access SHALL NOT require an API socket or query its service. Enabled access with a missing or non-socket path SHALL fail before starting the container with an actionable message identifying the socket path.
+The wrapper SHALL validate the selected delegation socket only when Podman API access is enabled. Disabled delegation SHALL NOT require or query that endpoint separately from mandatory launch-engine verification. An enabled missing, non-socket, or inaccessible endpoint SHALL fail before image operations or launch with an actionable path-specific error.
 
 #### Scenario: Disabled access without an API socket
-- **GIVEN** the rootless host API socket does not exist and host Podman can otherwise run containers
+- **GIVEN** the delegation socket does not exist and local host Podman can otherwise run containers
 - **WHEN** the wrapper starts without `CLAUDE_CONTAINER_PODMAN=1`
 - **THEN** socket absence does not prevent the wrapper from launching its container
-- **AND** the wrapper does not query the API service
+- **AND** the wrapper verifies the launch engine without querying the delegation service
 
 #### Scenario: Enabled access without a valid socket
-- **GIVEN** the expected rootless host socket path is missing or is not a Unix socket
+- **GIVEN** the selected socket path is missing, is not a Unix socket, or is inaccessible
 - **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
-- **THEN** it exits with a non-zero status before starting the container
-- **AND** its error names the socket path and explains how to start the API service
+- **THEN** it exits with a nonzero status before image operations or starting the container
+- **AND** its error names the socket path and explains how to check or start the API service
 
 #### Scenario: Disabled values skip service verification
 - **WHEN** `CLAUDE_CONTAINER_PODMAN` is unset, empty, or any value other than the exact string `1`
-- **THEN** the wrapper performs no API-service verification and supplies neither the socket mount nor container `CONTAINER_HOST`
+- **THEN** the wrapper performs no separate delegation-endpoint verification and supplies neither the socket mount nor container `CONTAINER_HOST`
+- **AND** an invalid delegation-socket override is ignored
+
+#### Scenario: Wrapper uses a Unix launch service without delegation
+- **WHEN** the wrapper uses an explicit same-host Unix launch service with delegation disabled
+- **THEN** it verifies that launch engine but does not expose the launch socket inside the session
 
 ### Requirement: Access policy applies across launch modes
 The wrapper SHALL apply the same access policy in Claude and `--container-shell` modes, including when combined with `--container-build` or `--container-git-worktree`. Host Podman SHALL remain required for image operations and launching the outer container regardless of the opt-in.
@@ -60,52 +65,85 @@ The wrapper SHALL apply the same access policy in Claude and `--container-shell`
 - **THEN** it fails with the existing host Podman prerequisite error
 
 ### Requirement: Document the optional authority grant
-Wrapper help and the README SHALL document `CLAUDE_CONTAINER_PODMAN=1`, the disabled default, and exact-value semantics. The README SHALL distinguish the host Podman prerequisite from the optional API socket, explain the authority granted by enabling access, and show how existing child-container workflows migrate.
+Wrapper help and README SHALL document exact `CLAUDE_CONTAINER_PODMAN=1`, the disabled default, endpoint selection, and remapped socket support. They SHALL distinguish launch-engine verification from delegation verification, explain that delegation permits host mounts beyond the workspace, and show migration for child-container workflows.
 
 #### Scenario: Discover and enable access
 - **WHEN** a user reads wrapper help and README usage instructions
 - **THEN** the exact enabling value and disabled default are stated
-- **AND** the README shows `CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh` and explains that API socket setup is needed only for enabled access
-- **AND** the README explains that enabling access grants control over containers and volumes available to the host Podman user
+- **AND** the README shows `CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh` and explains that delegation socket setup is needed only for enabled access
+- **AND** it explains control over the service user's containers, volumes, and additional host bind mounts beyond the workspace
 
 #### Scenario: Explain enforced rootless verification
 - **WHEN** a user reads wrapper help and README instructions for enabled access
-- **THEN** they learn that the socket must serve a reachable rootless engine and that failed verification blocks startup
-- **AND** the README shows how to query rootless status through the exact socket and recover from service or rootful-engine failures
+- **THEN** they learn that the selected socket must serve a reachable rootless engine and report an absolute host-side socket path, and failed verification blocks startup
+- **AND** the README shows how to query the selected socket and recover from service or rootful-engine failures
+
+#### Scenario: Endpoint migration reviewed
+- **WHEN** a user reads the endpoint instructions
+- **THEN** precedence, same-host path requirements, and an explicit override to pin an endpoint are documented
+- **AND** the mandatory launch-engine check is distinguished from optional delegation verification
 
 ### Requirement: Exposed Podman service must report rootless operation
-With API access enabled, the wrapper SHALL query the service through the exact Unix socket it will expose and proceed only if the query succeeds and reports rootless operation as `true`. A failed query or any other result SHALL cause a non-zero exit before image operations or container startup, with an actionable error identifying the socket and whether the service could not be queried or did not affirm rootless operation.
+With API access enabled, the wrapper SHALL explicitly query the selected Unix endpoint and require successful rootless `true` and an absolute service-reported host socket path. Query failure or an invalid result SHALL fail before image operations or launch with an actionable error identifying the endpoint. The host-side path SHALL be the bind source exposed at `/run/podman/podman.sock`.
 
 #### Scenario: Rootless service is verified
-- **GIVEN** the expected Unix socket exists and its service successfully reports rootless operation as `true`
+- **GIVEN** the selected Unix socket exists and its service reports rootless `true` and an absolute host socket path
 - **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
 - **THEN** verification succeeds before image operations and container startup
-- **AND** the existing socket mount and container `CONTAINER_HOST` are supplied
+- **AND** the service-reported socket mount and container `CONTAINER_HOST` are supplied
 
 #### Scenario: Rootful service is rejected
-- **GIVEN** the expected Unix socket exists and its service reports rootless operation as `false`
+- **GIVEN** the selected Unix socket exists and its service reports rootless operation as `false`
 - **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
-- **THEN** it exits non-zero before image operations or container startup
+- **THEN** it exits nonzero before image operations or container startup
 - **AND** the error identifies the socket and explains that a rootless service is required
 
 #### Scenario: Unreachable service is rejected
-- **GIVEN** the expected Unix socket exists but the service query fails
+- **GIVEN** the selected Unix socket exists but the service query fails
 - **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
-- **THEN** it exits non-zero before image operations or container startup
+- **THEN** it exits nonzero before image operations or container startup
 - **AND** the error identifies the socket and directs the user to check the service and access permissions
 
 #### Scenario: Unrecognized service result is rejected
 - **GIVEN** the service query succeeds but returns an empty or unexpected rootless result
 - **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
-- **THEN** it exits non-zero before image operations or container startup because rootless operation was not confirmed
+- **THEN** it exits nonzero before image operations or container startup because rootless operation was not confirmed
 - **AND** the error identifies the socket and explains the rootless requirement
 
 #### Scenario: Verification targets the exposed endpoint
-- **GIVEN** the default Podman client configuration points at a different service
+- **GIVEN** default Podman configuration points at a different service from the selected delegation endpoint
 - **WHEN** the wrapper verifies enabled API access
-- **THEN** verification queries `/run/user/<caller-uid>/podman/podman.sock` explicitly and uses that service's result
+- **THEN** verification explicitly queries the selected Unix endpoint and uses that service's result
 
 #### Scenario: Verification applies in all enabled launch modes
 - **WHEN** enabled access is used in Claude or shell mode, including with `--container-build` and `--container-git-worktree`
 - **THEN** the same service verification gates image operations and container startup
 - **AND** a failed verification prevents even an explicitly requested image build
+
+#### Scenario: Socket is remapped in the wrapper container
+- **GIVEN** the wrapper reaches a same-host service through a remapped Unix path
+- **WHEN** the selected endpoint reports a different absolute host-side socket path
+- **THEN** the outer launch binds that host-side path rather than the client-visible path
+
+#### Scenario: Host socket path is invalid
+- **WHEN** an enabled delegation endpoint reports rootless `true` but a missing or relative host socket path
+- **THEN** startup fails before image operations with a socket-specific diagnostic
+
+### Requirement: Delegation endpoint selection
+When delegation is enabled, the wrapper SHALL select a nonempty `CLAUDE_CONTAINER_PODMAN_SOCKET` first, then an explicit Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<caller-uid>}/podman/podman.sock`. It SHALL require an absolute accessible socket path and resolve its physical path. Selection SHALL NOT retarget the engine used to launch the outer container.
+
+#### Scenario: Explicit override wins
+- **WHEN** a socket override, Unix launch endpoint, and runtime directory are all configured
+- **THEN** delegation verification explicitly targets the socket override without changing the launch endpoint
+
+#### Scenario: Unix launch endpoint reused
+- **WHEN** no socket override is set and an explicit Unix launch endpoint is configured
+- **THEN** that endpoint is selected for delegation verification
+
+#### Scenario: Runtime directory fallback
+- **WHEN** neither an override nor a Unix launch endpoint is configured
+- **THEN** the socket is selected under `XDG_RUNTIME_DIR`, falling back to `/run/user/<caller-uid>` when unset or empty
+
+#### Scenario: Relative override rejected
+- **WHEN** delegation is enabled and its selected socket path is relative
+- **THEN** startup fails with an absolute-path requirement before image operations

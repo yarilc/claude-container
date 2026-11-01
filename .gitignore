@@ -1,2 +1,5 @@
 .claude
 .agents/
+
+.test-state/
+__pycache__/

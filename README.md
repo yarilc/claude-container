@@ -34,9 +34,27 @@ This setup is required only when launching with `CLAUDE_CONTAINER_PODMAN=1`.
 For ordinary sessions, skip to Usage; host Podman is still required to build
 images and launch the outer container, but its API socket is not required.
 
-When access is enabled, the wrapper requires the host API socket at exactly
-`/run/user/$(id -u)/podman/podman.sock`. It does not use a custom
-`XDG_RUNTIME_DIR` to locate it. Choose **one** of the following methods.
+Every session verifies that its launch engine is Linux and rootless before
+image inspection, build, or launch. Local Podman needs no API service when
+delegation is disabled. An explicit same-host Unix `CONTAINER_HOST` is also
+supported, including when this wrapper runs inside another container; launch
+verification then queries that service even without delegating it to Claude.
+Named `CONTAINER_CONNECTION` contexts, implicit remote contexts, TCP/SSH,
+Podman Machine, and rootful engines are unsupported. All bind sources and build
+paths must exist on the same Linux host at their original absolute paths.
+Unix transport alone does not prove that a forwarded service is on that host.
+
+When delegation is enabled, the selected socket is the first of:
+
+1. Nonempty `CLAUDE_CONTAINER_PODMAN_SOCKET` (absolute path, without `unix://`).
+2. The wrapper's explicit Unix `CONTAINER_HOST` (with `unix://` removed).
+3. `${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock`.
+
+The socket must be accessible and serve a rootless engine that reports an
+absolute host-side socket path. With a remapped socket, the wrapper queries the
+client-visible path and binds the reported host-side path into the session.
+The launch and delegation services must be on the same host; a delegation
+override does not change the launch engine. Choose **one** setup method below.
 
 ### With a systemd user session
 
@@ -102,12 +120,15 @@ For either method, run these commands as the same user in the terminal where
 you will launch the wrapper:
 
 ```bash
-test -S "/run/user/$(id -u)/podman/podman.sock" && echo "Socket exists"
-podman --remote --url "unix:///run/user/$(id -u)/podman/podman.sock" info --format '{{.Host.Security.Rootless}}'
+podman_socket="${CLAUDE_CONTAINER_PODMAN_SOCKET:-${CONTAINER_HOST#unix://}}"
+podman_socket="${podman_socket:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}"
+test -S "$podman_socket" && echo "Socket exists"
+podman --remote --url "unix://$podman_socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}'
 ```
 
 Continue only if the socket exists and the API command succeeds and prints
-`true`. With `CLAUDE_CONTAINER_PODMAN=1`, the wrapper enforces this check through
+`true` followed by an absolute host-side socket path. With
+`CLAUDE_CONTAINER_PODMAN=1`, the wrapper enforces this check through
 that exact socket before image operations or container startup. A socket file
 alone does not prove that a service is listening or that its engine is rootless.
 If the API command fails, check the systemd status or foreground service output
@@ -143,12 +164,20 @@ The wrapper handles `--container-build`, `--container-shell`,
 forwarded unchanged, so normal commands such as `claude --help` and
 `claude resume --last` retain their meaning.
 
-Each container is named from the last component of the current directory and
-the next highest numeric index among running instances, for example
-`my-project-0` and `my-project-1`.
+Each container reserves a name from the physical current directory and the
+next numeric index among all existing instances, for example `my-project-0`
+and `my-project-1`. Concurrent name collisions are retried up to 20 times;
+existing sessions are never deleted to free a name. INT, TERM, and HUP are
+forwarded to the owned container. The wrapper preserves process exit codes
+(including 125) and removes only its own container at termination.
 
-`CLAUDE_YOLO=1` starts Claude with `--dangerously-skip-permissions`, disabling
-all Claude permission checks. Use it only when the container and mounts are a
+A TTY is allocated only when stdin and stdout are terminals. Redirected stdin,
+argument order, spaces, and empty arguments are preserved, supporting pipelines
+and headless CLI use. Shell mode ignores Claude arguments and YOLO injection.
+`--container-help` requires no engine and creates no state.
+
+`CLAUDE_YOLO=1` adds `--dangerously-skip-permissions` for that session. Use it
+only when the container and mounts are a
 trusted environment.
 
 ### Allowing Podman access inside the container
@@ -163,13 +192,16 @@ CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh --container-shell
 
 Only the exact value `1` enables access. An unset or empty variable, `0`,
 `true`, `yes`, and every other value disable access without an error. When
-disabled, the wrapper skips socket validation and service queries, does not mount
-the host socket, and does not set `CONTAINER_HOST` inside the container. When enabled, it mounts
+disabled, the wrapper skips delegation-endpoint validation and separate queries,
+does not mount the host socket, and does not set `CONTAINER_HOST` inside the
+container. When enabled, it mounts
 the socket at `/run/podman/podman.sock` and sets
 `CONTAINER_HOST=unix:///run/podman/podman.sock` in both Claude and shell modes.
+Mandatory launch-engine verification still runs in either mode.
 A missing or invalid socket stops an enabled launch with setup instructions.
-The wrapper also queries the exposed service and accepts only a successful
-`true` rootless result. An unreachable service, rootful engine, or unexpected
+The wrapper also queries the selected service and accepts only a successful
+`true` rootless result and an absolute host-side socket path. An unreachable
+service, rootful engine, or unexpected
 result stops the launch before any image check, build, or container startup.
 
 Migration: earlier versions always exposed the host Podman socket. Existing
@@ -247,24 +279,88 @@ instead; the container's working directory remains the original current
 directory. Preserving absolute paths is required because bind mounts requested
 by child containers are resolved by the host Podman service.
 
-Claude configuration defaults to `~/.claude`, or to `CLAUDE_CONFIG_DIR` when
-set. It is mounted read/write at `/claude-home/.claude`, and
-`CLAUDE_CONFIG_DIR` is set accordingly inside the container. This preserves
-Claude settings, credentials, session history, plugins, and other persistent
-state.
+Claude configuration defaults to `~/.claude`, or `CLAUDE_CONFIG_DIR` when
+nonempty, mounted read/write at `/claude-home/.claude`. Host
+`~/.config/openspec` is also mounted read/write at
+`/claude-home/.config/openspec`. The rest of `/claude-home` remains read-only
+in this shared mode. Credentials, plugins, history, and settings remain shared
+with host Claude; the agent can read and change these mounted files.
 
-The container root filesystem is read-only. The selected workspace mount and
-Claude configuration directory are writable persistent mounts. The existing
-OpenSpec configuration path is also mounted read/write; `/tmp` and `/run` are
-ephemeral tmpfs mounts.
+### Optional isolated home
 
-With `CLAUDE_CONTAINER_PODMAN=1`, the Podman socket gives Claude control over
-containers and volumes available to the host Podman user. The wrapper does
-not use `--privileged`. By default,
-it does not mount the user's full home directory. With
-`--container-git-worktree`, the selected parent can be the home directory, and
-all files beneath that parent are writable through the workspace mount. Use
-the option from a directory whose parent you intend to expose.
+Set a nonempty `CLAUDE_CONTAINER_STATE_DIR` to mount a dedicated writable home
+at `/claude-home`, without adding the shared Claude/OpenSpec mounts:
+
+```bash
+unset CLAUDE_CONFIG_DIR
+CLAUDE_CONTAINER_STATE_DIR="$HOME/.local/share/claude-container/home" ./claude-container.sh
+```
+
+Inside the container, `HOME=/claude-home` and
+`CLAUDE_CONFIG_DIR=/claude-home/.claude` in both modes. In isolated mode,
+`.claude`, `.config/openspec`, caches, and other home data persist under the
+selected directory. A simultaneous nonempty `CLAUDE_CONFIG_DIR` is rejected;
+unset it to select isolation. Unset/empty `CLAUDE_CONTAINER_STATE_DIR` keeps the
+shared default. A directory alias is resolved to its physical absolute path.
+Existing isolated configuration symlinks escaping the selected home are rejected.
+
+New credential directories are created with user-only permissions. The shared
+Claude directory, or isolated home and its `.claude` directory, must belong to
+the caller, allow read/write/search, and deny group/other access. Existing
+permissions are never changed recursively. If startup rejects a directory,
+inspect it and explicitly use `chmod 700` on the named directory, or select
+private native Linux storage if the filesystem ignores Unix modes (some WSL
+Windows-backed mounts do). Directory checks do not recursively audit old files,
+encrypt state, or hide credentials from the agent using them.
+
+To migrate, stop sessions and use a new private dedicated directory. Either
+sign in afresh or deliberately copy selected files from the previous Claude
+configuration into `<state>/.claude` and selected OpenSpec configuration into
+`<state>/.config/openspec`. Preserve private file permissions, protect backups,
+and do not overwrite an existing profile or copy the whole host home. The
+wrapper never imports, merges, or deletes profiles automatically. To return to
+shared state, unset `CLAUDE_CONTAINER_STATE_DIR` and restore any previous
+`CLAUDE_CONFIG_DIR`; dedicated state remains on disk.
+
+### Authority and security policies
+
+The root filesystem is read-only; selected workspace/state mounts are writable.
+`/tmp` and `/run` are ephemeral tmpfs mounts with `nosuid,nodev,noexec` and limits
+of 256 MiB and 16 MiB. The optional host CA remains a single read-only file.
+No full host home, SSH agent, desktop bus, or keyring is added automatically.
+A selected workspace or worktree parent can itself contain those host files;
+a parent of `$HOME` or `/` exposes that entire directory read/write.
+
+**With `CLAUDE_CONTAINER_PODMAN=1`, Claude can control the service user's
+containers and volumes and request new host bind mounts beyond the workspace.**
+The socket removes the project-only filesystem boundary. To pin the old endpoint
+explicitly, use `CLAUDE_CONTAINER_PODMAN_SOCKET=/run/user/$(id -u)/podman/podman.sock`
+alongside `CLAUDE_CONTAINER_PODMAN=1`; runtime-directory or Unix launch endpoint
+settings otherwise affect selection.
+
+YOLO, Claude's internal sandbox, and outer container isolation are separate.
+YOLO and socket delegation are independent, in either state mode:
+
+| `CLAUDE_YOLO` | `CLAUDE_CONTAINER_PODMAN` | Wrapper additions |
+| --- | --- | --- |
+| disabled | disabled | No bypass flag or socket |
+| enabled | disabled | Bypass flag only |
+| disabled | `1` | Socket only |
+| enabled | `1` | Bypass flag and socket |
+
+YOLO accepts `1/true/yes` and `0/false/no` case-insensitively; empty means disabled
+and invalid values fail before image operations. Socket access keeps its exact
+`1` rule. Disabling YOLO does not neutralize native flags or saved permission
+settings. The wrapper does not filter network egress.
+
+Standard seccomp and SELinux policy remain in force. The wrapper adds no
+privileged mode, capabilities, custom security profiles, disabled labels, or
+automatic bind relabeling (the former OpenSpec `:z` option is removed). If host
+policy denies a bind, the engine error is reported; configure host policy
+explicitly. An internal sandbox failure does not relax these policies or tmpfs
+options. `bwrap --version`, namespace probes, or a zero CLI exit status alone do
+not prove a sandboxed tool operation succeeded. See [validation](docs/validation.md)
+for tested environments, results, and outstanding checks.
 
 ## Included tools
 
@@ -276,3 +372,24 @@ containers.
 The image includes the `nano` editor, and `EDITOR` and `VISUAL` are set to
 `nano`, so commands that open an editor, such as `/memory`, work inside the
 container. The host's `EDITOR` and `VISUAL` are not forwarded.
+
+## Verification
+
+```bash
+bash -n claude-container.sh
+python3 -m unittest discover -s tests -p test_wrapper.py -v
+CLAUDE_RUNTIME_TESTS=1 python3 -m unittest discover -s tests -p test_runtime.py -v
+bash tests/run-runtime.sh
+git diff --check
+```
+
+Wrapper tests use synthetic HOME/state and a fake Podman, without host
+credentials or a real engine. They need executable temporary storage with Unix
+permissions; set `CLAUDE_TEST_TMPDIR` to a suitable native Linux directory when
+`/tmp` is `noexec`. Runtime tests are opt-in and require a built image and a
+rootless engine. The runner uses a disposable native Linux volume for state,
+preserves host absolute paths, and removes only its own test resources; it can
+also run the wrapper tests via `bash tests/run-runtime.sh --wrapper` when host
+Python is unavailable. No automated test uses real credentials or paid model
+requests. Image absence triggers a build; inspection errors stop startup rather
+than causing an accidental rebuild. Explicit builds retain normal caching.
