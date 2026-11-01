@@ -43,6 +43,9 @@ Named `CONTAINER_CONNECTION` contexts, implicit remote contexts, TCP/SSH,
 Podman Machine, and rootful engines are unsupported. All bind sources and build
 paths must exist on the same Linux host at their original absolute paths.
 Unix transport alone does not prove that a forwarded service is on that host.
+The endpoint must contain an absolute socket pathname beyond `/`; `unix://`,
+`unix:///`, slash-only paths, and relative Unix paths fail before any engine
+query, even when delegation is disabled or a delegation override is supplied.
 
 When delegation is enabled, the selected socket is the first of:
 
@@ -153,6 +156,15 @@ chmod +x claude-container.sh
 CLAUDE_YOLO=1 ./claude-container.sh
 ```
 
+Automatic builds and `--container-build` use the directory beside the resolved
+wrapper script. `.containerignore` excludes all local content except
+`Containerfile` and `.containerignore`, since the recipe currently needs no
+local `COPY` or `ADD` inputs. Git metadata, Claude configuration, custom state
+directories, environment files, caches, and unrelated files are excluded from
+the build context. Add any future intentional local build inputs to that
+allowlist together with the recipe change. Runtime workspace mounts are
+independent of this build-context filter.
+
 The wrapper can replace `claude` through a shell alias:
 
 ```bash
@@ -193,9 +205,10 @@ CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh --container-shell
 Only the exact value `1` enables access. An unset or empty variable, `0`,
 `true`, `yes`, and every other value disable access without an error. When
 disabled, the wrapper skips delegation-endpoint validation and separate queries,
-does not mount the host socket, and does not set `CONTAINER_HOST` inside the
-container. When enabled, it mounts
-the socket at `/run/podman/podman.sock` and sets
+does not mount the host socket, and explicitly removes `CONTAINER_HOST` from
+the container environment, including image or engine defaults. The host client
+retains any Unix `CONTAINER_HOST` needed to launch the session. When enabled,
+it mounts the socket at `/run/podman/podman.sock` and sets
 `CONTAINER_HOST=unix:///run/podman/podman.sock` in both Claude and shell modes.
 Mandatory launch-engine verification still runs in either mode.
 A missing or invalid socket stops an enabled launch with setup instructions.
@@ -313,6 +326,12 @@ private native Linux storage if the filesystem ignores Unix modes (some WSL
 Windows-backed mounts do). Directory checks do not recursively audit old files,
 encrypt state, or hide credentials from the agent using them.
 
+The wrapper applies `umask 077` only while creating state directories, preserving
+the caller's umask for subsequent host commands. This does not set the container
+process umask or guarantee private modes for files created inside a session;
+those modes depend on the runtime and the application. Directory privacy checks
+and measured runtime file modes are separate guarantees.
+
 To migrate, stop sessions and use a new private dedicated directory. Either
 sign in afresh or deliberately copy selected files from the previous Claude
 configuration into `<state>/.claude` and selected OpenSpec configuration into
@@ -325,8 +344,13 @@ shared state, unset `CLAUDE_CONTAINER_STATE_DIR` and restore any previous
 ### Authority and security policies
 
 The root filesystem is read-only; selected workspace/state mounts are writable.
-`/tmp` and `/run` are ephemeral tmpfs mounts with `nosuid,nodev,noexec` and limits
-of 256 MiB and 16 MiB. The optional host CA remains a single read-only file.
+Automatic read-only tmpfs provisioning is disabled. `/tmp`, `/run`, and
+`/var/tmp` are explicit ephemeral tmpfs mounts with `nosuid,nodev,noexec` and
+limits of 256 MiB, 16 MiB, and 256 MiB respectively. `/tmp` and `/var/tmp` have
+sticky mode `1777`. Their contents disappear when the container is removed.
+`/var/tmp` is now explicitly bounded and prevents direct execution, so tools
+must not depend on executable temporary files there. No writable `/var/log`
+mount is added. The optional host CA remains a single read-only file.
 No full host home, SSH agent, desktop bus, or keyring is added automatically.
 A selected workspace or worktree parent can itself contain those host files;
 a parent of `$HOME` or `/` exposes that entire directory read/write.

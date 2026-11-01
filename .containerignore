@@ -1,0 +1,5 @@
+# The current recipe installs everything without local COPY/ADD inputs.
+# Add deliberate local build inputs here when the recipe starts using them.
+**
+!Containerfile
+!.containerignore

@@ -18,7 +18,7 @@ Except for wrapper help, the wrapper SHALL verify that the engine used for image
 - **THEN** the wrapper exits nonzero with an actionable engine error before image operations or launch
 
 ### Requirement: Supported launch contexts
-The wrapper SHALL support local Podman and an explicitly selected absolute Unix `CONTAINER_HOST` on the same Linux host. It SHALL reject named connections, TCP/SSH endpoints, and implicit remote contexts. Documentation SHALL require bind sources and build paths to exist at their original absolute paths on that host.
+The wrapper SHALL support local Podman and an explicit same-host absolute Unix `CONTAINER_HOST` with a socket pathname beyond `/`. It SHALL reject named connections, TCP/SSH endpoints, implicit remote contexts, and pathless Unix endpoints; malformed explicit endpoints SHALL fail before any engine query. Documentation SHALL require bind sources and build paths to exist at their original absolute host paths.
 
 #### Scenario: Explicit same-host Unix service
 - **WHEN** the wrapper runs inside a container using an explicit Unix service endpoint on the same host
@@ -27,6 +27,19 @@ The wrapper SHALL support local Podman and an explicitly selected absolute Unix 
 #### Scenario: Unsupported context
 - **WHEN** `CONTAINER_CONNECTION` is nonempty, `CONTAINER_HOST` uses TCP/SSH, or the engine reports remote operation without an explicit Unix endpoint
 - **THEN** startup fails before image operations with supported-context guidance
+
+#### Scenario: Unix endpoint lacks a socket pathname
+- **WHEN** `CONTAINER_HOST` is `unix://`, `unix:///`, or names only slash characters after the scheme
+- **THEN** startup fails with an absolute socket-path diagnostic before querying Podman or performing image operations
+- **AND** the rejection applies with delegation enabled or disabled, including an explicit delegation-socket override
+
+#### Scenario: Relative Unix endpoint
+- **WHEN** `CONTAINER_HOST` is a Unix endpoint with a relative path
+- **THEN** startup fails before querying Podman with guidance to use an absolute socket pathname
+
+#### Scenario: Help ignores invalid launch configuration
+- **WHEN** `--container-help` is requested with a pathless Unix endpoint
+- **THEN** help succeeds without contacting an engine or creating state
 
 ### Requirement: Transparent invocation and terminal handling
 The wrapper SHALL preserve the order, spaces, and empty values of forwarded Claude arguments. It SHALL preserve stdin and allocate a TTY only when stdin and stdout are terminals. Shell mode SHALL start Bash with the selected mounts and identity, without Claude arguments or wrapper-injected YOLO flags.
@@ -83,3 +96,17 @@ Concurrent sessions SHALL reserve distinct workspace-index names without removin
 #### Scenario: Unrelated creation failure
 - **WHEN** container creation fails without a name collision
 - **THEN** the wrapper reports the original failure and removes no unrelated containers
+
+### Requirement: Minimal image build context
+Automatic and explicit image builds SHALL exclude repository metadata, local credentials and state, caches, and unrelated project files from the build context. The build recipe and explicitly required build inputs SHALL remain available. This filtering SHALL apply when the wrapper is invoked through a symlink or outside its repository.
+
+#### Scenario: Sensitive and unrelated files are excluded
+- **GIVEN** a synthetic build context contains Git metadata, Claude configuration, isolated state, environment files, caches, and an unrelated nested file
+- **WHEN** the repository's build-context filtering is applied
+- **THEN** those files are unavailable to build instructions consuming the context
+- **AND** the Containerfile remains available
+
+#### Scenario: Both wrapper build paths use the filter
+- **WHEN** an absent image triggers an automatic build or `--container-build` requests a refresh from another working directory
+- **THEN** both builds use the filtered context beside the resolved wrapper script
+- **AND** build failures retain their existing status and prevent launch

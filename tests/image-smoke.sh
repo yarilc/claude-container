@@ -16,7 +16,7 @@ nano --version >/dev/null
 [[ "$HOME" == /claude-home && "$CLAUDE_CONFIG_DIR" == /claude-home/.claude ]]
 [[ -w "$CLAUDE_CONFIG_DIR" && -w /tmp && ! -w /usr ]]
 findmnt --noheadings --output OPTIONS --target / | grep -Eq '(^|,)ro(,|$)'
-for path in /tmp /run; do
+for path in /tmp /run /var/tmp; do
     options=$(findmnt --noheadings --output OPTIONS --target "$path")
     for flag in nosuid nodev noexec; do
         [[ ",$options," == *",$flag,"* ]]

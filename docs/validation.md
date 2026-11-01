@@ -1,5 +1,40 @@
 # Validation record
 
+## Runtime defaults hardening: 2026-11-01
+
+The completed change is archived at
+`openspec/changes/archive/2026-11-01-harden-container-runtime-defaults/` with
+all 16 tasks complete. Its four delta specifications were synchronized into
+the main specifications, and all seven main specifications passed
+`openspec validate --specs --strict` before archive. The named-change validation
+record below predates archive; use main-spec validation after archive.
+
+Checks for `harden-container-runtime-defaults` run as UID/GID 1000 on Linux
+6.6.87.2-microsoft-standard-WSL2, with Podman client 4.3.1 and server 4.9.3.
+The same-host Unix service is now reachable and reports Linux rootless operation.
+This is a later environment than the unavailable-service checks below; historical
+results remain unchanged. All new checks use synthetic state and no model calls.
+
+The rebuilt image reports Claude Code 2.1.316, OpenSpec 1.16.0, Python 3.11.2,
+Bubblewrap 0.8.0, GNU nano 7.2, and Podman client 4.3.1. These versions were
+queried directly from the new image without credentials or an authenticated
+sandbox operation. No new internal sandbox compatibility conclusion is claimed.
+
+| Check | Result | Evidence and limits |
+| --- | --- | --- |
+| Pathless launch endpoints | Passed | Synthetic checks reject pathless/slash-only/relative Unix endpoints before any Podman call with delegation off/on and overrides; help remains side-effect free |
+| Disabled delegation environment | Passed | `bash tests/run-runtime.sh -k delegation_clears` builds a disposable image defining `CONTAINER_HOST`; all four state/delegation combinations verify absence when disabled and the fixed endpoint plus rootless service access when enabled; fixture image and volume cleaned up |
+| Host endpoint preservation | Passed | Synthetic client asserts its original Unix `CONTAINER_HOST` on every Podman call; runtime runner uses a remapped Unix launch endpoint throughout |
+| Explicit temporary mounts | Passed | `bash tests/run-runtime.sh -k explicit_temporary` verifies tmpfs type, flags and exact sizes for `/tmp`, `/run`, `/var/tmp`, sticky modes, writes and direct execution denial on `/tmp` and `/var/tmp`, disappearance across sessions, and `/var/log` write denial in both state modes with delegation off/on |
+| Scoped host umask | Passed | Synthetic tests observe caller masks `0022` and `0002` at build/create/start/cleanup calls, while every newly created state directory remains `0700` |
+| Measured runtime permissions | Passed | `bash tests/run-runtime.sh -k runtime_permissions` observes container umask `0022`, ordinary file mode `0644`, directory mode `0755`, and private state `0700` in both state modes under host masks `0022` and `0002`; the wrapper does not override container umask |
+| Build-context filtering | Passed | `bash tests/run-runtime.sh -k build_context` applies the actual `.containerignore` to a disposable synthetic context; real `COPY .` plus a builder assertion sees only `Containerfile` and `.containerignore`, excluding metadata, credentials/state, environment files, caches, and unrelated nested paths; owned fixture image and runner volume cleaned up |
+| Production image build | Passed | `podman build --tag localhost/claude-code:latest --file /mnt/d/Workspace/sandboxes/claude-container/Containerfile /mnt/d/Workspace/sandboxes/claude-container` succeeds with filtering; resulting image ID `e5c37c049ca9d38c9c3165ad91d5b1ea077e55a9adf69071451d49f0210331e0`; the build reports ambient capability warnings but completes without added privileges |
+| Integrated synthetic checks | Passed | 37 wrapper tests pass; Bash syntax checks on wrapper, smoke script, and runner, whitespace checks including new files, and strict OpenSpec change validation pass |
+| Initial full runtime run | Failed in fixture cleanup | All runtime assertions completed, but removal of the isolated CA fixture raised `PermissionError` because the engine created its mount parent with a mapped root owner; reproduced by the targeted CA test |
+| Corrected CA fixture | Passed | The test now creates only its own synthetic isolated CA mount parent as caller-owned `0700`; `bash tests/run-runtime.sh -k ca_mount` passes, including CA-off/on assertions and cleanup in both state modes; production CA handling is unchanged |
+| Final full runtime run | Passed | `bash tests/run-runtime.sh`: all 12 tests pass in 102.762 seconds against the rebuilt image, covering filtering, CA, child absolute-path binds, inherited environment removal, concurrent sessions/exit codes, explicit temporary mounts, tools, profile separation, filesystem boundaries/persistence, native CLI modes, worktrees, and measured permissions |
+
 ## Archive disposition
 
 On 2026-11-01, the user authorized synchronization, archive, and commit of

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / 'claude-container.sh'
@@ -36,13 +37,129 @@ class RuntimeTests(unittest.TestCase):
         if os.environ.get('CONTAINER_HOST'):
             self.env['CONTAINER_HOST'] = os.environ['CONTAINER_HOST']
 
-    def shell(self, script, *options, **env):
+    def shell(self, script, *options, caller_umask=-1, **env):
         return subprocess.run([str(WRAPPER), '--container-shell', *options], cwd=self.project,
                               env=self.env | env, input='set -Eeuo pipefail\n' + script,
-                              text=True, capture_output=True, timeout=90)
+                              text=True, capture_output=True, timeout=90, umask=caller_umask)
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def build_fixture(self, context, recipe):
+        image = 'localhost/claude-test-' + uuid.uuid4().hex + ':latest'
+        (context / 'Containerfile').write_text(f'FROM {IMAGE}\n' + recipe)
+        # Register before building so partially successful builds are cleaned up.
+        self.addCleanup(subprocess.run, ['podman', 'image', 'rm', '--force', '--ignore', image],
+                        env=self.env, check=True, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(['podman', 'build', '--pull=never', '--tag', image,
+                                 '--file', str(context / 'Containerfile'), str(context)],
+                                env=self.env, text=True, capture_output=True, timeout=120)
+        self.assert_success(result)
+        return image
+
+    def test_delegation_clears_image_environment_defaults(self):
+        context = self.base / 'environment-context'
+        context.mkdir()
+        image = self.build_fixture(context, 'ENV CONTAINER_HOST=unix:///synthetic/default.sock\n')
+        for isolated in ('', str(self.state)):
+            for service in ('0', '1'):
+                with self.subTest(isolated=isolated, service=service):
+                    script = ('test "${CONTAINER_HOST+x}" != x\n'
+                              'test ! -S /run/podman/podman.sock\n') if service == '0' else (
+                              'test "$CONTAINER_HOST" = unix:///run/podman/podman.sock\n'
+                              'test -S /run/podman/podman.sock\n'
+                              "test \"$(podman info --format '{{.Host.Security.Rootless}}')\" = true\n")
+                    self.assert_success(self.shell(script, CLAUDE_CONTAINER_IMAGE=image,
+                                                   CLAUDE_CONTAINER_STATE_DIR=isolated,
+                                                   CLAUDE_CONTAINER_PODMAN=service))
+
+    def test_explicit_temporary_mounts_and_lifecycle(self):
+        script = '''python3 - <<'CHECK'
+import errno, json, os, pathlib, shutil, stat, subprocess
+for path, size in (('/tmp', 256 << 20), ('/run', 16 << 20), ('/var/tmp', 256 << 20)):
+    mount = json.loads(subprocess.check_output([
+        'findmnt', '--json', '--bytes', '--output', 'TARGET,FSTYPE,OPTIONS,SIZE',
+        '--target', path]))['filesystems'][0]
+    assert mount['target'] == path and mount['fstype'] == 'tmpfs', mount
+    assert {'rw', 'nosuid', 'nodev', 'noexec'} <= set(mount['options'].split(',')), mount
+    assert int(mount['size']) == size, mount
+    if path == '/run':
+        continue
+    directory = pathlib.Path(path)
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o1777
+    (directory / 'ephemeral-sentinel').write_text('temporary')
+    executable = directory / 'claude-test-executable'
+    shutil.copy('/bin/true', executable)
+    executable.chmod(0o755)
+    try:
+        subprocess.run([str(executable)], check=True)
+    except PermissionError as error:
+        assert error.errno == errno.EACCES
+    else:
+        raise AssertionError('execution allowed from ' + path)
+print('Explicit temporary mount checks passed.')
+CHECK
+! touch /var/log/claude-test-write 2>/dev/null
+'''
+        for isolated in ('', str(self.state)):
+            for service in ('0', '1'):
+                with self.subTest(isolated=isolated, service=service):
+                    env = {'CLAUDE_CONTAINER_STATE_DIR': isolated,
+                           'CLAUDE_CONTAINER_PODMAN': service}
+                    self.assert_success(self.shell(script, **env))
+                    self.assert_success(self.shell(
+                        'test ! -e /tmp/ephemeral-sentinel\n'
+                        'test ! -e /var/tmp/ephemeral-sentinel\n', **env))
+
+    def test_runtime_permissions_are_measured_separately(self):
+        script = '''python3 - <<'CHECK'
+import json, os, pathlib, stat, tempfile
+mask = os.umask(0)
+os.umask(mask)
+config = pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])
+assert stat.S_IMODE(config.stat().st_mode) == 0o700
+with tempfile.TemporaryDirectory(dir=config) as directory:
+    root = pathlib.Path(directory)
+    file = root / 'file'
+    file.write_text('synthetic')
+    child = root / 'directory'
+    child.mkdir()
+    file_mode = stat.S_IMODE(file.stat().st_mode)
+    directory_mode = stat.S_IMODE(child.stat().st_mode)
+    assert file_mode == 0o666 & ~mask
+    assert directory_mode == 0o777 & ~mask
+    assert file.stat().st_uid == os.getuid()
+    print(json.dumps({'umask': oct(mask), 'file': oct(file_mode),
+                      'directory': oct(directory_mode)}))
+CHECK
+'''
+        for isolated in ('', str(self.state)):
+            for mask in (0o022, 0o002):
+                with self.subTest(isolated=isolated, host_umask=oct(mask)):
+                    result = self.shell(script, caller_umask=mask,
+                                        CLAUDE_CONTAINER_STATE_DIR=isolated)
+                    self.assert_success(result)
+                    source = self.state if isolated else self.host_home / '.claude'
+                    self.assertEqual(source.stat().st_mode & 0o777, 0o700)
+                    print(f'Runtime permissions (isolated={bool(isolated)}, '
+                          f'host umask={oct(mask)}): {result.stdout.strip()}', flush=True)
+
+    def test_build_context_excludes_sensitive_and_unrelated_files(self):
+        context = self.base / 'synthetic-build-context'
+        context.mkdir()
+        shutil.copyfile(ROOT / '.containerignore', context / '.containerignore')
+        for relative in ('.git/config', '.claude/settings.json', '.test-state/token',
+                         'custom-private-home/.claude/token', '.env',
+                         '__pycache__/module.pyc', '.agents/skills/private.md',
+                         'nested/unrelated.txt', 'README.md'):
+            path = context / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('synthetic excluded sentinel')
+        self.build_fixture(context, '''COPY . /claude-build-context/
+RUN test -f /claude-build-context/Containerfile \\
+    && test -f /claude-build-context/.containerignore \\
+    && test -z "$(find /claude-build-context -mindepth 1 ! -path /claude-build-context/Containerfile ! -path /claude-build-context/.containerignore -print -quit)"
+''')
 
     def test_image_smoke_both_state_modes(self):
         script = (ROOT / 'tests/image-smoke.sh').read_text()
@@ -118,6 +235,10 @@ class RuntimeTests(unittest.TestCase):
             self.assert_success(self.shell('test ! -e /claude-home/ca/bundle.pem\n'
                                            'test -z "${SSL_CERT_FILE:-}${REQUESTS_CA_BUNDLE:-}${CURL_CA_BUNDLE:-}${NODE_EXTRA_CA_CERTS:-}"\n',
                                            CLAUDE_CONTAINER_STATE_DIR=isolated))
+            if isolated:
+                # Keep the synthetic mount parent caller-owned for cleanup;
+                # an engine-created parent can belong to a mapped root UID.
+                (self.state / 'ca').mkdir(mode=0o700, exist_ok=True)
             script = '''for variable in SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS; do
                 test "${!variable}" = /claude-home/ca/bundle.pem
             done

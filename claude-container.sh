@@ -36,13 +36,15 @@ Environment:
                                   /etc/pki/tls/certs/ca-bundle.crt)
 
 Launch requires a verified Linux rootless engine, locally or via an explicit
-same-host Unix CONTAINER_HOST. Named connections and TCP/SSH are unsupported.
+same-host Unix CONTAINER_HOST with an absolute socket pathname beyond /.
+Named connections and TCP/SSH are unsupported.
 Delegation endpoint: explicit socket override, Unix CONTAINER_HOST, then
 ${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock.
 The socket permits host mounts beyond the workspace. YOLO changes approvals
 only. Worktree mode exposes the entire parent read/write.
 State directories must belong to the caller and deny group/other access.
 Unset CLAUDE_CONFIG_DIR when selecting an isolated home; no state is imported.
+Temporary /tmp, /run, and /var/tmp mounts are noexec, limited to 256/16/256 MiB.
 EOF
 }
 
@@ -79,7 +81,12 @@ command -v podman >/dev/null || die 'Podman is required on the host'
 # on the same host. TCP/SSH transports and Podman Machine are not supported.
 [[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'named remote connections are not supported; use local Podman or a local Unix CONTAINER_HOST'
 case "${CONTAINER_HOST:-}" in
-    ''|unix:///*) ;;
+    '') ;;
+    unix://*)
+        launch_socket=${CONTAINER_HOST#unix://}
+        [[ "$launch_socket" == /* && -n "${launch_socket//\//}" ]] \
+            || die 'CONTAINER_HOST requires an absolute Unix socket path beyond /'
+        ;;
     *) die 'remote TCP/SSH Podman contexts are not supported; use a local Unix socket' ;;
 esac
 runtime_info=$(podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}') || die 'cannot query Podman; check the local rootless service'
@@ -127,10 +134,14 @@ private_directory() {
         || die "state directory must be private: $path (chmod 700; use native Linux storage if permissions are not enforced)"
 }
 
-umask 077
+create_private_directory() (
+    umask 077
+    mkdir -p -- "$@"
+)
+
 state_mounts=()
 if [[ -n "$state_dir" ]]; then
-    mkdir -p -- "$state_dir"
+    create_private_directory "$state_dir"
     state_dir=$(cd -- "$state_dir" && pwd -P)
     private_directory "$state_dir"
     # Resolve before creating children so an existing parent symlink cannot
@@ -139,16 +150,16 @@ if [[ -n "$state_dir" ]]; then
         resolved=$(readlink -m -- "$state_dir/$relative")
         [[ "$resolved" == "$state_dir/"* ]] \
             || die "isolated configuration escapes state home: $state_dir/$relative"
-        mkdir -p -- "$state_dir/$relative"
+        create_private_directory "$state_dir/$relative"
     done
     private_directory "$state_dir/.claude"
     state_mounts+=(--volume "$state_dir:/claude-home:rw")
 else
     claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-    mkdir -p -- "$claude_dir"
+    create_private_directory "$claude_dir"
     claude_dir=$(cd -- "$claude_dir" && pwd -P)
     private_directory "$claude_dir"
-    mkdir -p -- "$HOME/.config/openspec"
+    create_private_directory "$HOME/.config/openspec"
     openspec_dir=$(cd -- "$HOME/.config/openspec" && pwd -P)
     state_mounts+=(
         --volume "$claude_dir:/claude-home/.claude:rw"
@@ -183,11 +194,12 @@ else
 fi
 
 container_args=(
-    --rm --interactive --read-only
+    --rm --interactive --read-only --read-only-tmpfs=false
     --userns=keep-id --user "$caller_uid:$caller_gid"
     --workdir "$workspace"
-    --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=256m'
+    --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
     --tmpfs '/run:rw,nosuid,nodev,noexec,size=16m'
+    --tmpfs '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
     --env HOME=/claude-home
     --env EDITOR=nano --env VISUAL=nano
     --env CLAUDE_CONFIG_DIR=/claude-home/.claude
@@ -203,6 +215,8 @@ if ((podman_access)); then
         --volume "$host_socket:/run/podman/podman.sock:rw"
         --env CONTAINER_HOST=unix:///run/podman/podman.sock
     )
+else
+    container_args+=(--unsetenv CONTAINER_HOST)
 fi
 if ((trust_host_ca)); then
     container_args+=(

@@ -13,6 +13,11 @@ FAKE = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys, time, signal
 args = sys.argv[1:]
 log = pathlib.Path(os.environ['FAKE_LOG'])
+if os.environ.get('FAKE_UMASK_LOG'):
+    mask = os.umask(0)
+    os.umask(mask)
+    with pathlib.Path(os.environ['FAKE_UMASK_LOG']).open('a') as f:
+        f.write(json.dumps([args[0], mask]) + '\n')
 with log.open('a') as f:
     f.write(json.dumps(args) + '\n')
 if args[:2] == ['--remote', '--url']:
@@ -79,10 +84,10 @@ class WrapperTests(unittest.TestCase):
         self.addCleanup(self.socket.close)
         self.env['CLAUDE_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
 
-    def run_wrapper(self, *args, cwd=None, **env):
+    def run_wrapper(self, *args, cwd=None, caller_umask=-1, **env):
         return subprocess.run([str(WRAPPER), *args], cwd=cwd or self.project,
                               env=self.env | env, input='input payload',
-                              text=True, capture_output=True, timeout=10)
+                              text=True, capture_output=True, timeout=10, umask=caller_umask)
 
     def calls(self):
         return [json.loads(s) for s in self.log.read_text().splitlines()] if self.log.exists() else []
@@ -109,6 +114,8 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(self.create()[-5:], ['localhost/claude-code:latest', '-p', 'hello world', '', '--help'])
         self.assertNotIn('--tty', self.create())
         self.assertNotIn('--dangerously-skip-permissions', self.create())
+        self.assertIn('--unsetenv', self.create())
+        self.assertEqual(self.create()[self.create().index('--unsetenv') + 1], 'CONTAINER_HOST')
         self.assertIn('stdin:input payload', result.stdout)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
 
@@ -266,6 +273,26 @@ class WrapperTests(unittest.TestCase):
                 self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
         self.assertNotEqual(self.run_wrapper(FAKE_INFO_STATUS='125').returncode, 0)
 
+    def test_pathless_or_relative_unix_launch_endpoint_rejected_before_query(self):
+        for endpoint in ('unix://', 'unix:///', 'unix://////', 'unix://relative/socket'):
+            for delegation in ('0', '1'):
+                for override in ('', str(self.socket_path)):
+                    with self.subTest(endpoint=endpoint, delegation=delegation, override=override):
+                        self.log.unlink(missing_ok=True)
+                        result = self.run_wrapper('--container-build', CONTAINER_HOST=endpoint,
+                                                  CLAUDE_CONTAINER_PODMAN=delegation,
+                                                  CLAUDE_CONTAINER_PODMAN_SOCKET=override)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('absolute Unix socket path', result.stderr)
+                        self.assertEqual(self.calls(), [])
+
+    def test_help_with_pathless_launch_endpoint(self):
+        result = self.run_wrapper('--container-help', CONTAINER_HOST='unix:///')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('absolute socket pathname', result.stdout)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.state.exists())
+
     def test_shared_state_default_and_override(self):
         for custom in ('', str(self.base / 'custom Claude')):
             with self.subTest(custom=custom):
@@ -285,6 +312,24 @@ class WrapperTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('conflicts', result.stderr)
         self.assertFalse(self.calls())
+
+    def test_private_creation_does_not_change_host_command_umask(self):
+        for mask in (0o022, 0o002):
+            for isolated in (False, True):
+                with self.subTest(mask=oct(mask), isolated=isolated):
+                    home = self.base / f'home-{mask}-{isolated}'
+                    state = self.base / f'state-{mask}-{isolated}'
+                    umask_log = self.base / f'umask-{mask}-{isolated}.jsonl'
+                    result = self.run_wrapper('--container-build', caller_umask=mask,
+                                              HOME=str(home), FAKE_UMASK_LOG=str(umask_log),
+                                              CLAUDE_CONTAINER_STATE_DIR=str(state) if isolated else '')
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    observations = [json.loads(line) for line in umask_log.read_text().splitlines()]
+                    self.assertTrue({'build', 'create', 'start', 'rm'} <= {c for c, _ in observations})
+                    self.assertTrue(all(actual == mask for _, actual in observations), observations)
+                    root = state if isolated else home
+                    for relative in ('.', '.claude', '.config', '.config/openspec'):
+                        self.assertEqual((root / relative).stat().st_mode & 0o777, 0o700)
 
     def test_state_alias_and_configuration_escape(self):
         self.state.mkdir(mode=0o700)
@@ -346,6 +391,7 @@ class WrapperTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
                 self.assertNotIn('CONTAINER_HOST=unix:///run/podman/podman.sock', self.create())
+                self.assertEqual(self.create()[self.create().index('--unsetenv') + 1], 'CONTAINER_HOST')
 
     def test_socket_precedence_and_remapping(self):
         alias = self.base / 'socket-alias'
@@ -416,7 +462,22 @@ class WrapperTests(unittest.TestCase):
                             create = self.create()
                             self.assertEqual('--dangerously-skip-permissions' in create, yolo == '1' and not shell)
                             self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, service == '1')
+                            self.assertEqual('--unsetenv' in create, service != '1')
+                            self.assertIn('--read-only-tmpfs=false', create)
+                            mounts = [create[i+1] for i, arg in enumerate(create) if arg == '--tmpfs']
+                            self.assertEqual(mounts, [
+                                '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777',
+                                '/run:rw,nosuid,nodev,noexec,size=16m',
+                                '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'])
                             self.assertIn(f'{self.project.parent}:{self.project.parent}:rw', create)
+
+    def test_disabled_delegation_preserves_host_launch_endpoint(self):
+        probe = self.bin / 'podman'
+        probe.write_text(FAKE.replace("args = sys.argv[1:]",
+                         "assert os.environ['CONTAINER_HOST'] == 'unix:///launch/socket'\nargs = sys.argv[1:]"))
+        result = self.run_wrapper('--container-build', CONTAINER_HOST='unix:///launch/socket')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--unsetenv', self.create())
 
     def test_ca_mount_and_security_policy(self):
         ca = self.base / 'bundle.pem'
@@ -432,7 +493,7 @@ class WrapperTests(unittest.TestCase):
                 for variable in ('SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
                     self.assertEqual(f'{variable}=/claude-home/ca/bundle.pem' in create, trust != '0')
                 self.assertEqual(f'{ca}:/claude-home/ca/bundle.pem:ro' in create, trust != '0')
-                self.assertIn('/tmp:rw,nosuid,nodev,noexec,size=256m', create)
+                self.assertIn('/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777', create)
                 self.assertIn('/run:rw,nosuid,nodev,noexec,size=16m', create)
                 self.assertFalse(any(x.startswith(('--privileged', '--cap-add', '--security-opt')) for x in create))
                 self.assertFalse(any(x.endswith((':z', ':Z')) for x in create))
