@@ -29,7 +29,9 @@ bash -n claude-container.sh              # Validate Bash syntax
 git diff --check                         # Detect whitespace errors
 ```
 
-The runtime requires a rootless Podman socket, for example:
+Host Podman is always required. Container access to its API is opt-in with
+the exact value `CLAUDE_CONTAINER_PODMAN=1`; only enabled sessions require a
+rootless Podman socket, for example:
 `podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock`.
 
 ## Coding Style & Naming Conventions
@@ -47,7 +49,12 @@ comments, help text, and user-facing messages in English.
 There is no test framework yet. Every script change must pass `bash -n` and
 `git diff --check`; when Podman is available, verify `--container-help`, Claude
 argument forwarding, image build, Claude startup, persistence of
-`~/.claude`, and a child `podman run`. Avoid embedding credentials or relying
+`~/.claude`, and a child `podman run` with `CLAUDE_CONTAINER_PODMAN=1`.
+Verify unset, empty, and values other than the exact string `1` omit the socket
+mount and `CONTAINER_HOST`, and do not require a socket. With `1`, verify both
+are present and a missing or non-socket path fails before launch. Cover Claude
+and shell modes and composition with build and Git worktree options.
+Avoid embedding credentials or relying
 on a remote Git repository in tests.
 
 Changes to host CA handling must also verify both modes: with
@@ -73,6 +80,9 @@ into the image, broaden mounts unnecessarily, or add `--privileged`. Preserve
 the host workspace's absolute path so containers launched by the host Podman
 service can resolve child bind mounts correctly. Claude configuration is
 intentionally writable because it contains its credentials and session state.
+
+Expose the host Podman API socket only with `CLAUDE_CONTAINER_PODMAN=1`.
+This grants access to containers and volumes available to the host Podman user.
 
 Host CA trust is opt-in. Mount only the selected CA bundle file, read-only, at
 `/claude-home/ca/bundle.pem`. Never mount the host certificate directory

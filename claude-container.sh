@@ -27,6 +27,8 @@ Environment:
   CLAUDE_CONTAINER_IMAGE  image name (default: localhost/claude-code:latest)
   CLAUDE_CONFIG_DIR       Claude configuration directory (default: ~/.claude)
   CLAUDE_YOLO             enable --dangerously-skip-permissions (default: disabled)
+  CLAUDE_CONTAINER_PODMAN enable host Podman API access only with exact value 1
+                         (default: disabled; all other values disable access)
   CLAUDE_CONTAINER_TRUST_HOST_CA  trust a host CA bundle: 1, true, or yes (default: disabled)
   CLAUDE_CONTAINER_CA_BUNDLE      CA bundle file to trust (default: first of
                                   /etc/ssl/certs/ca-certificates.crt and
@@ -115,9 +117,13 @@ case "${CLAUDE_YOLO:-}" in
     *) die "CLAUDE_YOLO must be 0, 1, true, false, yes, or no" ;;
 esac
 
-runtime_dir="/run/user/$(id -u)"
-socket="${runtime_dir}/podman/podman.sock"
-[[ -S "$socket" ]] || die "Podman socket not found: $socket (start 'podman system service --time=0' or enable podman.socket)"
+container_podman=0
+if [[ "${CLAUDE_CONTAINER_PODMAN:-}" == "1" ]]; then
+    container_podman=1
+    runtime_dir="/run/user/$(id -u)"
+    socket="${runtime_dir}/podman/podman.sock"
+    [[ -S "$socket" ]] || die "Podman socket not found: $socket (start 'podman system service --time=0' or enable podman.socket)"
+fi
 
 if ((build_image)) || ! podman image exists "$IMAGE"; then
     podman build --tag "$IMAGE" --file "$SCRIPT_DIR/Containerfile" "$SCRIPT_DIR"
@@ -134,12 +140,17 @@ podman_args=(
     --tmpfs /run:rw,nosuid,nodev,noexec,size=16m
     --env HOME=/claude-home
     --env CLAUDE_CONFIG_DIR=/claude-home/.claude
-    --env CONTAINER_HOST=unix:///run/podman/podman.sock
     --volume "$workspace_mount:$workspace_mount:rw"
     --volume "$CLAUDE_DIR:/claude-home/.claude:rw"
     --volume "${HOME}/.config/openspec:/claude-home/.config/openspec:rw,z"
-    --volume "$socket:/run/podman/podman.sock"
 )
+
+if ((container_podman)); then
+    podman_args+=(
+        --env CONTAINER_HOST=unix:///run/podman/podman.sock
+        --volume "$socket:/run/podman/podman.sock"
+    )
+fi
 
 if ((trust_host_ca)); then
     podman_args+=(

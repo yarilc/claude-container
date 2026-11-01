@@ -1,8 +1,9 @@
 # Claude Code CLI in Podman
 
-`claude-container.sh` runs Claude Code in a rootless Podman container. The
-container uses the host Podman socket, allowing Claude to launch containers for
-tests and builds without running a nested daemon.
+`claude-container.sh` runs Claude Code in a rootless Podman container. Access
+from the container to the host Podman API is disabled by default. Set
+`CLAUDE_CONTAINER_PODMAN=1` to let Claude launch containers for tests and builds
+through the host socket without running a nested daemon.
 
 ## Enable rootless Podman on the host
 
@@ -27,7 +28,13 @@ podman run --rm docker.io/library/alpine:latest id
 The first command must print `true`; the second must successfully start a
 container. Root inside that container is normal for rootless Podman.
 
-The wrapper also requires the host API socket at exactly
+## Optional: enable the host Podman API
+
+This setup is required only when launching with `CLAUDE_CONTAINER_PODMAN=1`.
+For ordinary sessions, skip to Usage; host Podman is still required to build
+images and launch the outer container, but its API socket is not required.
+
+When access is enabled, the wrapper requires the host API socket at exactly
 `/run/user/$(id -u)/podman/podman.sock`. It does not use a custom
 `XDG_RUNTIME_DIR` to locate it. Choose **one** of the following methods.
 
@@ -89,7 +96,7 @@ Repeat this setup after reboot because `/run` is temporary. Export the same
 session does not set it automatically. Run the service and wrapper without
 `sudo` so they use your rootless containers and configuration.
 
-### Verify the socket before starting Claude
+### Verify the socket before starting an enabled session
 
 For either method, run these commands as the same user in the terminal where
 you will launch the wrapper:
@@ -107,7 +114,7 @@ See also the official
 
 ## Usage
 
-After completing the host setup and socket verification above, run from the
+After completing the rootless host Podman setup, run from the
 repository directory:
 
 ```bash
@@ -138,6 +145,30 @@ the next highest numeric index among running instances, for example
 `CLAUDE_YOLO=1` starts Claude with `--dangerously-skip-permissions`, disabling
 all Claude permission checks. Use it only when the container and mounts are a
 trusted environment.
+
+### Allowing Podman access inside the container
+
+To grant a session access to the host Podman API, complete the optional socket
+setup and verification above, then run:
+
+```bash
+CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh
+CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh --container-shell
+```
+
+Only the exact value `1` enables access. An unset or empty variable, `0`,
+`true`, `yes`, and every other value disable access without an error. When
+disabled, the wrapper skips socket validation, does not mount the host socket,
+and does not set `CONTAINER_HOST` inside the container. When enabled, it mounts
+the socket at `/run/podman/podman.sock` and sets
+`CONTAINER_HOST=unix:///run/podman/podman.sock` in both Claude and shell modes.
+A missing or invalid socket stops an enabled launch with setup instructions.
+
+Migration: earlier versions always exposed the host Podman socket. Existing
+workflows that launch child containers must now set `CLAUDE_CONTAINER_PODMAN=1`.
+The Podman client remains installed in the image. This switch controls the
+host API access supplied by the wrapper; it does not block independently
+configured remote endpoints or sockets exposed through other selected mounts.
 
 ### Using Git worktrees
 
@@ -219,8 +250,9 @@ Claude configuration directory are writable persistent mounts. The existing
 OpenSpec configuration path is also mounted read/write; `/tmp` and `/run` are
 ephemeral tmpfs mounts.
 
-The Podman socket gives Claude control over containers and volumes available
-to the host Podman user. The wrapper does not use `--privileged`. By default,
+With `CLAUDE_CONTAINER_PODMAN=1`, the Podman socket gives Claude control over
+containers and volumes available to the host Podman user. The wrapper does
+not use `--privileged`. By default,
 it does not mount the user's full home directory. With
 `--container-git-worktree`, the selected parent can be the home directory, and
 all files beneath that parent are writable through the workspace mount. Use
