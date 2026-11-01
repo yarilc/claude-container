@@ -33,6 +33,8 @@ Host Podman is always required. Container access to its API is opt-in with
 the exact value `CLAUDE_CONTAINER_PODMAN=1`; only enabled sessions require a
 rootless Podman socket, for example:
 `podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock`.
+The wrapper queries that exact socket and requires a successful `true` rootless
+result before image operations or container startup.
 
 ## Coding Style & Naming Conventions
 
@@ -51,8 +53,13 @@ There is no test framework yet. Every script change must pass `bash -n` and
 argument forwarding, image build, Claude startup, persistence of
 `~/.claude`, and a child `podman run` with `CLAUDE_CONTAINER_PODMAN=1`.
 Verify unset, empty, and values other than the exact string `1` omit the socket
-mount and `CONTAINER_HOST`, and do not require a socket. With `1`, verify both
-are present and a missing or non-socket path fails before launch. Cover Claude
+mount and `CONTAINER_HOST`, do not require a socket, and perform no API-service
+query. With `1`, verify both are present only after the exact exposed socket
+successfully reports `true` through `podman --remote --url ... info --format
+'{{.Host.Security.Rootless}}'`. Verify a missing/non-socket path, query failure,
+`false`, empty output, and unexpected output fail before image operations or
+launch, with actionable socket-specific errors. Check that a different default
+Podman endpoint cannot redirect the explicit verification query. Cover Claude
 and shell modes and composition with build and Git worktree options.
 Avoid embedding credentials or relying
 on a remote Git repository in tests.

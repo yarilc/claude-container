@@ -1,0 +1,93 @@
+# Spec Delta
+
+## MODIFIED Requirements
+
+### Requirement: Podman API access requires the exact opt-in value
+The wrapper SHALL grant access to the host Podman API only when `CLAUDE_CONTAINER_PODMAN` equals the exact string `1`. An unset, empty, or different value SHALL disable that access.
+
+#### Scenario: Variable is unset
+- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN` unset
+- **THEN** it does not mount the host Podman socket or set `CONTAINER_HOST` in the container
+
+#### Scenario: Variable does not equal one
+- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN` empty or set to `0`, `true`, `yes`, `01`, or another value other than the exact string `1`
+- **THEN** it starts with Podman API access disabled without rejecting that value
+- **AND** it does not mount the host Podman socket or set `CONTAINER_HOST` in the container
+
+#### Scenario: Access is explicitly enabled
+- **GIVEN** `/run/user/<caller-uid>/podman/podman.sock` is a Unix socket serving a reachable engine that reports rootless operation
+- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **THEN** it mounts that socket at `/run/podman/podman.sock`
+- **AND** it sets `CONTAINER_HOST=unix:///run/podman/podman.sock` in the container
+
+### Requirement: Socket validation is conditional
+The wrapper SHALL validate the existing rootless host socket path only when Podman API access is enabled. Disabled access SHALL NOT require an API socket or query its service. Enabled access with a missing or non-socket path SHALL fail before starting the container with an actionable message identifying the socket path.
+
+#### Scenario: Disabled access without an API socket
+- **GIVEN** the rootless host API socket does not exist and host Podman can otherwise run containers
+- **WHEN** the wrapper starts without `CLAUDE_CONTAINER_PODMAN=1`
+- **THEN** socket absence does not prevent the wrapper from launching its container
+- **AND** the wrapper does not query the API service
+
+#### Scenario: Enabled access without a valid socket
+- **GIVEN** the expected rootless host socket path is missing or is not a Unix socket
+- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **THEN** it exits with a non-zero status before starting the container
+- **AND** its error names the socket path and explains how to start the API service
+
+#### Scenario: Disabled values skip service verification
+- **WHEN** `CLAUDE_CONTAINER_PODMAN` is unset, empty, or any value other than the exact string `1`
+- **THEN** the wrapper performs no API-service verification and supplies neither the socket mount nor container `CONTAINER_HOST`
+
+### Requirement: Document the optional authority grant
+Wrapper help and the README SHALL document `CLAUDE_CONTAINER_PODMAN=1`, the disabled default, and exact-value semantics. The README SHALL distinguish the host Podman prerequisite from the optional API socket, explain the authority granted by enabling access, and show how existing child-container workflows migrate.
+
+#### Scenario: Discover and enable access
+- **WHEN** a user reads wrapper help and README usage instructions
+- **THEN** the exact enabling value and disabled default are stated
+- **AND** the README shows `CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh` and explains that API socket setup is needed only for enabled access
+- **AND** the README explains that enabling access grants control over containers and volumes available to the host Podman user
+
+#### Scenario: Explain enforced rootless verification
+- **WHEN** a user reads wrapper help and README instructions for enabled access
+- **THEN** they learn that the socket must serve a reachable rootless engine and that failed verification blocks startup
+- **AND** the README shows how to query rootless status through the exact socket and recover from service or rootful-engine failures
+
+## ADDED Requirements
+
+### Requirement: Exposed Podman service must report rootless operation
+With API access enabled, the wrapper SHALL query the service through the exact Unix socket it will expose and proceed only if the query succeeds and reports rootless operation as `true`. A failed query or any other result SHALL cause a non-zero exit before image operations or container startup, with an actionable error identifying the socket and whether the service could not be queried or did not affirm rootless operation.
+
+#### Scenario: Rootless service is verified
+- **GIVEN** the expected Unix socket exists and its service successfully reports rootless operation as `true`
+- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **THEN** verification succeeds before image operations and container startup
+- **AND** the existing socket mount and container `CONTAINER_HOST` are supplied
+
+#### Scenario: Rootful service is rejected
+- **GIVEN** the expected Unix socket exists and its service reports rootless operation as `false`
+- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **THEN** it exits non-zero before image operations or container startup
+- **AND** the error identifies the socket and explains that a rootless service is required
+
+#### Scenario: Unreachable service is rejected
+- **GIVEN** the expected Unix socket exists but the service query fails
+- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **THEN** it exits non-zero before image operations or container startup
+- **AND** the error identifies the socket and directs the user to check the service and access permissions
+
+#### Scenario: Unrecognized service result is rejected
+- **GIVEN** the service query succeeds but returns an empty or unexpected rootless result
+- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **THEN** it exits non-zero before image operations or container startup because rootless operation was not confirmed
+- **AND** the error identifies the socket and explains the rootless requirement
+
+#### Scenario: Verification targets the exposed endpoint
+- **GIVEN** the default Podman client configuration points at a different service
+- **WHEN** the wrapper verifies enabled API access
+- **THEN** verification queries `/run/user/<caller-uid>/podman/podman.sock` explicitly and uses that service's result
+
+#### Scenario: Verification applies in all enabled launch modes
+- **WHEN** enabled access is used in Claude or shell mode, including with `--container-build` and `--container-git-worktree`
+- **THEN** the same service verification gates image operations and container startup
+- **AND** a failed verification prevents even an explicitly requested image build

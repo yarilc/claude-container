@@ -29,6 +29,8 @@ Environment:
   CLAUDE_YOLO             enable --dangerously-skip-permissions (default: disabled)
   CLAUDE_CONTAINER_PODMAN enable host Podman API access only with exact value 1
                          (default: disabled; all other values disable access)
+                         requires a reachable rootless service; failed verification
+                         stops startup before image operations
   CLAUDE_CONTAINER_TRUST_HOST_CA  trust a host CA bundle: 1, true, or yes (default: disabled)
   CLAUDE_CONTAINER_CA_BUNDLE      CA bundle file to trust (default: first of
                                   /etc/ssl/certs/ca-certificates.crt and
@@ -123,6 +125,10 @@ if [[ "${CLAUDE_CONTAINER_PODMAN:-}" == "1" ]]; then
     runtime_dir="/run/user/$(id -u)"
     socket="${runtime_dir}/podman/podman.sock"
     [[ -S "$socket" ]] || die "Podman socket not found: $socket (start 'podman system service --time=0' or enable podman.socket)"
+    socket_rootless="$(podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}}')" \
+        || die "Cannot query Podman socket: $socket (check the rootless API service and access permissions)"
+    [[ "$socket_rootless" == "true" ]] \
+        || die "Podman socket must serve a rootless engine: $socket (start the service as the intended non-root user)"
 fi
 
 if ((build_image)) || ! podman image exists "$IMAGE"; then

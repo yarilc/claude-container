@@ -103,12 +103,17 @@ you will launch the wrapper:
 
 ```bash
 test -S "/run/user/$(id -u)/podman/podman.sock" && echo "Socket exists"
-podman --remote --url "unix:///run/user/$(id -u)/podman/podman.sock" info
+podman --remote --url "unix:///run/user/$(id -u)/podman/podman.sock" info --format '{{.Host.Security.Rootless}}'
 ```
 
-Continue only if the socket exists and the API command succeeds. A socket
-file alone does not prove that a service is listening. If the API command
-fails, check the systemd status or the foreground service output above.
+Continue only if the socket exists and the API command succeeds and prints
+`true`. With `CLAUDE_CONTAINER_PODMAN=1`, the wrapper enforces this check through
+that exact socket before image operations or container startup. A socket file
+alone does not prove that a service is listening or that its engine is rootless.
+If the API command fails, check the systemd status or foreground service output
+above and your account's permission to access the socket. If it prints `false`
+or another unexpected result, verify that the service was started as the intended
+non-root user, without `sudo`, and repeat the rootless service setup above.
 See also the official
 [Podman API service documentation](https://docs.podman.io/en/latest/markdown/podman-system-service.1.html).
 
@@ -158,11 +163,14 @@ CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh --container-shell
 
 Only the exact value `1` enables access. An unset or empty variable, `0`,
 `true`, `yes`, and every other value disable access without an error. When
-disabled, the wrapper skips socket validation, does not mount the host socket,
-and does not set `CONTAINER_HOST` inside the container. When enabled, it mounts
+disabled, the wrapper skips socket validation and service queries, does not mount
+the host socket, and does not set `CONTAINER_HOST` inside the container. When enabled, it mounts
 the socket at `/run/podman/podman.sock` and sets
 `CONTAINER_HOST=unix:///run/podman/podman.sock` in both Claude and shell modes.
 A missing or invalid socket stops an enabled launch with setup instructions.
+The wrapper also queries the exposed service and accepts only a successful
+`true` rootless result. An unreachable service, rootful engine, or unexpected
+result stops the launch before any image check, build, or container startup.
 
 Migration: earlier versions always exposed the host Podman socket. Existing
 workflows that launch child containers must now set `CLAUDE_CONTAINER_PODMAN=1`.
