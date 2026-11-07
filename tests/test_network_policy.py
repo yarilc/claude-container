@@ -153,6 +153,7 @@ class PolicyTests(unittest.TestCase):
             manifest = json.loads((session / 'config/manifest.json').read_text())
             self.assertEqual(manifest['sha256'], hashlib.sha256(elf).hexdigest())
             self.assertEqual(manifest['protocol'], 1)
+            self.assertEqual(manifest['tls_enforcement'], 'tls-clienthello-sni-v1')
             self.assertEqual(manifest['session'], session.name)
             preflight = command.copy()
             preflight[3] = 'preflight'
@@ -250,3 +251,20 @@ class AsyncProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolver.call_count, 1)
         server.close()
         await server.wait_closed()
+
+
+class TLSManifestTests(unittest.TestCase):
+    def test_required_enforcement_identity(self):
+        manifest = {'policy': 'fixture-policy', 'profile': 'anthropic-api', 'session': 'fixture',
+                    'protocol': 1, 'revision': 'abi3-seccomp-mux-v1', 'required_abi': 3,
+                    'filter': 'native-x86_64-v1', 'sha256': 'a' * 64,
+                    'tls_enforcement': 'tls-clienthello-sni-v1'}
+        proxy.validate_manifest(manifest, 'fixture-policy', 'anthropic-api', 'fixture')
+        for value in (None, '', 'old', True):
+            changed = manifest.copy()
+            if value is None:
+                del changed['tls_enforcement']
+            else:
+                changed['tls_enforcement'] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                proxy.validate_manifest(changed, 'fixture-policy', 'anthropic-api', 'fixture')

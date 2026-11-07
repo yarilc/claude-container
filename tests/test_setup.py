@@ -328,6 +328,7 @@ class SetupTests(unittest.TestCase):
         self.assertFalse((release / '.claude').exists())
         self.assertFalse((release / '.git').exists())
         self.assertEqual((release / 'network/relay.py').stat().st_mode & 0o777, 0o644)
+        self.assertEqual((release / 'network/tls_client_hello.py').read_bytes(), (ROOT / 'network/tls_client_hello.py').read_bytes())
         self.assertEqual((release / 'claude-container.sh').stat().st_mode & 0o777, 0o700)
         self.assertEqual((release / 'network/policies/default.json').stat().st_mode & 0o777, 0o600)
         with patch.dict(os.environ, self.env, clear=True):

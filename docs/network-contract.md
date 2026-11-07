@@ -172,9 +172,12 @@ login/refresh/streaming/WebSocket evidence. No untested entry counts as passed.
 
 ## Limits
 
-Destination filtering permits data to be sent to allowed services. CONNECT does
-not inspect encrypted application hosts, content, domain fronting, or shared
-services. Network activity performed remotely by provider-hosted tools is outside
+Destination filtering permits data to be sent to allowed services. The Claude
+proxy binds an approved CONNECT hostname/address to exactly matching normalized
+SNI in the initial TLS 1.2/1.3 ClientHello before forwarding client bytes. ECH/GREASE,
+missing/malformed/mismatched names and inspection limits/timeouts fail closed.
+This is not exclusive Anthropic application access: encrypted HTTP Host/authority,
+content, domain fronting with matching SNI, and shared services remain opaque. Network activity performed remotely by provider-hosted tools is outside
 the local boundary. Rootless/backend support must be based on controlled positive
 and negative tests, not an `--internal` flag or a failed Internet request alone.
 
@@ -197,3 +200,16 @@ and negative tests, not an `--internal` flag or a failed Internet request alone.
 | N12 | README/help/AGENTS, OpenSpec deltas, contract/parity and versioned evidence | Strict validation; main-spec sync/archive is a separate workflow |
 | N13 | Dated installed-version API/account endpoint inventories | Account login/reuse/refresh passed; real-key API optional/unavailable |
 | N14 | Version-supported optional-traffic controls and existing single-file CA trust | Native/YOLO/shell, actual synthetic Bash tool and CA checks; real login/reuse/refresh passed |
+
+## N15–N17 destination-binding acceptance map
+
+| Item | Implementation | Required acceptance |
+| --- | --- | --- |
+| N15 | Provider help/setup/security guidance distinguishes CONNECT/address, initial TLS SNI and encrypted application routing | Review visible guarantees and ECH/GREASE compatibility guidance |
+| N16 | Trusted proxy ClientHello parser/gate, bounded buffers/deadline, redacted denials and mandatory `tls-clienthello-sni-v1` identity | Unit/proxy tests plus controlled production acceptance; old readiness fails before agent sentinel |
+| N17 | Controlled two-name shared-address TLS fixture with verified certificates and upstream byte counters | Matching success, alternate-name positive control, mismatched zero-byte rejection, fragmentation/limits/concurrency/failure checks and API/account inventory coverage |
+
+Current measured status belongs to `docs/validation.md`. Parser and upstream-stub
+checks do not establish production guard acceptance. Historical real login and
+refresh results do not certify the revised proxy; real authenticated rechecks
+need separate authorization. N01 sibling rollout remains pending.

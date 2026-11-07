@@ -339,6 +339,7 @@ class GuardTests(unittest.TestCase):
         manifest = {'sha256': hashlib.sha256(self.binary.read_bytes()).hexdigest(),
                     'revision': 'abi3-seccomp-mux-v1', 'required_abi': 3,
                     'filter': 'native-x86_64-v1', 'protocol': 1,
+                    'tls_enforcement': 'tls-clienthello-sni-v1',
                     'policy': revision(json.loads((config / 'policy.json').read_text())),
                     'profile': 'controlled-test', 'session': 'guarded-synthetic'}
         (config / 'manifest.json').write_text(json.dumps(manifest))
@@ -359,7 +360,7 @@ class GuardTests(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline, harness.podman('logs', name))
             time.sleep(0.05)
         shutil.copyfile(context / 'cert.pem', self.fixture / 'cert.pem')
-        script = (ROOT / 'tests/guard_mux_fixture.py').read_text()
+        script = (ROOT / 'tests/guard_mux_fixture.py').read_text() + '\n' + (ROOT / 'tests/tls_binding_fixture.py').read_text()
         (self.fixture / 'client.py').write_text(script)
         extra = ['--volume', f'{transport}:/run/claude-egress:ro',
                  '--volume', f'{ROOT / "network/relay.py"}:/opt/claude-egress/relay.py:ro',

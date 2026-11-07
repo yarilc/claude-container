@@ -11,6 +11,7 @@ import time
 
 from mux import Channel, OPEN_OK, OPEN_ERR, StreamClosed, ProtocolError, bridge
 from policy import PolicyError, hostname, load, public_address, revision, selected
+from tls_client_hello import ClientHello, TLSRejected, STORAGE, INSPECTION_TIMEOUT, ENFORCEMENT
 
 
 MAX_HEADER = 8192
@@ -89,6 +90,27 @@ class Proxy:
         self.audit = audit
         self.active = 0
         self.dns_pending = 0
+        self.inspection_storage = 0
+
+    async def inspect(self, stream, writer, host):
+        if self.inspection_storage + STORAGE > STORAGE * MAX_CONNECTIONS:
+            raise TLSRejected('tls-overflow')
+        self.inspection_storage += STORAGE
+        try:
+            parser = ClientHello(host)
+            try:
+                async with asyncio.timeout(INSPECTION_TIMEOUT):
+                    while not parser.done:
+                        data = await stream.read()
+                        if not data:
+                            parser.finish()
+                        parser.feed(data)
+            except asyncio.TimeoutError:
+                raise TLSRejected('tls-timeout') from None
+            writer.write(parser.original())
+            await asyncio.wait_for(writer.drain(), 30)
+        finally:
+            self.inspection_storage -= STORAGE
 
     async def connect(self, host, port):
         if (host, port) not in self.rules:
@@ -130,7 +152,10 @@ class Proxy:
                 return
             stream.opened = True
             await stream.channel.frame(OPEN_OK, stream.ident)
+            await self.inspect(stream, upstream_writer, host)
             await bridge(stream, upstream_reader, upstream_writer)
+        except TLSRejected as error:
+            self.audit.record(str(error), host, port)
         except Rejected as error:
             self.audit.record(error.reason, error.host, error.port)
             if not stream.closed:
@@ -163,20 +188,25 @@ class Proxy:
 
 
 
-async def main():
-    policy = load('/config/policy.json')
-    profile = selected(policy, os.environ['EGRESS_PROFILE'])
-    manifest = json.loads(Path('/config/manifest.json').read_text())
-    if (manifest.get('policy') != revision(policy) or manifest.get('profile') != os.environ['EGRESS_PROFILE'] or
-            manifest.get('session') != os.environ['EGRESS_SESSION'] or manifest.get('protocol') != 1 or
+def validate_manifest(manifest, policy_identity, profile, session):
+    if (manifest.get('policy') != policy_identity or manifest.get('profile') != profile or
+            manifest.get('session') != session or manifest.get('protocol') != 1 or
+            manifest.get('tls_enforcement') != ENFORCEMENT or
             manifest.get('revision') != 'abi3-seccomp-mux-v1' or manifest.get('required_abi') != 3 or
             manifest.get('filter') != 'native-x86_64-v1' or
             not re.fullmatch(r'[a-f0-9]{64}', manifest.get('sha256', ''))):
         raise ValueError('invalid protected session manifest')
+
+
+async def main():
+    policy = load('/config/policy.json')
+    profile = selected(policy, os.environ['EGRESS_PROFILE'])
+    manifest = json.loads(Path('/config/manifest.json').read_text())
+    validate_manifest(manifest, revision(policy), os.environ['EGRESS_PROFILE'], os.environ['EGRESS_SESSION'])
     os.umask(0o077)
     proxy = Proxy(profile, Audit('/logs/denials.jsonl', os.environ['EGRESS_SESSION']))
     server = await asyncio.start_unix_server(proxy.handle, '/transport/proxy.sock', limit=MAX_HEADER)
-    Path('/transport/ready').write_text(revision(policy) + ' guard=' + manifest['sha256'] + ' mux=1\n')
+    Path('/transport/ready').write_text(revision(policy) + ' guard=' + manifest['sha256'] + ' mux=1 tls=' + ENFORCEMENT + '\n')
     async with server:
         await server.serve_forever()
 

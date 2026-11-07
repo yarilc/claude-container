@@ -155,3 +155,17 @@ validate ownership/access/modes, and reject isolated configuration paths escapin
 that home. Do not recursively repair permissions or import credentials. Keep
 `noexec` tmpfs and standard seccomp/SELinux policy; do not automatically relabel
 host binds or add privileges to make an internal sandbox work.
+
+Provider tunnels require trusted-proxy initial TLS 1.2/1.3 ClientHello inspection
+and exact normalized SNI/CONNECT binding before forwarding client bytes. Reject
+missing/malformed/mismatched SNI, non-TLS, ECH including GREASE, limits and absolute
+timeouts without unchecked fallback. Require `tls-clienthello-sni-v1` in protected
+manifest/readiness identities; old images must fail before agent execution.
+Preserve end-to-end certificate validation. This does not prove exclusive
+Anthropic application access: encrypted HTTP Host, shared services and provider
+forwarding remain opaque, and allowed services can receive data. Run parser and
+proxy suites (`test_tls_client_hello.py`, `test_tls_proxy.py`), then controlled
+shared-address TLS acceptance through the production guard, relay and proxy.
+Record zero-byte rejection, positive controls, both profile inventories and
+actual target/environment evidence separately from historical/authenticated
+results. Include parser inputs in protected setup releases and image builds.

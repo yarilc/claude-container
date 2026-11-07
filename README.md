@@ -205,7 +205,7 @@ authority. An absent image no longer triggers an implicitly authorized build.
 | `CLAUDE_CONTAINER_NETWORK` | Behavior |
 | --- | --- |
 | unset, empty, or `offline` | `--network=none`; own loopback services only |
-| `provider` | Same isolation plus an external exact-destination CONNECT proxy |
+| `provider` | Same isolation plus an external CONNECT proxy with initial TLS SNI binding |
 | `unrestricted` | Explicit ordinary runtime networking; socket delegation is eligible |
 
 The measured target uses rootless Netavark/Podman server 4.9.3 through an explicit
@@ -356,10 +356,21 @@ Denials never extend a policy. Proxy death leaves the agent without a direct
 route. All owned resources share the existing shutdown budget and primary status.
 
 CONNECT preserves end-to-end TLS and existing opt-in CA trust without decryption.
-Allowed services can receive session data. Encrypted Host/SNI choices, domain
-fronting, shared services, and provider-hosted remote tools are outside the
-destination filter. Git hosting, registries, web browsing, external MCP endpoints,
+The trusted proxy holds client bytes until a bounded TLS 1.2/1.3 initial
+ClientHello has exactly one normalized SNI matching the approved CONNECT name.
+Missing, malformed or different SNI, non-TLS, ECH (including GREASE), inspection
+limits and timeout fail closed. This verifies the initial TLS name, not exclusive
+communication with Anthropic applications. Allowed services can receive session
+data. Encrypted HTTP Host/authority, domain fronting with matching SNI, shared
+services and provider-hosted remote tools remain outside the filter. Git hosting, registries, web browsing, external MCP endpoints,
 documentation, connectors and plugin downloads need explicit extra authorization.
+
+Provider releases require proxy enforcement identity `tls-clienthello-sni-v1`.
+Deploy protected wrapper code and the rebuilt immutable proxy image together;
+old images fail readiness before Claude starts. ECH/GREASE clients are unsupported
+unless configured to use a supported non-ECH handshake; no automatic bypass or
+TLS interception occurs. A rollback to an old release removes this guarantee;
+use offline mode when a verified compatible release is unavailable.
 
 See [the portable contract and sibling adoption checklist](docs/network-contract.md)
 and [measured validation results](docs/validation.md). No sibling wrapper is claimed

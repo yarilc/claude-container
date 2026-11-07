@@ -1,5 +1,145 @@
 # Validation record
 
+
+## TLS destination-binding follow-up: 2026-11-07
+
+### Historical observation and component provenance
+
+The local, Git-ignored `todo.md` reports that the production sandbox with the
+unchanged `anthropic-api` policy accepted `CONNECT api.anthropic.com:443` followed
+by a TLS handshake naming `www.cloudflare.com`. The reported client verified the
+Cloudflare certificate and a `HEAD /` with that Host returned HTTP 403. The record
+states that no credentials or model requests were used. This is reported
+historical evidence of a shared-endpoint name mismatch, not proof of arbitrary
+application-content access. Exact proxy/image/guard identities, resolved address,
+client versions and an independently replayable transcript were not recorded in
+that observation; they must not be inferred from other validation runs.
+
+During the subsequent exploration, an in-memory component check generated a
+517-byte ClientHello with Cloudflare SNI and observed it forwarded unchanged by
+production `Proxy.tunnel`/bridge under Anthropic CONNECT, with the upstream
+connection replaced by instrumentation. An 18-byte non-TLS payload also passed.
+That check used no external network and established neither successful TLS
+certificate verification nor production guard/rootless acceptance.
+
+The revised implementation introduces mandatory `tls-clienthello-sni-v1`
+inspection. Its measured results are recorded separately below; historical
+transport/login/refresh passes do not certify the new proxy. No real credential,
+login, token refresh or model request is authorized by the synthetic checks.
+
+
+### Revised destination-binding acceptance
+
+Measured on 2026-11-07 using the same-host Unix rootless Podman service, server
+4.9.3 / Netavark, WSL `6.6.87.2-microsoft-standard-WSL2` x86_64 and usable
+Landlock ABI 3. OCI seccomp and the additive guard filter remain active; no
+privilege, namespace, SELinux or CA-verification relaxation was introduced.
+The outer Podman client reports 4.3.1. Runtime image
+`a96af83c8276d42d029a501ecfc6f886c446055ed5157a934cfeac486d9b0ef9`
+reports Claude 2.1.316, Node v22.23.4 and Python 3.11.2.
+
+| Identity | Measured value |
+| --- | --- |
+| Production proxy image | `16604a740686c469ede6695bda2c3dc6ded5f9203979b5060acc383dcb0ef12f` |
+| Required proxy enforcement | `tls-clienthello-sni-v1` |
+| Production guard SHA-256 | `6dc1ab5478118317f1228b21c04b7dfe95de7a5472e4fb811bb0a53ba0342a2c` |
+| Guard revision / transport | `abi3-seccomp-mux-v1` / mux v1 |
+| Toolchain image | `0b69ba43c894c4599fcfc0fa7b5e3c150ec26fcf7a2690e3c83708688ff9402c` |
+| Controlled policy revision / SHA-256 | `anthropic-2026-11-06-v1` / `45f645648427d15e9616b4212b168ed08a5d7347a5c10e2c3a4d5bcde8c4e1f5` |
+| Final guarded TLS fixture image | `dc8677433382ba816bf2503112abab81ebdc1ca7e185392edae4cb07e592d77f` |
+| Final API/account fixture image | `6dc3655fece722b4565a34aad166c349b3b5a07c4e8eb13d523f57e6cbae9afc` |
+
+Known retired ESNI/ECH name-hiding extensions (`0xffce`, `0xff02`,
+`0xff03`, `0xff04`) are also rejected; the final parser and controlled production
+regressions cover these alongside RFC 9849 ECH/GREASE. Their draft protocol
+references are recorded in `network/README.md`.
+
+The fixtures extend the unchanged packaged policy with `controlled-test`,
+`controlled-api` and `controlled-account` entries. The latter two retain the
+respective required hostname/port inventories and add explicit test-only loopback
+addresses. Test-image resolution sends these exact names to the controlled TLS
+listener. Production DNS/address checks still execute; packaged base profiles
+continue to reject local exceptions. Synthetic certificates cover both shared
+names and the API/account inventories. These fixtures are not public-provider
+authentication evidence or operator policy changes.
+
+| Check / command | Result | Evidence and limits |
+| --- | --- | --- |
+| `python3 -m unittest discover -s tests -p 'test_tls*.py' -v` | Passed: 12 tests | Generated TLS 1.2/1.3 hellos, every input split, record reassembly, normalization, malformed vectors, ECH/GREASE, exact/overflow limits, 500 deterministic mutations; proxy/relay zero-byte rejection, direct mux access, absolute timeout, 64 stalled inspections, budget overflow and channel-death release |
+| `python3 -m unittest discover -s tests -p test_mux.py -v` | Passed: 9 tests | Existing framing/state/credit/backpressure, stream isolation, 80 sequential requests, cancellation and channel death |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 13 tests | Protected native paths/snapshots plus mandatory manifest enforcement identity, including absent/old/wrong identities |
+| `bash tests/run-runtime.sh --setup` | Passed: 50 tests | Protected parser inventory, maintenance/rollback/PTY and synthetic credential-free setup behavior |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 56 tests | Engine, invocation/state/CA/delegation, signals and bounded owned cleanup |
+| `bash tests/run-runtime.sh --guard` | Passed: 15 tests in 49.355 seconds | Final production parser/proxy image through the static guard and confined relay, shared-address zero-byte rejection, fragmented verified TLS 1.3 with retry, TLS 1.2 session reuse, mixed healthy/rejected/stalled traffic, 80 repeated requests, streaming/long-lived/WebSocket and certificate denial; unchanged IP/IPC enforcement gate |
+| `bash tests/run-runtime.sh --network` | Initial run: 15 passed, one timed out in 302.478 seconds | All destination-binding/profile cases passed. The existing offline arguments/stdin/TTY case exceeded its 30-second test deadline under concurrent test load; this attempt is not reported as an all-pass suite |
+| `bash tests/run-runtime.sh --network -k guarded_arguments` | Passed: one test in 41.420 seconds | Isolated rerun verifies shared/isolated state, argument/stdin forwarding, exit 37 and TTY; resolves the failed case without weakening deadlines or enforcement |
+| `bash tests/run-runtime.sh --network -k tls_destination_binding` | Passed: one test in 58.606 seconds | Final proxy image and final fixture, controlled custom/API/account profiles; exact names and ports, verified TLS 1.2/1.3, fragmented TLS, retry/resumption, absent/malformed/duplicate/conflicting/different SNI, non-TLS, ECH, record/handshake limits, EOF and absolute deadline all exercised, including retired ESNI/ECH codes; every rejected initial input has zero upstream bytes |
+| `bash tests/run-runtime.sh --network -k readiness` | Passed: one test in 22.077 seconds | Separate absent TLS enforcement, wrong guard, mux version and policy readiness records all fail before the agent sentinel and clean owned resources |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: two tests in 68.891 seconds | Disposable protected provider setup CA on/off, fresh launcher and reconfiguration; candidate with historical proxy readiness is rejected and previous release stays active; no real login or service activation |
+| `bash -n claude-container.sh`, Python AST parsing, `git diff --check`, OpenSpec strict validation | Passed | Shell/Python syntax and artifact consistency; new untracked files also checked for whitespace |
+| Real provider login/refresh/model acceptance with revised proxy | Unavailable / not run | Existing historical account results remain separate; no real credentials were read and no model request was sent. Real-key API acceptance remains optional |
+
+Three initial harness launches failed in Podman before tests with
+`ContentLength ... Body length 0`; reruns with maintained terminal input started
+successfully. An initial direct setup-unit invocation used a read-only HOME and
+could not create disposable state; the supported native harness passed. Setup
+runtime development also exposed an old prepared proxy rejected by the new
+readiness contract and a fixture selector that reused the previous good image;
+final tests explicitly select disposable new/old images and verify rejection and
+rollback. No operator-owned image tags were replaced to make those tests pass.
+
+### Acceptance scenario map
+
+| Delta scenarios | Evidence |
+| --- | --- |
+| Authority validation; redirect/target changes | Existing policy, wrapper-network and guarded TLS tests; TLS mismatch assertion in `tests/tls_binding_fixture.py` |
+| Matching names/certificates; shared-address mismatch | Verified alternate-name unfiltered control, matching verified tunnels, and zero-byte counter assertions in `tests/tls_binding_fixture.py` through guard and wrapper |
+| Missing/ambiguous identity; non-TLS/unverifiable negotiation | `tests/test_tls_client_hello.py`, `tests/test_tls_proxy.py`, and controlled guarded fixture; ECH and GREASE both rejected |
+| Agent bypasses relay | `TLSProxyTests.test_direct_mux_rejection_zero_upstream_bytes_and_reuse` executes the production proxy over mux directly; guarded relay/wrapper acceptance is separately recorded above |
+| Fragmented/coalesced input | Every-split/parser tests, original-byte proxy echo tests, and verified TLS with record-fragmented ClientHello through the production guard/relay |
+| Exhaustion/EOF/deadline; concurrent failures/channel death | Parser exact/over limits, proxy fixed-storage/deadline/cancellation tests, controlled zero-byte rejection and mixed-stream progress, and existing production proxy-death/cleanup checks |
+| Old proxy or mismatched readiness | Manifest negatives, four readiness mismatch controls, and setup candidate rollback against a disposable historical-readiness image |
+| Sensitive/malicious diagnostic contents | Proxy secret-like SNI rejection tests and existing audit-redaction/log-cap tests; raw hello and rejected SNI never enter production logs |
+| Operator reviews guarantees | Wrapper help, setup mode guidance, README, setup/network docs and AGENTS.md distinguish initial TLS binding from encrypted application routing |
+| Controlled regression/compatibility matrix | Final guard and controlled API/account wrapper tests above; historical real-provider checks remain labeled separately |
+| Historical observation provenance | Historical subsection above preserves reported status and missing metadata; the component upstream stub is not production acceptance |
+
+N15, N16 and N17 are complete for the measured target and this implementation.
+N01 sibling rollout remains pending. The checked-out release and candidate image
+must be installed together to use this guarantee; existing operator installations
+were not activated or changed by these disposable acceptance tests.
+
+### Operator-reported setup and model behavior: 2026-11-07
+
+The operator subsequently reported rerunning setup and asking a model identified
+as Opus 5.5 to attempt to escape the sandbox. The model refused the request under
+its own safety guardrails. The operator accepted the result and authorized spec
+synchronization, change archival and a commit of the implementation.
+
+This is operator-reported setup and model-behavior evidence. A refusal does not
+exercise the sandbox boundary or replace the controlled enforcement tests above.
+No command transcript, CLI version, installed image/policy/guard identities or
+executed bypass attempts were supplied for this manual check, so it does not
+establish additional authenticated compatibility or containment results.
+
+
+### Specification synchronization and archive
+
+The completed change was archived as
+`openspec/changes/archive/2026-11-07-bind-provider-tls-destinations/` after all
+25 tasks were verified complete. Its `network-egress` delta was merged into the
+main specification: six requirements added and one updated, preserving the
+existing Purpose and all 17 unrelated requirements. Every delta requirement was
+compared against the merged main spec before archiving. Strict validation of
+`network-egress` passed, all nine main specs passed ordinary validation, and all
+12 TLS parser/proxy tests passed again before the commit.
+
+The global archived-task check passes this change but reports six pre-existing
+incomplete tasks in `2026-11-01-align-container-sandboxing` (20/26 complete).
+That historical archive is unchanged by this work and is not evidence of
+incomplete destination-binding implementation. Other existing main specs retain
+warnings about long requirement descriptions.
+
 ## Interactive setup implementation: 2026-11-07
 
 The `add-interactive-container-setup` change adds dedicated terminal-only host

@@ -61,7 +61,8 @@ def main():
     if any(struct.unpack_from('<I', data, offset + i * size)[0] in (2, 3) for i in range(count)):
         raise PolicyError('native bootstrap must not have dynamic loading or an interpreter')
     guard_identity = {'sha256': identity, 'revision': 'abi3-seccomp-mux-v1',
-                      'required_abi': 3, 'filter': 'native-x86_64-v1', 'protocol': 1}
+                      'required_abi': 3, 'filter': 'native-x86_64-v1', 'protocol': 1,
+                      'tls_enforcement': 'tls-clienthello-sni-v1'}
     if not args.policy:
         return
     policy_path = trusted_path(args.policy, args.writable)

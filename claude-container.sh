@@ -71,7 +71,11 @@ single final LF; extra blank or nonblank records stop startup before builds.
 Delegated socket verification also rejects any CR character, including CRLF.
 Restricted modes reject Podman delegation, including shell and YOLO. Provider
 mode uses an external CONNECT proxy; removing proxy variables cannot grant a
-direct route. Network restriction requires a protected installation outside
+direct route. The trusted proxy requires initial TLS 1.2/1.3 SNI matching CONNECT
+before forwarding client bytes. Missing/malformed SNI, ECH/GREASE and inspection
+limits/timeouts fail closed. This does not prove exclusive Anthropic application
+access: encrypted Host, shared-service routing and remote forwarding remain opaque.
+Network restriction requires a protected installation outside
 writable workspace/state trees and host Python 3. Initial support is the tested
 same-host Unix service with rootless Netavark/server 4.9.3. Unsupported setups
 fail closed. Image pulls/build RUN steps remain outside runtime filtering and
@@ -619,7 +623,7 @@ if [[ "$network_mode" == provider ]]; then
         ((SECONDS < proxy_deadline)) || die 'egress proxy unavailable: readiness deadline expired; check immutable image and policy'
         sleep 0.05
     done
-    [[ $(<"$session_dir/transport/ready") == "$policy_identity guard=$guard_digest mux=1" ]] || die 'egress proxy policy/bootstrap/protocol identity mismatch'
+    [[ $(<"$session_dir/transport/ready") == "$policy_identity guard=$guard_digest mux=1 tls=tls-clienthello-sni-v1" ]] || die 'egress proxy policy/bootstrap/protocol identity mismatch'
     container_args+=(--volume "$session_dir/transport:/run/claude-egress:ro"
         --volume "$script_dir/network/relay.py:/opt/claude-egress/relay.py:ro"
         --volume "$script_dir/network/mux.py:/opt/claude-egress/mux.py:ro")

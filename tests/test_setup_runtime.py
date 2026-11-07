@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import uuid
 
 from test_setup import pty_run
 
@@ -28,6 +29,33 @@ class SetupRuntime(unittest.TestCase):
                     'CONTAINER_HOST': os.environ['CONTAINER_HOST']}
         self.tags = set()
         self.addCleanup(self.clean_tags)
+        self.real_podman = shutil.which('podman')
+        self.proxy_selection = self.base / 'test-proxy-image'
+        self.proxy_selection.write_text(self.build_proxy(ROOT / 'network'))
+        prepared_proxy = self.proxy_selection.read_text()
+        # Route only setup's prepared-proxy lookup to this disposable build.
+        # Do not retag or replace any operator-owned image.
+        shim_dir = self.base / 'test-engine'
+        shim_dir.mkdir()
+        shim = shim_dir / 'podman'
+        shim.write_text('#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n'
+            + 'args=sys.argv[1:]\n'
+            + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/claude-egress:local', prepared_proxy)) + ": sys.exit(0)\n"
+            + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/claude-egress:local', prepared_proxy)) + ":\n"
+            + ' print(Path(' + repr(str(self.proxy_selection)) + ').read_text().strip()); sys.exit(0)\n'
+            + 'os.execv(' + repr(self.real_podman) + ',[' + repr(self.real_podman) + ',*args])\n')
+        shim.chmod(0o700)
+        self.env['PATH'] = str(shim_dir) + ':' + self.env['PATH']
+
+    def build_proxy(self, context):
+        tag = 'localhost/claude-setup-tls-test:' + uuid.uuid4().hex
+        self.tags.add(tag)
+        result = subprocess.run([self.real_podman, 'build', '--pull=never', '--tag', tag,
+                                 '--file', str(context / 'Containerfile'), str(context)],
+                                env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return subprocess.check_output([self.real_podman, 'image', 'inspect', '--format', '{{.Id}}', tag],
+                                       env=self.env, text=True).strip()
 
     def clean_tags(self):
         for path in self.root.glob('releases/*/setup.json'):
@@ -78,13 +106,31 @@ class SetupRuntime(unittest.TestCase):
         # No exported wrapper/network settings in this fresh launch environment.
         result = subprocess.run([str(self.command), '--version'], cwd=self.workspace,
                                 env={'PATH': self.env['PATH'], 'HOME': self.env['HOME']},
-                                capture_output=True, text=True, timeout=60)
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('Claude Code', result.stdout)
         self.assertIn('enforced revision=abi3-seccomp-mux-v1', result.stderr)
         self.assertRegex(result.stderr, r'(INFO\[\d+\] Should restart: false|level=info msg="Should restart: false")')
         self.assertNotRegex(result.stderr, r'ERRO\[\d+\] Should restart: false')
         self.assertNotIn('level=error msg="Should restart: false"', result.stderr)
+        # An otherwise complete candidate with historical proxy readiness must
+        # fail smoke before changing the managed current release.
+        old_source = self.base / 'old-proxy-source'
+        shutil.copytree(release, old_source)
+        proxy_source = old_source / 'network/proxy.py'
+        proxy_source.write_text(proxy_source.read_text().replace("' mux=1 tls=' + ENFORCEMENT", "' mux=1'"))
+        current_proxy = self.proxy_selection.read_text()
+        self.proxy_selection.write_text(self.build_proxy(old_source / 'network'))
+        old_candidates = set(self.root.joinpath('releases').iterdir())
+        code, output = self.setup_run('provider', source=old_source, login_prompt=False)
+        self.assertNotEqual(code, 0, output)
+        self.assertIn('setup incomplete', output)
+        self.assertEqual((self.root / 'current').resolve(), release)
+        self.assertEqual(set(self.root.joinpath('releases').iterdir()), old_candidates)
+        self.proxy_selection.write_text(current_proxy)
+        for line in output.splitlines():
+            if 'Prepared runtime image tag: ' in line:
+                self.tags.add(line.split('Prepared runtime image tag: ', 1)[1].strip())
         code, output = self.setup_run('provider')
         self.assertEqual(code, 0, output)
         second = (self.root / 'current').resolve()
@@ -131,6 +177,6 @@ class SetupRuntime(unittest.TestCase):
         self.assertFalse(previous_command.exists())
         result = subprocess.run([str(self.command), '--version'], cwd=previous_command.parent,
                                 env={'PATH': self.env['PATH'], 'HOME': self.env['HOME']},
-                                capture_output=True, text=True, timeout=60)
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('Claude Code', result.stdout)

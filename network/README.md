@@ -182,8 +182,9 @@ accepts only multiplex data frames. Neither exposes policy-changing operations,
 administration or descriptor transfer. Error logs use bounded normalized
 host/port/session/reason fields; framing errors never log raw payloads. Log
 retention remains capped at 1 MiB. TLS stays end-to-end with certificate validation;
-there is no TLS interception, application-content filtering, domain-fronting
-protection or control over provider-hosted remote tools and shared services.
+the initial ClientHello SNI is bound to CONNECT before client bytes are forwarded.
+There is no TLS interception, application-content filtering, domain-fronting
+protection for matching SNI or control over provider-hosted remote tools and shared services.
 
 Run `python3 -m unittest discover -s tests -p test_mux.py -v` or
 `bash tests/run-runtime.sh --mux` for framing/state/credit/cancellation and
@@ -191,3 +192,65 @@ concurrency checks. The real `--guard` suite also runs 80 sequential controlled
 TLS requests, concurrent streaming, WebSocket and certificate/destination-denial
 checks through the production static guard and confined relay. These are
 credential-free transport tests, not authenticated Claude compatibility.
+
+## Initial TLS ClientHello inspection
+
+The destination-binding parser in `tls_client_hello.py` supports TLS 1.2 legacy
+ClientHello and TLS 1.3 ClientHello with `supported_versions`. It reconstructs
+the first handshake across TLS records and multiplex DATA boundaries. Exactly
+one ASCII DNS SNI must match the normalized CONNECT hostname, using the same
+case and optional terminal-dot normalization as the policy. Missing, duplicate,
+conflicting, malformed, non-DNS or mismatched names fail closed. Unknown ordinary
+extensions and GREASE version values do not by themselves invalidate a supported
+hello; duplicate extensions, non-TLS, unsupported-only versions and ECH (including
+GREASE ECH) are rejected. No extension is stripped and no unchecked retry occurs.
+
+Inspection retains at most 64 KiB of handshake bytes and 96 KiB of original wire
+bytes, consumes at most 128 records with 16 KiB plaintext payloads, and never
+allocates from a peer-declared length. A fixed 8 KiB extension-presence bitmap
+bounds duplicate detection metadata. Original wire bytes, including consumed
+trailing data, remain ordered and unchanged. Parser rejection exposes only a
+fixed reason code, never raw SNI or handshake data. Tests:
+`python3 -m unittest discover -s tests -p test_tls_client_hello.py -v`.
+
+This parser verifies the initial plaintext ClientHello name. It cannot establish
+exclusive Anthropic application identity, inspect encrypted HTTP Host/authority,
+prevent shared-service routing or provider forwarding, or prevent data transfer
+to allowed services. Certificate verification remains the client's responsibility
+and stays end-to-end. The deployment acceptance status is recorded separately in
+`docs/validation.md`; parser tests alone do not establish production enforcement.
+
+The trusted proxy sends OPEN_OK after authority, DNS and address authorization;
+the relay then returns HTTP 200. This allows an ordinary client to submit its
+ClientHello, but does not authorize unchecked forwarding. During inspection the
+upstream can observe a TCP connection with zero client application bytes. A
+10-second absolute deadline starts after OPEN_OK and is not refreshed by input.
+The proxy reserves 160 KiB of handshake/wire storage per inspecting stream,
+at most 10 MiB per 64-stream session, in addition to existing mux credit bounds
+and fixed parser metadata. EOF, timeout, rejection and cancellation release the
+reservation and close the upstream. Valid streams remain independent.
+
+After validation, original bytes are flushed once and the existing bounded
+bridge carries opaque traffic. Rejections after OPEN_OK use stream CLOSE, never
+a second OPEN response. Direct use of the inherited mux channel receives the
+same trusted-proxy inspection. Denial reasons are `tls-identity`, `tls-malformed`,
+`tls-unsupported`, `tls-ech`, `tls-overflow`, and `tls-timeout`; only the authorized
+normalized destination is logged, with existing bounded/redacted audit fields.
+Run `python3 -m unittest discover -s tests -p test_tls_proxy.py -v` for proxy/relay
+zero-byte rejection, concurrent inspection, deadline and channel-death checks.
+
+Provider manifests and readiness require `tls-clienthello-sni-v1` in addition to
+policy, guard digest and mux v1 identities. Rebuild and select the immutable proxy
+image together with the matching protected release; an old proxy fails before
+agent startup. Setup packages the parser and smoke-checks the candidate before
+activation. Rollback to historical code/images removes the new guarantee; use
+offline mode if matching, verified code/images cannot be deployed. No ECH/GREASE
+compatibility failure may automatically relax policy or enable interception.
+
+Known retired encrypted-name extensions are rejected with `tls-ech` as well:
+ESNI `0xffce` ([draft-ietf-tls-esni-05](https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-05))
+and early ECH `0xff02`, `0xff03`, `0xff04`
+([draft-ietf-tls-esni-07](https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-07)).
+These cannot be treated as ordinary unknown extensions when validating visible
+server-name identity. New name-hiding mechanisms require explicit reassessment;
+initial ClientHello inspection does not establish later application identity.

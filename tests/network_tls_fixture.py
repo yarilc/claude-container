@@ -17,13 +17,37 @@ import proxy
 # exception. Production proxy resolution/address validation still runs in full.
 original_resolver = socket.getaddrinfo
 def fixture_resolver(host, port, *args, **kwargs):
-    return original_resolver('127.0.0.1' if host == 'localhost.localdomain' else host,
-                             port, *args, **kwargs)
+    return original_resolver('127.0.0.1' if host in ('localhost.localdomain', 'alternate.test', 'api.anthropic.com', 'claude.ai', 'claude.com', 'platform.claude.com') else host,
+                             8443 if host in ('api.anthropic.com', 'claude.ai', 'claude.com', 'platform.claude.com') else port, *args, **kwargs)
 socket.getaddrinfo = fixture_resolver
+
+
+counts = []
+counts_lock = threading.Lock()
 
 
 class Endpoint(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == '/alternate-control':
+            control_context = ssl.create_default_context(cafile='/test/cert.pem')
+            with socket.create_connection(('127.0.0.1', 8443), timeout=5) as raw:
+                with control_context.wrap_socket(raw, server_hostname='alternate.test') as secure:
+                    secure.sendall(b'GET / HTTP/1.1\r\nHost: alternate.test\r\nConnection: close\r\n\r\n')
+                    assert secure.recv(1024).startswith(b'HTTP/1.0 200')
+            body = b'alternate-verified-control-ok'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == '/counts':
+            with counts_lock:
+                body = json.dumps(counts).encode()
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == '/redirect':
             self.send_response(302)
             self.send_header('Location', 'https://unapproved.test/?token=fixture-secret-token')
@@ -126,9 +150,27 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         pass
 
 
-server = http.server.ThreadingHTTPServer(('127.0.0.1', 8443), Endpoint)
+class TLSFixtureServer(http.server.ThreadingHTTPServer):
+    def process_request_thread(self, request, address):
+        try:
+            request.settimeout(12)
+            initial = request.recv(16384, socket.MSG_PEEK)
+            with counts_lock:
+                counts.append(len(initial))
+            if not initial:
+                return
+            secure = context.wrap_socket(request, server_side=True)
+            super().process_request_thread(secure, address)
+        except (OSError, ssl.SSLError):
+            pass
+        finally:
+            request.close()
+
+
+server = TLSFixtureServer(('127.0.0.1', 8443), Endpoint)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain('/test/cert.pem', '/test/key.pem')
-server.socket = context.wrap_socket(server.socket, server_side=True)
+# A supported curve absent from the client's initial key share exercises TLS 1.3 HRR.
+context.set_ecdh_curve('prime256v1')
 threading.Thread(target=server.serve_forever, daemon=True).start()
 asyncio.run(proxy.main())

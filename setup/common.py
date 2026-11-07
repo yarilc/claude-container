@@ -19,7 +19,7 @@ MANIFEST = (
     'network/guard-build.Containerfile', 'network/build-guard.sh',
     'network/guard.c', 'network/guard_landlock.h', 'network/guard_seccomp.h',
     'network/control.py', 'network/policy.py', 'network/proxy.py',
-    'network/relay.py', 'network/mux.py', 'network/resolv.conf',
+    'network/tls_client_hello.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf',
     'network/policies/default.json',
 )
 GUARD_INPUTS = ('network/guard.c', 'network/guard_landlock.h',

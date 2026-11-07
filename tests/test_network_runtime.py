@@ -110,7 +110,7 @@ class NetworkRuntime(unittest.TestCase):
                     '--user', f'{os.getuid()}:{os.getgid()}', '--volume', f'{context}:/fixture:rw',
                     '--entrypoint', 'openssl', IMAGE, 'req', '-x509', '-newkey', 'rsa:2048',
                     '-nodes', '-days', '1', '-subj', '/CN=localhost.localdomain', '-addext',
-                    'subjectAltName=DNS:localhost.localdomain', '-keyout', '/fixture/key.pem',
+                    'subjectAltName=DNS:localhost.localdomain,DNS:alternate.test,DNS:api.anthropic.com,DNS:claude.ai,DNS:claude.com,DNS:platform.claude.com', '-keyout', '/fixture/key.pem',
                     '-out', '/fixture/cert.pem')
         shutil.copyfile(ROOT / 'tests/network_tls_fixture.py', context / 'upstream.py')
         (context / 'Containerfile').write_text(f'FROM {proxy_id}\nCOPY cert.pem key.pem upstream.py /test/\nENTRYPOINT ["python3", "/test/upstream.py"]\n')
@@ -123,6 +123,11 @@ class NetworkRuntime(unittest.TestCase):
         value = json.loads((ROOT / 'network/policies/default.json').read_text())
         value['profiles']['controlled-test'] = {'authentication': 'custom', 'disable_optional_traffic': True,
             'destinations': [{'host': 'localhost.localdomain', 'port': 8443, 'addresses': ['127.0.0.1', '::1']}]}
+        for authentication in ('api', 'account'):
+            profile = json.loads(json.dumps(value['profiles']['anthropic-' + authentication]))
+            for destination in profile['destinations']:
+                destination['addresses'] = ['127.0.0.1']
+            value['profiles']['controlled-' + authentication] = profile
         policy_file = self.install / 'test-policy.json'
         policy_file.write_text(json.dumps(value))
         shutil.copyfile(context / 'cert.pem', self.project / 'cert.pem')
@@ -130,8 +135,24 @@ class NetworkRuntime(unittest.TestCase):
                        'CLAUDE_CONTAINER_NETWORK_POLICY': str(policy_file),
                        'CLAUDE_CONTAINER_NETWORK_PROFILE': 'controlled-test',
                        'CLAUDE_CONTAINER_EGRESS_IMAGE': fixture_id}
+        import sys
+        sys.path.insert(0, str(ROOT / 'network'))
+        from policy import revision
+        print('controlled TLS evidence: proxy=' + proxy_id + ' fixture=' + fixture_id
+              + ' enforcement=tls-clienthello-sni-v1 policy=' + revision(value), flush=True)
         self.policy_file = policy_file
         return context, environment
+
+    def test_tls_destination_binding_controlled_profiles(self):
+        _, environment = self.provider_fixture()
+        shutil.copyfile(ROOT / 'tests/tls_binding_fixture.py', self.project / 'binding.py')
+        for profile, hosts in (('controlled-test', 'localhost.localdomain'),
+                               ('controlled-api', 'api.anthropic.com'),
+                               ('controlled-account', 'api.anthropic.com,claude.ai,claude.com,platform.claude.com')):
+            result = self.shell('python3 binding.py ' + hosts + '\n', **(environment | {
+                'CLAUDE_CONTAINER_NETWORK_PROFILE': profile}))
+            self.assert_success(result)
+            self.assertIn('tls-destination-binding-ok', result.stdout)
 
     def test_provider_uses_real_proxy_and_cleans_resources(self):
         context, environment = self.provider_fixture()
@@ -302,19 +323,26 @@ if args and args[0]=='start':
   while time.monotonic()<deadline:
    paths=list(pathlib.Path(os.environ['NETWORK_RUNTIME']).glob('session.*/transport/ready'))
    if paths:
-    paths[0].write_text('wrong-bootstrap-identity'); break
+    ready=paths[0].read_text(); case=os.environ['NETWORK_READY_CASE']
+    if case=='tls': ready=ready.replace(' tls=tls-clienthello-sni-v1', '')
+    elif case=='guard': ready=ready.replace(' guard=', ' guard=wrong')
+    elif case=='protocol': ready=ready.replace(' mux=1', ' mux=2')
+    else: ready='wrong-policy '+ready
+    paths[0].write_text(ready); break
    time.sleep(.02)
  sys.stdout.write(result.stdout); sys.stderr.write(result.stderr); sys.exit(result.returncode)
 os.execv(real,[real,*args])
 ''')
         shim.chmod(0o700)
-        result = self.shell('touch agent-started\n', **environment,
-            PATH=str(shim_dir)+':'+os.environ['PATH'], NETWORK_REAL_PODMAN=shutil.which('podman'),
-            NETWORK_RUNTIME=str(self.runtime))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('identity mismatch', result.stderr)
-        self.assertFalse((self.project / 'agent-started').exists())
-        self.assertFalse(list(self.runtime.iterdir()))
+        for case in ('tls', 'guard', 'protocol', 'policy'):
+            with self.subTest(identity=case):
+                result = self.shell('touch agent-started\n', **environment,
+                    PATH=str(shim_dir)+':'+os.environ['PATH'], NETWORK_REAL_PODMAN=shutil.which('podman'),
+                    NETWORK_RUNTIME=str(self.runtime), NETWORK_READY_CASE=case)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('identity mismatch', result.stderr)
+                self.assertFalse((self.project / 'agent-started').exists())
+                self.assertFalse(list(self.runtime.iterdir()))
 
     def test_guarded_arguments_stdin_status_and_tty_both_state_modes(self):
         import pty
