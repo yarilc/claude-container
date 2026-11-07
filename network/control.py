@@ -33,6 +33,9 @@ def main():
     installation = trusted_path(args.installation, args.writable, directory=True)
     for name in ('claude-container.sh', 'network/control.py', 'network/policy.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf'):
         trusted_path(installation / name, args.writable)
+    diagnostics = installation / 'setup/diagnostics.py'
+    if diagnostics.exists() or diagnostics.is_symlink():
+        trusted_path(diagnostics, args.writable)
     for target in args.mount_target:
         target = Path(target)
         if not target.is_absolute() or '..' in target.parts:

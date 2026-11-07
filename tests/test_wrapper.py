@@ -98,6 +98,9 @@ elif args[0] == 'rm':
         except ProcessLookupError:
             pass
 elif args[0] == 'start':
+    if os.environ.get('FAKE_START_STDERR'):
+        sys.stderr.write(os.environ['FAKE_START_STDERR'])
+        sys.stderr.flush()
     time.sleep(float(os.environ.get('FAKE_START_DELAY', '0')))
     if os.environ.get('FAKE_WAIT'):
         for name in ('TERM', 'INT', 'HUP'):
@@ -373,6 +376,18 @@ class WrapperTests(unittest.TestCase):
             result = self.run_wrapper(FAKE_EXIT=status)
             self.assertEqual(result.returncode, int(status))
             self.assertIn(['rm', '--force', '--time', '0', '--ignore', OWNED_ID], self.calls())
+
+    def test_successful_restart_check_is_informational_and_real_errors_remain(self):
+        diagnostics = ('ERRO[0074] Should restart: false\n'
+                       'ERRO[0074] Failed to check if container should restart: unavailable\n'
+                       'ERRO[0074] Should restart: true\n')
+        result = self.run_wrapper('--version', FAKE_START_STDERR=diagnostics, FAKE_EXIT='17')
+        self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertIn('INFO[0074] Should restart: false\n', result.stderr)
+        self.assertNotIn('ERRO[0074] Should restart: false\n', result.stderr)
+        self.assertIn('ERRO[0074] Failed to check if container should restart: unavailable\n', result.stderr)
+        self.assertIn('ERRO[0074] Should restart: true\n', result.stderr)
+        self.assertNotIn('Should restart', result.stdout)
 
     def test_cleanup_failure_or_stall_preserves_application_status(self):
         for mode in ('FAKE_FAIL', 'FAKE_STALL'):

@@ -7,6 +7,35 @@ through the host socket without running a nested daemon.
 
 ## Enable rootless Podman on the host
 
+For a guided installation, run this from a reviewed checkout on the Linux/WSL
+host as the non-root user who will run the sandbox:
+
+```bash
+bash ./claude-container.sh --container-setup
+```
+
+Setup requires an interactive terminal, installed rootless Podman, host Python 3
+and GNU coreutils. It asks how you want to work, explains network/state/authority
+choices and prepares a protected native installation plus a managed launch
+command. The first-run defaults are provider-restricted networking with Claude
+account authentication, shared Claude state and
+disabled optional authority. No API key is needed for Claude account use. Setup
+does not install Podman or any other host package. The following manual steps
+remain available for prerequisite preparation and troubleshooting.
+
+See the [guided setup reference](docs/setup.md) for saved preferences, image
+preparation, reruns/rollback and separate sandbox/authentication readiness.
+
+When a Unix service is required, setup reuses the selected same-host rootless
+endpoint or offers `systemctl --user enable --now podman.socket` with separate
+confirmation. This enables a host launch service; application delegation remains
+a separate unrestricted-only choice. No `sudo`, lingering or WSL/system-wide
+configuration changes are performed. Without a working user manager, setup gives
+foreground-service instructions below and stays incomplete until that endpoint
+is verified. A socket file by itself is not sufficient. Missing rootless UID/GID
+mappings or helpers must be addressed outside setup; `podman info` must succeed
+as the intended non-root user.
+
 Run this setup on the Linux host (or inside your Linux/WSL distribution),
 using the same non-root account that will run `claude-container.sh`.
 Install Podman and its rootless dependencies using your distribution's
@@ -166,7 +195,9 @@ sockets and is superseded. See [bootstrap build/tests](network/README.md) and
 execution is checked separately with a controlled synthetic Messages API; it
 does not establish real provider authentication or model behavior.
 
-**Migration:** networking now defaults to `offline`. Use explicit `unrestricted`
+**Migration:** direct wrapper invocation without managed setup preferences
+defaults to `offline`; first-run guided setup proposes `provider` with account
+authentication and saves the selected mode. Use explicit `unrestricted`
 for the previous broad-network behavior. A required image build now also needs
 exact `CLAUDE_CONTAINER_MAINTENANCE=1`; runtime mode never grants maintenance
 authority. An absent image no longer triggers an implicitly authorized build.
@@ -210,9 +241,10 @@ such as `/tmp` are unsuitable. For example, install from this checkout:
 
 ```bash
 installation="$HOME/.local/lib/claude-container"
-install -d -m 700 "$installation/network/policies" "$installation/network/bin"
+install -d -m 700 "$installation/network/policies" "$installation/network/bin" "$installation/setup"
 install -m 700 claude-container.sh "$installation/claude-container.sh"
 install -m 644 Containerfile .containerignore "$installation/"
+install -m 644 setup/diagnostics.py "$installation/setup/"
 install -m 644 network/control.py network/policy.py network/proxy.py \
     network/relay.py network/mux.py network/resolv.conf network/Containerfile network/.containerignore "$installation/network/"
 install -m 600 network/policies/default.json "$installation/network/policies/default.json"

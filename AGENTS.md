@@ -19,6 +19,9 @@ Claude Code:
 - `docs/validation.md` records verified environments and unavailable checks.
 - `network/` contains protected operator policies, preflight/snapshot validation,
   the standalone CONNECT proxy image, native IPC bootstrap, and agent-side relay.
+- `setup/` contains host-only interactive preparation, declarative managed
+  preferences, the exec-based launcher and a sandbox smoke check.
+- `docs/setup.md` documents guided installation, maintenance consent and rollback.
 - `docs/network-contract.md` defines the shared mode and rollout contract;
   sibling wrappers remain independently unassessed.
 
@@ -101,6 +104,15 @@ and SELinux policy. Existing connected pairs may have private inert names, but
 cannot listen, retarget or publish in host binds. Production guard checks and
 mocked component checks are separate. Record the WSL IP/IPC/proxy gate separately
 from authenticated compatibility; no kernel upgrade is required.
+
+Run `python3 -m unittest discover -s tests -p test_setup.py -v` or
+`bash tests/run-runtime.sh --setup` for synthetic setup/PTY checks. The opt-in
+`bash tests/run-runtime.sh --setup-runtime` uses disposable native installation
+and state with the existing same-host service and prepared images. It must not
+enable real user services, read real credentials or send model requests. Record
+real systemd activation/login as unavailable unless explicitly exercised.
+Keep help independent of setup preferences, strict declarative JSON outside all
+writable mounts, exact maintenance consent and last-working-release rollback.
 
 Changes to host CA handling must also verify both modes: with
 `CLAUDE_CONTAINER_TRUST_HOST_CA` unset, no CA mount or CA variables are

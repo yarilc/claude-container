@@ -1,0 +1,240 @@
+# Interactive sandbox setup
+
+The durable contract is [container-setup](../openspec/specs/container-setup/spec.md).
+The [archived change](../openspec/changes/archive/2026-11-07-add-interactive-container-setup/)
+retains the design, completed tasks and delta specifications.
+
+Run `bash ./claude-container.sh --container-setup` from a reviewed checkout,
+as the non-root Linux/WSL user who will use the sandbox. Podman and its rootless
+dependencies must already be installed. Host Python 3, Bash and GNU coreutils
+are also required. Setup needs terminal stdin/stdout; redirected answers and
+combinations with launch flags or Claude arguments are rejected. Help is always
+available through `--container-help` without loading preferences or using Podman.
+
+## Choices and preparation
+
+The prompts cover network access, account/API authentication for online use,
+shared/fresh isolated state, delegation, permission bypass, worktree scope, host
+CA trust, installation/command paths and the Podman endpoint. Provider choices
+select `anthropic-account` or `anthropic-api` from the protected packaged policy.
+No API key is needed for account use. First-run setup defaults to provider mode
+with account authentication, shared state,
+ordinary Claude approvals, current workspace only, delegation off and CA trust off.
+Accept defaults with Enter; invalid choices are requested again. Existing saved
+choices are offered for review on rerun, including a previously selected offline
+mode. Direct wrapper invocation without managed preferences still defaults to
+offline; the managed launcher applies the network choice saved by setup.
+
+Restricted modes retain the existing measured WSL/kernel/ABI/backend/security
+requirements; setup does not extend that support matrix. It diagnoses missing
+Podman, UID/GID mappings/helpers, runtime directories and unsupported engines.
+Fix those host prerequisites separately. Setup never installs host packages,
+uses sudo, edits subordinate-ID mappings, enables lingering, changes WSL init,
+disables security policy or silently selects unrestricted networking.
+
+For restricted launch or optional delegation, setup verifies the selected
+same-host rootless Unix service. `default` derives the socket from the current
+`XDG_RUNTIME_DIR` (or `/run/user/<uid>`) on every invocation; an explicit
+`unix:///absolute/socket` is retained literally. `local` is available for
+unrestricted launch without delegation. TCP/SSH, named contexts and implicitly
+remote engines remain unsupported. Bind/build paths must exist at their real
+absolute paths on that same Linux host, including when running from a container.
+
+When available, setup can run `systemctl --user enable --now podman.socket`
+after separate confirmation. This persistent user-service change does not
+delegate the socket to the application. Without a working user manager, setup
+prints foreground `podman system service --time=0` instructions and stays
+incomplete until an endpoint is verified. It does not leave a background daemon
+or repair an administrator-owned `/run` directory. A service enabled before
+later cancellation is reported and retained, since other clients may use it.
+
+Review the settings and image plan before approving preparation. A separate
+refresh question allows rebuilding prepared images/guard. Builds and pulls are
+host maintenance: their network traffic, including build-time package downloads,
+is outside runtime egress filtering even when the chosen session mode is offline.
+Consent grants exact maintenance authorization only to these preparation
+commands. It is not saved or enabled for subsequent ordinary launches.
+
+Every mode needs a runtime image; restricted modes also need the static guard
+and its digest manifest. Provider additionally needs the immutable proxy image,
+selected policy and private egress runtime directory. Setup reuses inspected
+artifacts when suitable and prepares missing ones from the existing recipes.
+Compiler tools are installed only in the pinned toolchain image. Compilation
+uses that immutable image without networking. Failed recipe/package acquisition
+does not change pins automatically; resolve the reported maintenance stage and
+rerun. Unrestricted mode skips the guard/toolchain/proxy, and offline skips the
+provider proxy/authentication.
+
+## Managed installation and launch
+
+Default paths:
+
+- Installation: `$HOME/.local/lib/claude-container` on native Linux storage.
+- Command: `$HOME/.local/bin/claude-container`.
+- Egress state: `$HOME/.local/state/claude-egress`.
+- Optional fresh isolated home: `$HOME/.local/share/claude-container/home`.
+
+Source may be on a Windows mount; installation, private state and executable
+guard output need permission-enforcing native storage with protected ancestors.
+Setup copies an explicit input manifest, never a whole checkout or credentials.
+Group/other-writable ancestors, unsafe existing modes and paths overlapping the
+writable workspace/worktree/state are rejected without recursive repairs.
+An existing safe flat manual installation can coexist with managed releases.
+An absent installation directory is created with mode `0700`. An existing
+caller-owned `0755` installation root is accepted without changing its mode:
+installation code requires write protection, while credential/state directories
+and managed releases retain their private permission checks. Invalid ownership
+or inaccessible existing roots are diagnosed before maintenance confirmation.
+
+Each `releases/<id>/` contains its runtime/setup/build inputs and private
+versioned `setup.json`. `current` selects the active release. Setup holds
+`.setup.lock` during preparation/activation and publishes the pointer only after
+the candidate smoke check passes. A failed candidate is removed; the last
+working release and credential state are preserved. Concurrent setup fails with
+a busy message. Remove a stale empty `.setup.lock` only after confirming that
+no setup process is active. An unrelated command file or reserved-path symlink
+is never overwritten.
+
+Use the absolute completion command, or add its directory to PATH yourself:
+
+```bash
+cd /path/to/my-project
+"$HOME/.local/bin/claude-container"
+"$HOME/.local/bin/claude-container" --container-shell
+"$HOME/.local/bin/claude-container" --container-setup
+```
+
+Setup does not edit shell startup files. If the command directory is absent from
+PATH, the plan and completion output
+show a shell-quoted `export PATH=/absolute/command/directory:"$PATH"` command and
+suggest adding that line to the appropriate shell startup file for persistence.
+The managed command loads validated
+non-secret JSON and execs the installed wrapper; preferences are never sourced
+as shell code. It preserves current directory, stdin, arguments, terminal and
+exit/signal handling. Settings provide defaults only for variables absent from
+the environment. Explicit values, including empty values, take precedence and
+must pass normal validation. A nonempty `CLAUDE_CONFIG_DIR` conflicts with an
+isolated home; unset it deliberately rather than expecting setup to discard it.
+
+The installation and command remain outside writable mounts on every managed
+launch, including unrestricted mode. A future worktree parent containing them
+is rejected with relocation guidance. Rerun setup to change saved workspace
+scope, or invoke the installed wrapper directly for per-invocation choices.
+The invoked command's own path is checked as well as the configured path,
+including relative invocation, copied dispatchers and symlink aliases. A command
+or alias inside the effective writable workspace/state is rejected before launch.
+When setup changes the managed command path, it retires the previous owned
+command after publishing the new one. A retirement/publication failure restores
+the previous activation and leaves the previous command intact. The plan names
+the command to be retired; unrelated files are never removed.
+
+Existing dispatchers from before this path-check protocol are upgraded
+atomically by setup. Such a dispatcher can still request help/setup, but normal
+launch against the new helper fails closed until the upgrade. Run setup from the
+updated checkout to install both matching components; no image refresh is needed.
+Direct `claude-container.sh` retains its existing environment-based behavior and
+does not load a global configuration. Managed help bypasses preferences and
+Python, including when preferences are corrupt. Setup rerun uses saved choices;
+to repair invalid JSON, first review/restore the affected file or use a reviewed
+checkout and a different installation root.
+
+Rerunning from the installed command reconfigures that installed source version.
+To install updated source, run setup from the reviewed updated checkout and
+select the same installation root. Runtime images use distinct candidate tags;
+proxy references are immutable IDs. An explicitly authorized ordinary
+`--container-build` still operates on the selected named runtime image and is
+separate from setup's release transaction.
+
+The previous release is retained. For rollback, stop setup updates, take the
+same installation lock, inspect the previous release and its `setup.json`, then
+atomically replace `current` with a symlink to that release. Alternatively run
+the prior manual wrapper with its explicit environment. Never delete state to
+roll back. Automatic pruning is not provided. New image tags and enabled user
+sockets can remain after failure; setup reports persistent effects and does not
+remove shared engine resources or undo service enablement automatically.
+If rolling back across a command-path or dispatcher-protocol change, restore
+the matching command/configuration as well; changing only `current` does not
+recreate a retired command or adapt an older launch helper's interface.
+
+## Readiness and authentication
+
+Setup smoke-checks the actual installed wrapper with the selected state, network
+and CA settings, without credentials in its environment or a model request. It
+checks the Claude executable; restricted smoke also exercises enforced Unix
+socket denial, direct egress denial, own-loopback/pair compatibility and, for
+provider mode, the confined proxy deny path. ABI query success alone is not
+accepted. Failure prevents activation and returns nonzero.
+
+Completion distinguishes:
+
+| Result | Meaning |
+| --- | --- |
+| `Sandbox: ready`, authentication pending | Installation/smoke passed; login/key configuration still needs user action. Setup returns zero. |
+| `Sandbox: ready`, account login verified | Claude login succeeded through this sandbox; no model request was tested. |
+| `Sandbox: ready`, authentication not applicable | Offline sandbox is usable without provider authentication. |
+| setup incomplete | A prerequisite/preparation/smoke step failed. Setup returns nonzero and leaves the last activated release selected. |
+
+Account users can reuse shared state or accept optional
+`auth login --claudeai` in the selected fresh isolated sandbox. Claude displays
+the login flow directly and owns credential persistence; setup never captures
+codes, credential-bearing URLs or tokens. Login cancellation/failure leaves a
+ready sandbox with authentication pending. To log in later:
+
+```bash
+"$HOME/.local/bin/claude-container" auth login --claudeai
+```
+
+API setup does not collect or save an API key. Provider/API launches use the
+existing `ANTHROPIC_API_KEY` environment forwarding by name. Supply that variable
+through your normal private secret mechanism when launching. The existing
+unrestricted wrapper does not add API-key environment forwarding; use
+provider/API or explicitly configured Claude credentials for that workflow.
+Setup performs no paid model request. Shell/version smoke, account login and
+authenticated model-response evidence remain separate.
+
+The wrapper reclassifies Podman 4.3's successful `Should restart: false` message
+as informational (`INFO[...]` or `level=info`), preserving its timestamp and
+message. All other stderr bytes, including actual restart-check errors, remain
+unchanged; interactive prompts do not wait for a newline. The host-side adapter
+is installed by setup and its owned process shares the wrapper shutdown budget.
+Legacy direct unrestricted installations lacking host Python or the adapter keep
+their original Podman diagnostics instead of gaining a Python prerequisite.
+
+## Verification
+
+Synthetic tests use fake engines, PTYs and disposable native state:
+
+```bash
+python3 -m unittest discover -s tests -p test_setup.py -v
+bash tests/run-runtime.sh --setup       # container-provided Python/native storage
+bash tests/run-runtime.sh --setup-runtime  # opt-in real rootless WSL acceptance
+```
+
+Runtime checks use existing prepared images, disposable installation/state and
+an existing same-host service; they do not enable user services or access real
+credentials. Real systemd activation and optional real login require a user to
+accept their respective setup prompts. Record unexercised variants as unavailable
+in `docs/validation.md` and retain the optional status of a real API-key request.
+
+The `container-setup` requirement coverage is:
+
+| Requirement | Verification |
+| --- | --- |
+| Dedicated interactive setup invocation | PTY early-dispatch, mixed-argument/pipeline rejection and help precedence tests |
+| Workflow questionnaire with explicit defaults | Default/retry/conflict PTY checks; saved-choice rerun; real provider/offline/unrestricted paths |
+| Optional authority requires deliberate selection | Delegation conflict questionnaire; separate service confirmation; saved worktree/TTY checks |
+| Installed host prerequisites only | Missing command, unsupported context/platform and strict failed/malformed engine-response tests |
+| User-scoped Podman service preparation | Synthetic accepted/declined/unavailable systemd and exact-endpoint tests; real existing-service reuse |
+| Reviewed setup mutations and maintenance | Declined plan has no filesystem/image mutation; scoped maintenance/environment tests |
+| Protected complete installation | Native manifest copy from Windows checkout; path/ancestor/overlap/state/privacy checks |
+| Mode-specific image and guard preparation | Inspection/recipe pin/build failure/guard preflight tests; real compilation and provider/offline/unrestricted smoke |
+| Persistent non-secret managed launch preferences | Schema/privacy/secret rejection, empty overrides, argv/stdin/cwd/TTY/status/signal and future-mount tests |
+| Credential-preserving authentication assistance | Synthetic direct-terminal login success/failure/cancellation and absent-key cases; real login separately opt-in |
+| Verified readiness with separate authentication status | Actual installed guard, proxy deny path, CA off/on, version/shell and explicit pending/not-applicable results |
+| Repeatable setup with owned recovery | Lock/publication/interruption/container cleanup tests; real rerun and failed-candidate rollback |
+
+Adversarial regression checks additionally cover managed-command relocation,
+retirement failure/rollback, legacy dispatcher upgrade and writable aliases.
+Timeout checks include an already-exited group leader and a descendant that
+closes pipes on TERM while continuing to run. Tests use a separate Linux
+subreaper to collect their own orphaned descendants without leaving zombies.

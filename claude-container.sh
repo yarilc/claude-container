@@ -23,6 +23,7 @@ its parent with --container-git-worktree) and the Claude configuration directory
 are mounted read/write.
 
 Container options:
+  --container-setup      interactively prepare a complete user installation
   --container-build      build or refresh the container image before starting
   --container-shell      open a shell instead of starting Claude Code
   --container-git-worktree mount the parent of the current directory read/write
@@ -83,6 +84,21 @@ New Unix services are unavailable; fixed-peer pairs may have private inert names
 See network/README.md for packaging and docs/validation.md for measured evidence.
 EOF
 }
+
+# Setup must diagnose prerequisites before normal runtime configuration exists.
+# Help takes precedence regardless of option order and never loads setup code.
+for arg in "$@"; do
+    [[ "$arg" != --container-help ]] || { usage; exit 0; }
+done
+for arg in "$@"; do
+    if [[ "$arg" == --container-setup ]]; then
+        [[ $# == 1 ]] || die '--container-setup must be used alone'
+        [[ -t 0 && -t 1 ]] || die '--container-setup requires an interactive terminal'
+        command -v python3 >/dev/null || die 'host Python 3 is required for interactive setup'
+        setup_script=$(readlink -f -- "${BASH_SOURCE[0]}")
+        exec python3 -I "$(dirname -- "$setup_script")/setup/setup.py"
+    fi
+done
 
 build_image=0
 shell_mode=0
@@ -381,6 +397,8 @@ done <<< "$names"
 # confused with a create-time naming collision. Remove only our own container.
 container_id=''
 client_pid=''
+diagnostics_pid=''
+diagnostics_fd=''
 create_pid=''
 session_dir=''
 session_token=''
@@ -510,11 +528,15 @@ creation_lookup() {
 
 # shellcheck disable=SC2329 # Invoked by EXIT and signal traps.
 shutdown() {
-    local primary_status=$1 signal=${2:-} graceful_until
+    local primary_status=$1 signal=${2:-} graceful_until diagnostics_until
     trap - EXIT
     trap '' TERM INT HUP
     set +e
     shutdown_deadline=$((SECONDS + 20))
+    if [[ -n "$diagnostics_fd" ]]; then
+        exec {diagnostics_fd}>&-
+        diagnostics_fd=''
+    fi
     if [[ -n "$session_dir" ]]; then
         recover_container
         recover_proxy
@@ -528,6 +550,12 @@ shutdown() {
         [[ -z "$container_id" ]] || control rm --force --time 0 --ignore "$container_id" >/dev/null
         reap_client "$create_pid"
         reap_client "$client_pid"
+        # Drain the final client log before reaping its owned stderr adapter.
+        diagnostics_until=$((SECONDS + 1))
+        while child_running "$diagnostics_pid" && ((SECONDS < diagnostics_until && SECONDS < shutdown_deadline - 1)); do
+            sleep 0.01
+        done
+        reap_client "$diagnostics_pid"
         # Cancellation can race with the server publishing its create result.
         if ((creation_pending)) && [[ -z "$container_id" ]]; then
             recover_container
@@ -654,8 +682,21 @@ done
 
 # Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
 # for the background client; traps can forward signals while wait is active.
-podman start --attach --interactive "$container_id" <&0 &
-client_pid=$!
+if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null; then
+    # Optional for legacy unrestricted installs without host Python. Only the
+    # exact successful Podman 4.3 restart-check line changes level; errors pass.
+    mkfifo -- "$session_dir/diagnostics.pipe"
+    python3 -I "$script_dir/setup/diagnostics.py" <"$session_dir/diagnostics.pipe" >&2 &
+    diagnostics_pid=$!
+    exec {diagnostics_fd}>"$session_dir/diagnostics.pipe"
+    podman start --attach --interactive "$container_id" <&0 2>&"$diagnostics_fd" {diagnostics_fd}>&- &
+    client_pid=$!
+    exec {diagnostics_fd}>&-
+    diagnostics_fd=''
+else
+    podman start --attach --interactive "$container_id" <&0 &
+    client_pid=$!
+fi
 status=0
 wait "$client_pid" || status=$?
 exit "$status"

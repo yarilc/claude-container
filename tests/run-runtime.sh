@@ -12,6 +12,12 @@ guard_environment=()
 if [[ "${1:-}" == --wrapper ]]; then
     pattern=test_wrapper.py
     shift
+elif [[ "${1:-}" == --setup ]]; then
+    pattern=test_setup.py
+    shift
+elif [[ "${1:-}" == --setup-runtime ]]; then
+    pattern=test_setup_runtime.py
+    shift
 elif [[ "${1:-}" == --network-feasibility ]]; then
     pattern=test_network_feasibility.py
     shift

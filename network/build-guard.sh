@@ -8,10 +8,31 @@ output_dir=$(realpath -e -- "$1")
 [[ -d $output_dir && -O $output_dir && -w $output_dir ]] || { printf 'Output must be an existing caller-owned writable native directory.\n' >&2; exit 1; }
 toolchain=$(podman image inspect --format '{{.Id}}' "${CLAUDE_GUARD_TOOLCHAIN:-localhost/claude-guard-toolchain:development}")
 [[ $toolchain =~ ^(sha256:)?[a-f0-9]{64}$ ]] || { printf 'A prepared immutable toolchain image ID is required.\n' >&2; exit 1; }
+compiler_args=()
+compiler_cidfile=${CLAUDE_GUARD_SETUP_CIDFILE:-}
+if [[ -n "$compiler_cidfile" ]]; then
+    [[ "$compiler_cidfile" == "$output_dir/"* && ${compiler_cidfile#"$output_dir/"} =~ ^\.setup-guard\.[a-f0-9]{32}$ && ! -e "$compiler_cidfile" && ! -L "$compiler_cidfile" ]] \
+        || { printf 'Invalid setup-owned compiler cidfile.\n' >&2; exit 1; }
+    compiler_args=(--cidfile "$compiler_cidfile")
+fi
 artifact=$(mktemp -- "$output_dir/.guard.XXXXXXXXXXXX")
-cleanup() { rm -f -- "$artifact"; }
+cleanup() {
+    local compiler_id=''
+    if [[ -n "$compiler_cidfile" && -f "$compiler_cidfile" ]]; then
+        compiler_id=$(<"$compiler_cidfile")
+        if [[ "$compiler_id" =~ ^[a-f0-9]{64}$ ]]; then
+            timeout --kill-after=1s 5s podman rm --force --ignore --time 0 "$compiler_id" >/dev/null \
+                || printf 'Setup compiler cleanup could not be confirmed: %s\n' "$compiler_id" >&2
+        fi
+        rm -f -- "$compiler_cidfile"
+    fi
+    rm -f -- "$artifact"
+}
 trap cleanup EXIT
-podman run --rm --network=none --read-only --userns=keep-id --user "$(id -u):$(id -g)" \
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+podman run --rm "${compiler_args[@]}" --network=none --read-only --userns=keep-id --user "$(id -u):$(id -g)" \
     --volume "$project_root:$project_root:ro" --volume "$output_dir:$output_dir:rw" \
     --workdir "$project_root" --env LC_ALL=C --env SOURCE_DATE_EPOCH=0 \
     "$toolchain" -std=c11 -O2 -static -Wall -Wextra -Werror -D_FORTIFY_SOURCE=2 \

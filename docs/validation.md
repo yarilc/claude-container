@@ -1,5 +1,87 @@
 # Validation record
 
+## Interactive setup implementation: 2026-11-07
+
+The `add-interactive-container-setup` change adds dedicated terminal-only host
+preparation, reviewed non-secret preferences and managed launch through protected
+versioned releases. See [setup behavior and requirement coverage](setup.md).
+Direct wrapper invocation retains its prior environment-based contract.
+First-run setup now proposes provider/account as requested; questionnaire tests
+accept those defaults and verify that reruns preserve saved offline and
+unrestricted choices. This does not change the direct wrapper's offline default.
+
+Finalized on 2026-11-07: all 26 tracked tasks and four planning artifacts are
+complete. The 12 setup requirements and updated launch-engine requirement are
+synchronized into the durable specifications. All nine main specifications pass
+normal validation, with existing nonblocking requirement-length warnings; the
+change passed strict validation before archival. The
+[archived change](../openspec/changes/archive/2026-11-07-add-interactive-container-setup/)
+preserves its schema metadata, design, completed tasks and delta specifications.
+
+| Check | Result | Evidence and limits |
+| --- | --- | --- |
+| `bash tests/run-runtime.sh --setup` | Passed, 50 synthetic tests | Fake Podman/user-service commands and disposable native state; real PTYs cover early setup, choices/cancellation, saved reruns, help, launch forwarding and signals. Schema/privacy, exact engine/socket replies, recipe acquisition, maintenance scoping, publication/lock rollback and compiler-owned cleanup are covered. Adversarial regressions cover command migration/retirement rollback, every symlink hop, kernel dot-dot semantics, unchanged physical command entries, legacy upgrade and descendants surviving leader exit or pipe closure. |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed, 2 real rootless acceptance tests | Fresh provider setup compiles the production guard using the prepared immutable toolchain; new-terminal launch requires no wrapper exports; rerun reuses the guard; offline/unrestricted setup and shell work; intentionally failing update leaves the last working release selected. |
+| `bash tests/run-runtime.sh --wrapper` | Passed, 56 regression tests | Existing direct-wrapper defaults, state/CA, exact engine/socket replies, invocation composition, argument/TTY handling and owned exit/signal/cleanup behavior remain intact. The known successful restart-check message changes level without hiding actual errors or changing a nonzero application status. |
+| Bash syntax, whitespace and strict change validation | Passed | `bash -n claude-container.sh network/build-guard.sh tests/run-runtime.sh`, `git diff --check`, new-text whitespace inspection and `openspec validate add-interactive-container-setup --strict`. |
+| Host CA selection during setup | Passed, real provider off/on | Candidate smoke checks the four existing CA variables, the single read-only `/claude-home/ca/bundle.pem` file, and their absence when disabled; no certificate directory mount or TLS relaxation. |
+| Sandbox enforcement readiness | Passed on the measured WSL target | Actual installed wrapper/guard path; Unix socket creation and direct egress denied, connected pair and own-loopback accepted, provider proxy deny path confirmed. Claude `--version` succeeds without a model request. |
+| Existing same-host service reuse | Passed | Client-visible `unix:///run/podman/podman.sock`, rootless service reports `/run/user/1000/podman/podman.sock`; bind/build source paths retain true native host paths. No real service settings changed. |
+| User smoke acceptance: 2026-11-07 | Passed, user-reported | The user confirms the configured sandbox works as expected: Claude Code can use its tools while direct communication with external hosts is blocked. This manual functional observation is recorded separately from the automated enforcement tests and does not extend their tested destination/transport coverage. |
+| Real systemd user socket activation | Unavailable in this run | Accepted/declined/failed/no-manager branches use synthetic commands; the available real service was reused. Setup must obtain its own user confirmation before enabling a real socket. |
+| Real account login/reuse through the new wizard | Unavailable in this run | Synthetic login success/failure/cancellation verifies direct terminal inheritance and selected state/policy; real credentials were neither accessed nor imported. Prior manual account evidence below remains separate. |
+| Real API-key request | Optional / unavailable | Setup stores no key and performs no automatic paid request; provider/API instructions retain the existing key-forwarding mechanism. Account setup never requires an API key. |
+| Full image rebuild/upstream availability | Synthetic orchestration passed; real rebuild not exercised | Real checks reused prepared runtime/proxy/toolchain images and compiled the guard. Exact base acquisition, immutable inspection, missing-image/build errors and no pin substitution are covered with fake engines. |
+
+Environment: kernel `6.6.87.2-microsoft-standard-WSL2`, amd64/x86_64;
+rootless Podman client 4.3.1 / server 4.9.3, Netavark; Python 3.11.2; standard
+OCI seccomp, measured SELinux/AppArmor-disabled target. No policy is disabled by
+setup. Runtime image ID:
+`a96af83c8276d42d029a501ecfc6f886c446055ed5157a934cfeac486d9b0ef9`;
+proxy: `2f725558923e421a4dd309f71c09f9147367801b6155e5066889395cde669d29`;
+toolchain: `0b69ba43c894c4599fcfc0fa7b5e3c150ec26fcf7a2690e3c83708688ff9402c`.
+Tests run with container-provided Python and native Podman volume paths because
+the coding container's home is read-only or has unsuitable protected ancestors.
+No prerequisite/path/privacy check is relaxed for the test environment. Only
+setup-owned temporary containers, releases, tags and volumes are cleaned; user
+state, existing images and real service settings are preserved.
+
+User-reported setup failure correction: the installation root previously reused
+the credential-directory validator and rejected an otherwise protected existing
+caller-owned 0755 directory after maintenance consent. Installation-root checks
+now require caller ownership/access and protected ancestors, accept 0755 without
+chmod, and diagnose invalid existing roots during preflight. Missing roots and
+command parents are created privately. Credential/state/release privacy remains
+unchanged. The setup plan and completion output show an exact shell-quoted PATH
+export and shell-startup-file guidance when the command directory is absent.
+
+Podman diagnostic correction: the attached client's known successful restart
+check is relayed at INFO, with its timestamp/message intact. Tests cover terminal
+plain/ANSI formatting, nonterminal `time=... level=... msg=...` formatting, every
+chunk boundary, unterminated and binary data, ordinary newline-free prompts and
+genuine errors. The adapter never changes global Podman log level or application
+status; its FIFO/client cleanup shares the existing session deadline. Restricted
+preflight validates the optional installed helper's protected path. Real WSL
+acceptance checks that the client's actual restart-check output is informational.
+
+Adversarial review corrections: command relocation now retires the previous
+owned dispatcher after successful publication, with rollback on retirement
+failure. The dispatcher supplies its actual entry path to the launch helper;
+every symlink entry is traced with kernel dot-dot semantics and checked against
+writable mounts. Path aliases referring to the same physical command entry are
+not retired; distinct directory entries remain separate even for hardlinks.
+Recognized legacy commands are atomically upgraded, and unidentified legacy
+normal launches fail closed. Unit regressions exercise old/new paths, copied and
+symlinked entry points, legacy upgrade and publication/retirement failure. Real
+unrestricted setup also relocates the command and launches through the new path.
+
+Setup timeout cleanup no longer returns solely because the group leader has
+exited. It signals the owned process group and finishes remaining descendants
+even if they close captured pipes without exiting. Two isolated Linux-subreaper
+regressions verify termination and collection after leader exit, including a
+TERM handler that closes stdout/stderr while the descendant keeps running. Repro
+children are reaped by their test helper; no real credentials or services are used.
+
 
 ## Enforced WSL ABI-3 implementation: 2026-11-07
 

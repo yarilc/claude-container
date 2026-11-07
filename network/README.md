@@ -66,6 +66,15 @@ an independently audited filter. Keep mandatory per-session refusal on failed en
 
 ## Operator build inputs
 
+The [interactive setup](../docs/setup.md) can orchestrate these existing recipes,
+image inspection and guard packaging after explicit maintenance consent. It
+reuses valid artifacts and resolves the provider proxy to an immutable ID. No
+host compiler/package installation is performed; compilation remains network
+free inside the pinned toolchain. Host pulls and build RUN traffic are outside
+session network filtering, including when preparing offline mode. Preparation
+authorization is not persisted in managed launch defaults. Missing pinned inputs
+remain a maintenance error rather than triggering automatic version changes.
+
 The host sandbox has no C compiler. `guard-build.Containerfile` supplies one in a
 rootless container from a digest-pinned Alpine image and explicitly pinned GCC,
 musl development headers and binutils. Building that toolchain is operator
