@@ -32,6 +32,12 @@ Container options:
 All other arguments are passed to Claude Code unchanged.
 
 Environment:
+  CLAUDE_CONTAINER_NETWORK offline (default), provider, or explicit unrestricted
+  CLAUDE_CONTAINER_NETWORK_PROFILE protected provider policy profile name
+  CLAUDE_CONTAINER_NETWORK_POLICY absolute operator policy JSON path
+  CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR private native directory at its host path
+  CLAUDE_CONTAINER_EGRESS_IMAGE immutable proxy image ID or registry digest
+  CLAUDE_CONTAINER_MAINTENANCE authorize image preparation only with exact value 1
   CLAUDE_CONTAINER_IMAGE  image name (default: localhost/claude-code:latest)
   CLAUDE_CONFIG_DIR       Claude configuration directory (default: ~/.claude)
   CLAUDE_CONTAINER_STATE_DIR optional isolated home; unset keeps shared configuration
@@ -62,6 +68,19 @@ failures are reported without changing the application or first signal status.
 Engine verification replies must contain one record, with no terminator or a
 single final LF; extra blank or nonblank records stop startup before builds.
 Delegated socket verification also rejects any CR character, including CRLF.
+Restricted modes reject Podman delegation, including shell and YOLO. Provider
+mode uses an external CONNECT proxy; removing proxy variables cannot grant a
+direct route. Network restriction requires a protected installation outside
+writable workspace/state trees and host Python 3. Initial support is the tested
+same-host Unix service with rootless Netavark/server 4.9.3. Unsupported setups
+fail closed. Image pulls/build RUN steps remain outside runtime filtering and
+require separate maintenance authorization. Allowed services can receive data;
+provider-hosted remote tools and encrypted application content are not filtered.
+Restricted startup requires WSL 6.6.87.2 x86_64, usable Landlock ABI 3 and a
+protected static guard and SHA-256 manifest in network/bin. The guard adds
+unprivileged Landlock and restrictive seccomp, preserving the OCI profile.
+New Unix services are unavailable; fixed-peer pairs may have private inert names.
+See network/README.md for packaging and docs/validation.md for measured evidence.
 EOF
 }
 
@@ -90,6 +109,20 @@ yolo=$(boolean CLAUDE_YOLO "${CLAUDE_YOLO:-}")
 podman_access=0
 [[ "${CLAUDE_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
 trust_host_ca=$(boolean CLAUDE_CONTAINER_TRUST_HOST_CA "${CLAUDE_CONTAINER_TRUST_HOST_CA:-}")
+network_mode=${CLAUDE_CONTAINER_NETWORK:-offline}
+case "$network_mode" in
+    offline|provider|unrestricted) ;;
+    *) die 'CLAUDE_CONTAINER_NETWORK must be offline, provider, or unrestricted' ;;
+esac
+if [[ "$network_mode" != unrestricted ]] && ((podman_access)); then
+    die 'restricted networking rejects CLAUDE_CONTAINER_PODMAN=1: the host API bypasses egress enforcement; select explicit unrestricted mode for delegation'
+fi
+if [[ "$network_mode" == provider ]]; then
+    [[ -n "${CLAUDE_CONTAINER_NETWORK_PROFILE:-}" && -n "${CLAUDE_CONTAINER_NETWORK_POLICY:-}" ]] \
+        || die 'provider mode requires CLAUDE_CONTAINER_NETWORK_PROFILE and CLAUDE_CONTAINER_NETWORK_POLICY'
+    [[ -n "${CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR:-}" && -n "${CLAUDE_CONTAINER_EGRESS_IMAGE:-}" ]] \
+        || die 'provider mode requires a private host-path CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR and immutable CLAUDE_CONTAINER_EGRESS_IMAGE'
+fi
 [[ -z "${CLAUDE_CONTAINER_STATE_DIR:-}" || -z "${CLAUDE_CONFIG_DIR:-}" ]] \
     || die 'CLAUDE_CONTAINER_STATE_DIR conflicts with CLAUDE_CONFIG_DIR; unset CLAUDE_CONFIG_DIR to isolate state'
 
@@ -116,6 +149,30 @@ runtime_info=${runtime_info%$'\n'}
 read -r _ _ remote <<< "$runtime_info"
 if [[ "$remote" == true && "${CONTAINER_HOST:-}" != unix:///* ]]; then
     die 'remote Podman contexts are not supported; set CONTAINER_HOST to a local Unix socket'
+fi
+if [[ "$network_mode" != unrestricted ]]; then
+    command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
+    [[ "$remote" == true ]] || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
+    capture_response network_backend podman info --format '{{.Host.NetworkBackend}}' \
+        || die 'cannot verify restricted network backend'
+    capture_response network_version podman version --format '{{.Server.Version}}' \
+        || die 'cannot verify restricted network server version'
+    [[ "${network_backend%$'\n'}" == netavark && "${network_version%$'\n'}" == 4.9.3 ]] \
+        || die 'unsupported restricted network backend/version: tested support requires rootless Netavark server 4.9.3'
+    capture_response network_platform podman info --format '{{json .Host}}' \
+        || die 'cannot verify restricted platform security policy'
+    printf '%s' "$network_platform" | python3 -I -c '
+import json,sys
+try:
+    host=json.load(sys.stdin); security=host["security"]
+    valid=(host["kernel"]=="6.6.87.2-microsoft-standard-WSL2" and host["arch"]=="amd64"
+           and security["seccompEnabled"] is True and security["selinuxEnabled"] is False
+           and security["apparmorEnabled"] is False)
+except (ValueError,KeyError,TypeError): valid=False
+sys.exit(0 if valid else 1)
+' || die 'unsupported restricted platform: verified WSL 6.6.87.2 x86_64, standard OCI seccomp, SELinux/AppArmor disabled required; no policy is disabled automatically'
+    # Mandatory native confinement is installed again inside the agent before
+    # any interpreter/application runs. ABI 3 is supported on the tested WSL host.
 fi
 
 caller_uid=$(id -u)
@@ -178,6 +235,12 @@ if [[ -n "$state_dir" ]]; then
         create_private_directory "$state_dir/$relative"
     done
     private_directory "$state_dir/.claude"
+    if ((trust_host_ca)); then
+        # Prevent the engine from creating a nested CA mount parent owned by a
+        # subordinate mapped UID inside the writable isolated home.
+        create_private_directory "$state_dir/ca"
+        private_directory "$state_dir/ca"
+    fi
     state_mounts+=(--volume "$state_dir:/claude-home:rw")
 else
     claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -208,14 +271,47 @@ if ((trust_host_ca)); then
     fi
 fi
 
+network_preflight=()
+if [[ "$network_mode" != unrestricted ]]; then
+    network_preflight=(--installation "$script_dir" --writable "$workspace_mount"
+        --mount-target "$workspace_mount" --mount-target /claude-home)
+    if [[ -n "$state_dir" ]]; then
+        network_preflight+=(--writable "$state_dir")
+    else
+        network_preflight+=(--writable "$claude_dir" --writable "$openspec_dir")
+    fi
+    if [[ "$network_mode" == provider ]]; then
+        network_preflight+=(--policy "$CLAUDE_CONTAINER_NETWORK_POLICY"
+            --profile "$CLAUDE_CONTAINER_NETWORK_PROFILE" --proxy-image "$CLAUDE_CONTAINER_EGRESS_IMAGE"
+            --runtime "$CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR")
+    fi
+    python3 -I "$script_dir/network/control.py" preflight "${network_preflight[@]}"
+    guard_identity=$(<"$script_dir/network/bin/claude-egress-guard.sha256")
+    guard_digest=${guard_identity%% *}
+    "$script_dir/network/bin/claude-egress-guard" --probe >&2
+fi
+
 if ((build_image)); then
+    [[ "${CLAUDE_CONTAINER_MAINTENANCE:-}" == 1 ]] || die 'image refresh requires exact CLAUDE_CONTAINER_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering'
     podman build --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
 elif podman image exists "$image"; then
     :
 else
     image_status=$?
     [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
+    [[ "${CLAUDE_CONTAINER_MAINTENANCE:-}" == 1 ]] || die 'image is absent; prepare it with exact CLAUDE_CONTAINER_MAINTENANCE=1 (build traffic is outside runtime filtering)'
     podman build --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
+fi
+if [[ "$network_mode" == provider ]]; then
+    if podman image exists "$CLAUDE_CONTAINER_EGRESS_IMAGE"; then
+        :
+    else
+        image_status=$?
+        [[ "$image_status" == 1 ]] || die 'cannot inspect immutable egress proxy image'
+        [[ "${CLAUDE_CONTAINER_MAINTENANCE:-}" == 1 && "$CLAUDE_CONTAINER_EGRESS_IMAGE" == *@sha256:* ]] \
+            || die 'proxy image is absent; prepare the pinned artifact under explicit operator maintenance authorization'
+        podman pull "$CLAUDE_CONTAINER_EGRESS_IMAGE"
+    fi
 fi
 
 container_args=(
@@ -231,6 +327,14 @@ container_args=(
     --volume "$workspace_mount:$workspace_mount:rw"
     "${state_mounts[@]}"
 )
+if [[ "$network_mode" != unrestricted ]]; then
+    container_args+=(--network=none --pid=private --ipc=private
+        --volume "$script_dir/network/bin/claude-egress-guard:/opt/claude-egress/guard:ro"
+        --volume "$script_dir/network/resolv.conf:/etc/resolv.conf:ro")
+    for variable in HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy https_proxy no_proxy all_proxy; do
+        container_args+=(--unsetenv "$variable")
+    done
+fi
 if [[ -t 0 && -t 1 ]]; then
     container_args+=(--tty)
     [[ -z "${TERM:-}" ]] || container_args+=(--env TERM)
@@ -285,10 +389,15 @@ create_output=''
 creation_pending=0
 shutdown_deadline=0
 ownership_label=io.claude-container.session
+proxy_label=io.claude-container.egress
+proxy_id=''
+proxy_pending=0
+proxy_cid=''
+proxy_output=''
 
 cleanup_warning() {
-    printf 'claude-container: cleanup %s (container=%s session=%s); inspect the Podman engine for remaining session containers\n' \
-        "$*" "${container_id:-unknown}" "${session_token:-unknown}" >&2
+    printf 'claude-container: cleanup %s (container=%s proxy=%s session=%s); inspect the Podman engine for remaining session containers\n' \
+        "$*" "${container_id:-unknown}" "${proxy_id:-unknown}" "${session_token:-unknown}" >&2
 }
 
 # All shutdown engine calls share a deadline and reserve time for local clients.
@@ -367,6 +476,28 @@ recover_container() {
     fi
 }
 
+recover_proxy() {
+    local candidate='' owner
+    [[ -z "$proxy_id" && "$proxy_pending" == 1 ]] || return 0
+    if [[ -s "$proxy_cid" ]]; then
+        candidate=$(<"$proxy_cid")
+    elif [[ -s "$proxy_output" ]]; then
+        candidate=$(<"$proxy_output")
+    fi
+    if [[ ! "$candidate" =~ ^[a-f0-9]{64}$ ]]; then
+        candidate=$(control ps --all --no-trunc --filter "label=$proxy_label=$session_token" --format '{{.ID}}') || return 1
+    fi
+    [[ -n "$candidate" ]] || return 0
+    [[ "$candidate" =~ ^[a-f0-9]{64}$ ]] || { cleanup_warning 'invalid recovered proxy identity'; return 1; }
+    if owner=$(control inspect --type container --format "{{index .Config.Labels \"$proxy_label\"}}" "$candidate") \
+        && [[ "$owner" == "$session_token" ]]; then
+        proxy_id=$candidate
+    else
+        cleanup_warning 'could not confirm recovered proxy ownership'
+        return 1
+    fi
+}
+
 # Keep collision reconciliation interruptible just like the create request.
 creation_lookup() {
     local lookup_status=0
@@ -386,6 +517,7 @@ shutdown() {
     shutdown_deadline=$((SECONDS + 20))
     if [[ -n "$session_dir" ]]; then
         recover_container
+        recover_proxy
         if [[ -n "$signal" && -n "$container_id" && -n "$client_pid" ]]; then
             control kill --signal "$signal" "$container_id" >/dev/null
             graceful_until=$((SECONDS + 5))
@@ -405,6 +537,15 @@ shutdown() {
                 cleanup_warning 'interrupted creation could not be reconciled'
             fi
         fi
+        [[ -z "$proxy_id" ]] || control rm --force --time 0 --ignore "$proxy_id" >/dev/null
+        if ((proxy_pending)) && [[ -z "$proxy_id" ]]; then
+            recover_proxy
+            [[ -z "$proxy_id" ]] || control rm --force --time 0 --ignore "$proxy_id" >/dev/null
+        fi
+        if [[ -f "$session_dir/logs/denials.jsonl" ]]; then
+            printf 'claude-container: recent protected egress diagnostics (sanitized)\n' >&2
+            tail -n 20 -- "$session_dir/logs/denials.jsonl" >&2
+        fi
         rm -rf -- "$session_dir"
     fi
     exit "$primary_status"
@@ -413,8 +554,73 @@ trap 'shutdown "$?"' EXIT
 trap 'shutdown 143 TERM' TERM
 trap 'shutdown 130 INT' INT
 trap 'shutdown 129 HUP' HUP
-session_dir=$(umask 077; mktemp -d)
+if [[ "$network_mode" == provider ]]; then
+    session_dir=$(umask 077; mktemp -d -- "$CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR/session.XXXXXXXXXXXX")
+else
+    session_dir=$(umask 077; mktemp -d)
+fi
 session_token=${session_dir##*/}
+printf 'claude-container: network mode=%s\n' "$network_mode" >&2
+if [[ "$network_mode" == provider ]]; then
+    policy_identity=$(python3 -I "$script_dir/network/control.py" snapshot "${network_preflight[@]}" --session "$session_dir")
+    printf 'claude-container: network profile=%s policy=%s\n' "$CLAUDE_CONTAINER_NETWORK_PROFILE" "$policy_identity" >&2
+    printf 'claude-container: egress session=%s diagnostics=%s/logs/denials.jsonl\n' "$session_token" "$session_dir" >&2
+    proxy_cid=$session_dir/proxy.cid
+    proxy_output=$session_dir/proxy.stdout
+    proxy_pending=1
+    podman create --name "claude-egress-$session_token" --cidfile "$proxy_cid" \
+        --label "$proxy_label=$session_token" --read-only --read-only-tmpfs=false \
+        --userns=keep-id --user "$caller_uid:$caller_gid" \
+        --volume "$session_dir/config:/config:ro" \
+        --volume "$session_dir/transport:/transport:rw" \
+        --volume "$session_dir/logs:/logs:rw" \
+        --env "EGRESS_PROFILE=$CLAUDE_CONTAINER_NETWORK_PROFILE" --env "EGRESS_SESSION=$session_token" \
+        "$CLAUDE_CONTAINER_EGRESS_IMAGE" >"$proxy_output" &
+    create_pid=$!
+    wait "$create_pid"
+    create_pid=''
+    proxy_id=$(<"$proxy_output")
+    [[ "$proxy_id" =~ ^[a-f0-9]{64}$ ]] || die 'invalid egress proxy container ID'
+    proxy_pending=0
+    podman start "$proxy_id" >"$session_dir/proxy.start" &
+    create_pid=$!
+    wait "$create_pid"
+    create_pid=''
+    proxy_deadline=$((SECONDS + 10))
+    while [[ ! -f "$session_dir/transport/ready" || ! -S "$session_dir/transport/proxy.sock" ]]; do
+        ((SECONDS < proxy_deadline)) || die 'egress proxy unavailable: readiness deadline expired; check immutable image and policy'
+        sleep 0.05
+    done
+    [[ $(<"$session_dir/transport/ready") == "$policy_identity guard=$guard_digest mux=1" ]] || die 'egress proxy policy/bootstrap/protocol identity mismatch'
+    container_args+=(--volume "$session_dir/transport:/run/claude-egress:ro"
+        --volume "$script_dir/network/relay.py:/opt/claude-egress/relay.py:ro"
+        --volume "$script_dir/network/mux.py:/opt/claude-egress/mux.py:ro")
+    for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
+        container_args+=(--env "$variable=http://127.0.0.1:18080")
+    done
+    container_args+=(--env NO_PROXY=localhost,127.0.0.1,::1 --env no_proxy=localhost,127.0.0.1,::1
+        --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --env DISABLE_AUTOUPDATER=1
+        --env DISABLE_TELEMETRY=1 --env DISABLE_ERROR_REPORTING=1
+        --env ENABLE_CLAUDEAI_MCP_SERVERS=false --env CLAUDE_CODE_DISABLE_ARTIFACT=1
+        )
+    [[ -z "${ANTHROPIC_API_KEY:-}" ]] || container_args+=(--env ANTHROPIC_API_KEY)
+    if ((shell_mode)); then
+        args=(/usr/bin/python3 -I /opt/claude-egress/relay.py /bin/bash)
+    else
+        args=(/usr/bin/python3 -I /opt/claude-egress/relay.py /usr/local/bin/claude "${args[@]}")
+    fi
+fi
+if [[ "$network_mode" != unrestricted ]]; then
+    container_args+=(--entrypoint /opt/claude-egress/guard)
+    if [[ "$network_mode" == provider ]]; then
+        args=(--provider -- "${args[@]}")
+    elif ((shell_mode)); then
+        args=(--offline -- /bin/bash)
+    else
+        args=(--offline -- /usr/local/bin/claude "${args[@]}")
+    fi
+    printf 'claude-container: guard=%s abi-min=3 filter=native-x86_64-v1 mux=1\n' "$guard_digest" >&2
+fi
 for ((attempt=0; attempt<20; attempt++)); do
     name="$prefix-$next_index"
     cid_file=$session_dir/$attempt.cid

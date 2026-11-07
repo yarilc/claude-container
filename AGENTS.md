@@ -17,21 +17,25 @@ Claude Code:
   Archived changes live in `changes/archive/`.
 - `tests/` contains synthetic wrapper checks and opt-in rootless runtime checks.
 - `docs/validation.md` records verified environments and unavailable checks.
+- `network/` contains protected operator policies, preflight/snapshot validation,
+  the standalone CONNECT proxy image, native IPC bootstrap, and agent-side relay.
+- `docs/network-contract.md` defines the shared mode and rollout contract;
+  sibling wrappers remain independently unassessed.
 
 ## Build, Test, and Development Commands
 
 Run these commands from the repository root:
 
 ```bash
-./claude-container.sh --container-build  # Build or refresh the local image
-./claude-container.sh                    # Start Claude in the current workspace
-./claude-container.sh --container-shell  # Open a shell in the runtime image
+CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 ./claude-container.sh --container-build
+CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh
+CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh --container-shell
 bash -n claude-container.sh              # Validate Bash syntax
 git diff --check                         # Detect whitespace errors
 ```
 
 Host Podman is always required and its launch engine must verify as Linux and
-rootless. Local use requires no API socket with delegation off; explicit same-host
+rootless. Unrestricted local use requires no API socket with delegation off; explicit same-host
 Unix `CONTAINER_HOST` use verifies that launch service regardless of delegation.
 Reject named connections and TCP/SSH contexts. Delegation requires the exact value
 `CLAUDE_CONTAINER_PODMAN=1`. Select its endpoint by explicit
@@ -39,6 +43,17 @@ Reject named connections and TCP/SSH contexts. Delegation requires the exact val
 `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. Verify that exact endpoint
 before image operations, requiring rootless `true` and an absolute reported host
 socket path; bind the latter when the wrapper sees a remapped socket.
+
+Network mode defaults to offline. Restricted sessions must use the static ABI-3
+Landlock/additive-seccomp bootstrap before any application code. Keep fail-closed
+per-session checks; never restore the superseded IP-only path.
+Restricted modes require the measured
+same-host Unix launch service with rootless Netavark/server 4.9.3, host Python 3,
+and protected installed code outside all agent-writable mounts. Provider mode
+requires a protected versioned policy/profile, private native host-path runtime
+directory and immutable proxy image ID/digest. Never silently broaden support or
+fall back to unrestricted networking. Exact maintenance opt-in is separate from
+runtime policy and does not constrain host image pulls or build RUN traffic.
 
 ## Coding Style & Naming Conventions
 
@@ -69,6 +84,24 @@ exit codes, signals, and owned cleanup. Disabled delegation skips separate
 endpoint checks, not mandatory launch-engine verification. Record runtime and
 internal sandbox checks as passed, failed, or unavailable with versions.
 
+Run `bash tests/run-runtime.sh --network-feasibility`, `--network-policy`, and
+`--network` for the isolated topology, trusted policy/proxy tests, and production
+wrapper acceptance. Use disposable native storage with protected ancestors for
+policy path tests; do not weaken path checks for `/tmp`, `/codex-home`, or `/mnt/d`
+permissions. Existing runtime regressions explicitly select unrestricted mode
+and maintenance authorization. Authenticated API/account tests are separate from
+automated synthetic state and require explicit credential/model-call approval.
+
+`bash tests/run-runtime.sh --guard` builds/tests the static native bootstrap using
+a prepared immutable toolchain image; see `network/README.md`. Link-time syscall
+mocks are component instrumentation only and must never enter a shipped guard.
+The required target is WSL 6.6.87.2 x86_64 with usable ABI 3. The guard adds a
+restrictive in-process seccomp filter while preserving the standard OCI profile
+and SELinux policy. Existing connected pairs may have private inert names, but
+cannot listen, retarget or publish in host binds. Production guard checks and
+mocked component checks are separate. Record the WSL IP/IPC/proxy gate separately
+from authenticated compatibility; no kernel upgrade is required.
+
 Changes to host CA handling must also verify both modes: with
 `CLAUDE_CONTAINER_TRUST_HOST_CA` unset, no CA mount or CA variables are
 present; with it set to `1`, the bundle is mounted read-only at
@@ -93,7 +126,9 @@ the host workspace's absolute path so containers launched by the host Podman
 service can resolve child bind mounts correctly. Claude configuration is
 intentionally writable because it contains its credentials and session state.
 
-Expose the host Podman API socket only with `CLAUDE_CONTAINER_PODMAN=1`.
+Expose the host Podman API socket only with `CLAUDE_CONTAINER_PODMAN=1` and
+explicit `CLAUDE_CONTAINER_NETWORK=unrestricted`. Reject exact socket opt-in
+in offline/provider modes before image/resource operations.
 This grants control over containers, volumes, and additional host bind mounts
 available to the service user, beyond the selected workspace.
 

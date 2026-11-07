@@ -1,5 +1,311 @@
 # Validation record
 
+
+## Enforced WSL ABI-3 implementation: 2026-11-07
+
+The current implementation replaces the earlier restricted-startup hold with
+mandatory platform, protected-asset and in-container checks. The historical
+sections below describe superseded candidates and their failures; they are not
+current startup requirements. No kernel upgrade is required.
+
+| Support key | Verified target / behavior |
+| --- | --- |
+| Kernel / architecture | 6.6.87.2-microsoft-standard-WSL2, x86_64 (engine reports amd64) |
+| Landlock / guard | ABI 3; MAKE_SOCK/REFER plus inherited additive native seccomp |
+| Engine / backend | Rootless Podman client 4.3.1, server 4.9.3, Netavark, explicit same-host Unix service |
+| Runtime policy | Standard OCI seccomp active before bootstrap; SELinux/AppArmor disabled in the measured environment; no policy disabled by the wrapper |
+| Storage | Protected native installation/state/transport; native and Windows v9fs workspaces tested for ordinary file persistence |
+| Guard artifact | Static revision abi3-seccomp-mux-v1, filter native-x86_64-v1, transport v1 |
+| SHA-256 | `6dc1ab5478118317f1228b21c04b7dfe95de7a5472e4fb811bb0a53ba0342a2c` with the recorded immutable GCC/musl toolchain |
+| Other platforms / policies | Refused pending independent evidence; no automatic unrestricted fallback, upgrade, relabel or privilege addition |
+
+The final guard suite passes **15 tests** with the production artifact and
+separately linked component instrumentation. Repeated production builds match;
+there are no interpreter/dynamic segments or mock runtime hooks. Tests use
+synthetic state, certificates, services and keys, with no real authentication or
+external model requests. Guard stdio rejects sockets, namespace/process and
+anonymous-inode handles and O_PATH capabilities; unrelated FDs close before
+preparation. Existing OCI seccomp must already be active.
+
+| Check / command | Result | Evidence and limits |
+| --- | --- | --- |
+| `bash tests/run-runtime.sh --guard` | Passed: 15 tests | Production kernel enforcement, component setup failures, descriptor hygiene, static packaging and reproducibility; no mocked pass counts as kernel containment |
+| IP/DNS/UDP/host bypasses behind production guard | Passed | IPv4/IPv6, host aliases, LAN/metadata, external DNS/QUIC datagrams and unapproved resolution fail; own TCP/UDP loopback succeeds |
+| Existing/late Unix services and aliases | Passed | Unguarded network=none control reaches stream/datagram/seqpacket services; guard denies those types across workspace, parent/worktree, shared state and isolated-home binds, including symlink/hardlink aliases and late arrivals |
+| Connected-pair and filesystem behavior | Passed | Stream/seqpacket pairs cannot retarget or listen; private naming and same-session FD transfer work; publication/link/rename on host binds fails; ordinary file REFER and Git/worktree operations work |
+| Other bypass paths | Passed | VSOCK creation succeeds in the unguarded control and fails under the filter; other socket families, compat int-0x80, x32, io_uring and pidfd_getfd are denied; threads/exec retain confinement, later allow filters cannot weaken it, and namespace/mount attempts do not escape |
+| `python3 -m unittest discover -s tests -p test_mux.py -v` | Passed: 9 tests | 64 concurrent streams, 80 sequential requests, bounded credit/backpressure, other-stream progress, malformed/version/ID/state/length/credit fuzz cases, cancellation and channel death |
+| Guarded multiplexed TLS | Passed | 80 sequential HTTPS requests, eight concurrent streams, payload exceeding 1 MiB, 15-second streaming and WebSocket upgrade/frame transfer through the sole preconnected channel; bad certificates and unapproved destinations fail |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 12 tests | Exact authorities, public/private/mixed/rebinding address cases, no second DNS lookup, protected paths/aliases, static digest, reserved mount targets, immutable snapshots/manifests and redacted logs |
+| `bash tests/run-runtime.sh --network` | Passed: 14 tests in 229.775 seconds, plus the added delegation-grid case separately | Real production-wrapper offline/provider, both state modes, empty/spaced argv, stdin, TTY, exit 37, CA off/on, CLI native/YOLO modes, owned concurrency/interruption, bootstrap failure after proxy setup, readiness identity mismatch, proxy death, stalled cleanup and Windows workspace persistence |
+| Restricted delegation grid | Passed | Exact opt-in rejected in both modes/state/shell/YOLO combinations; non-exact values disable delegation, invalid disabled overrides are ignored and the launch endpoint stays host-side |
+| Actual Claude tool execution | Passed with synthetic API | Installed Claude 2.1.316 consumes a controlled Messages SSE tool response and runs its real Bash tool in both state modes; the tool verifies Unix denial and writes the expected sentinel; no real provider authentication/model inference is claimed |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 55 tests | Existing engine, state/privacy, invocation, worktree, delegation, maintenance and bounded signal/cleanup regressions; targeted CA regression also rerun after the isolated-parent fix |
+| `bash tests/run-runtime.sh` | Passed: 13 tests in 204.275 seconds | Existing unrestricted runtime/state/CA/delegation/worktree/image-context and lifecycle regressions |
+| Real account request with existing OAuth credentials | Passed, operator-reported | On 2026-11-07 the protected provider/account invocation returned ACCOUNT_PROFILE_OK in stream-json output and exit 0; see the manual evidence below |
+| Optional real-key API authentication | Unavailable, non-blocking | Support and synthetic integration coverage remain implemented. Original check 6.4 is now optional by operator decision; no real-key request is claimed as passed |
+| Fresh account login and credential reuse | Passed, operator-reported | A fresh isolated state completed auth login --claudeai with Login successful and exit 0; a separate request returned ACCOUNT_LOGIN_OK, success, no API error and exit 0 |
+| Account token refresh | Passed, operator-reported | After the recorded token expired, a request returned ACCOUNT_REFRESH_OK, success, no API error and exit 0; expiry advanced from 09:16:05.307 to 18:54:31.676 UTC on 2026-11-07 without another login |
+| Internal sandbox compatibility | Unavailable | The synthetic real Bash-tool test retains outer confinement and native permission bypass; it does not establish a successful Claude internal-sandbox operation |
+
+Policy/session readiness now binds policy revision, bootstrap digest and protocol
+version. The agent sees no policy/log/manifest or proxy administration mount;
+FD 3 is present only in the confined relay branch and closed before application
+exec. Each session has private PID/IPC/network namespaces and a fixed private
+XDG_RUNTIME_DIR. Actual mountinfo validation rejects nested host directories
+inside private IPC roots, allowing only the verified provider transport and the
+engine's regular /run/.containerenv metadata file. Host process/device trees are
+not accepted as workspace/state sources.
+
+The isolated CA mount parent is created caller-owned and mode 0700 before engine
+setup, preventing subordinate-UID ownership of persistent state; existing paths
+are validated without recursive permission repair or credential copying.
+
+The synthetic SSE fixture follows the documented [Messages streaming event
+flow](https://platform.claude.com/docs/en/build-with-claude/streaming), reviewed
+2026-11-07. It supplies only fixed synthetic responses, never records request
+bodies/prompts/headers, and confirms tool success through an actual filesystem
+sentinel rather than CLI exit status or final response text alone.
+
+
+### Operator-reported account validation: 2026-11-07
+
+The operator ran the protected wrapper with provider mode and the
+`anthropic-account` profile, unsetting ANTHROPIC_API_KEY, CLAUDE_CONFIG_DIR and
+CLAUDE_CONTAINER_STATE_DIR to use the existing shared HOME/.claude credentials.
+The command requested ACCOUNT_PROFILE_OK with print, stream-json, verbose and
+partial-message output, a one-turn limit and stdin redirected from /dev/null.
+The reported assistant response contained exactly ACCOUNT_PROFILE_OK; the
+operator separately reported wrapper exit code 0. The response identified model
+`claude-sonnet-5-5` and timestamp 2026-11-07T00:59:26.711Z. The preceding installed
+wrapper version check reported Claude 2.1.316 and enforced guard ABI 3 with digest
+`6dc1ab5478118317f1228b21c04b7dfe95de7a5472e4fb811bb0a53ba0342a2c`.
+
+The selected policy was `anthropic-2026-11-06-v1`, digest
+`02b7baf6078da290da3494d206963388e39367c1b82d7710c9f6679aabe4fbca`.
+No policy destinations, TLS settings, privileges or runtime security controls
+were broadened for this check. This is operator-reported evidence of a real
+account-authenticated request and stream-json response through the restricted
+wrapper. It does not establish fresh browser login/callback behavior, token
+refresh, sustained streaming or account-specific WebSockets. No raw credential,
+login URL, request/session identifier or response transcript is recorded here.
+The policy file's tested metadata remains its original dated inventory snapshot;
+this later partial acceptance does not change its revision or digest.
+
+On 2026-11-07 the operator decided that unavailable API keys must not leave
+API-key support pending or block this change. API-key support and mandatory
+synthetic coverage stay implemented; original real-key check 6.4 is retained as
+an optional manual check, unavailable and not passed. It is excluded from the
+mandatory task count rather than checked off without a real request. There are
+39/39 mandatory tasks complete after the account refresh evidence below.
+Existing-credential access, fresh isolated login, saved-credential reuse and
+automatic refresh after expiry have passed in the reported HTTPS/SSE account
+flow. Real-provider claims remain limited to those observations; optional
+real-key API acceptance is still unavailable and not passed.
+
+
+### Operator-reported fresh account login and reuse: 2026-11-07
+
+Following the existing-credential check, the operator selected a new private
+CLAUDE_CONTAINER_STATE_DIR created with mktemp, leaving the original HOME/.claude
+credentials untouched locally. In provider mode with the anthropic-account
+profile and no API key/config override, `auth login --claudeai` reported
+`Login successful` and login_exit_code=0. The CLI displayed a manual-code prompt;
+the exact browser callback versus pasted-code completion path was not reported,
+so neither mechanism is independently claimed verified.
+
+A separate wrapper invocation in the same isolated state requested
+ACCOUNT_LOGIN_OK with a one-turn limit, stream-json output and stdin from
+/dev/null. The operator reported subtype=success, api_error_status=null,
+result=ACCOUNT_LOGIN_OK and request_exit_code=0. This verifies a fresh sign-in
+and saved-credential use in a new container session. It does not demonstrate
+refresh of an expired token by itself; the later renewal evidence is recorded
+below. Callback mechanisms not observed directly remain unverified. No token, authorization
+code, login URL or full response transcript is stored in this record.
+
+
+### Operator-reported pre-refresh expiry baseline: 2026-11-07
+
+After the fresh isolated login and ACCOUNT_LOGIN_OK request, the operator ran a
+metadata-only check in the same test state. Reported now_utc was
+2026-11-07T01:20:57.795473+00:00 and expires_at_utc was
+2026-11-07T09:16:05.307000+00:00. Only these timestamps were shared; no tokens or
+credential-file contents were supplied. The renewal check is planned for
+2026-11-07T09:17:00Z or later, reusing this isolated state without another login
+or manual credential/clock changes. Success requires a real request with
+ACCOUNT_REFRESH_OK and exit 0 plus an advanced expiry timestamp. This baseline
+alone was not refresh evidence; it is paired with the subsequent result below.
+
+
+### Operator-reported automatic account refresh: 2026-11-07
+
+The operator retained the same fresh isolated test state and followed the
+request-after-expiry procedure without another login or manual credential/clock
+changes. A final pre-request metadata check reported:
+
+| Observation | UTC timestamp / result |
+| --- | --- |
+| Clock before request | 2026-11-07T10:53:14.601241+00:00 |
+| Expiry before request | 2026-11-07T09:16:05.307000+00:00 |
+| Real account response | subtype=success, api_error_status=null, result=ACCOUNT_REFRESH_OK |
+| Wrapper result | refresh_exit_code=0 |
+| Clock after request | 2026-11-07T10:56:09.331663+00:00 |
+| Persisted expiry after request | 2026-11-07T18:54:31.676000+00:00 |
+
+The old expiry was already in the past before the request. A successful
+account-authenticated request plus the advanced persisted expiry meets the
+manual automatic-renewal criterion; success with an otherwise still-valid token
+alone would not have done so. This completes mandatory account acceptance 6.5
+for the observed login, saved-credential and refresh flow under provider mode.
+The source is operator-reported sanitized output, not an agent inspection of real
+credentials. No token, authorization code, request/session identifier or raw
+transcript is recorded or added to automated fixtures.
+
+Evidence scope remains explicit: browser login is performed outside the
+container; the CLI offered a manual-code prompt and completed sign-in, while the
+exact callback/pasted-code mechanism was not independently observed. Real account
+requests used the configured stream-json/partial-message output. Sustained
+streaming, large payloads and WebSocket transport are covered by the controlled
+production guard/proxy fixtures, not claimed as real authenticated WebSocket or
+long-lived account-service checks. Unexercised SSO/cloud/optional feature flows
+remain unverified. The optional real-key API check remains unavailable and
+non-blocking by the operator's decision. No endpoint exception, privilege,
+security-policy weakening or default-policy revision was needed.
+
+
+### Specification synchronization and archive: 2026-11-07
+
+All 39 mandatory tasks and all planning artifacts were complete before archival.
+The four delta capabilities were compared to the main specs, then synchronized:
+network-egress was created with 18 requirements; container-isolation,
+container-launcher and container-podman-access each received three modified
+requirements. Existing titles, Purpose sections, unrelated requirements and
+scenarios were preserved. Post-sync comparison verified that every delta was
+fully applied before moving the change, including the new capability.
+
+Main-spec validation passed for all eight capabilities, with non-blocking
+length warnings for several full requirement descriptions; approved normative
+content was retained. Strict change validation passed before archival. The
+archive is [2026-11-07-add-enforced-network-egress](../openspec/changes/archive/2026-11-07-add-enforced-network-egress/),
+with its .openspec.yaml metadata preserved. The optional real-key API check
+remains unavailable/non-blocking and is not reported as passed.
+
+Finalization regression: `python3 -m unittest discover -s tests -p test_wrapper.py -v`
+passed all 55 tests in 136.465 seconds. Bash syntax and whitespace checks passed.
+No real credentials or model calls were used for this finalization run; prior
+rootless and operator-reported authentication evidence remains scoped above.
+
+
+## Native bootstrap component: 2026-11-06
+
+Tasks 1.1 and 1.5 of the revised `add-enforced-network-egress` plan now supply the
+portable IPC contract and isolated native bootstrap. Restricted wrapper startup
+is still held closed; bootstrap packaging/integration and full acceptance remain
+unchecked. No new kernel or changed seccomp/SELinux policy was introduced.
+
+| Check | Result | Evidence and limits |
+| --- | --- | --- |
+| Static guard component suite | Passed | `bash tests/run-runtime.sh --guard`: eight tests pass in 2.682 seconds, using disposable native state, no credentials and no model calls |
+| Real kernel rejection | Passed negative check | Production executable reports `Landlock ABI 3 is unsupported; require ABI >= 9` and exits 78 without executing the application sentinel |
+| Hermetic executable and reproducibility | Passed | ELF has no interpreter/dynamic segment or mock configuration names; two builds with the same immutable toolchain produce identical SHA-256 `1ed6fb7ad6668434810a1402c152aa32c8752cfa947383c3d2a54b6cce5c3544`; revision `landlock-ipc-v1` |
+| Preparation failures | Passed component checks | A separately linked mock executable exercises ABI 3/8, unavailable query, failed descriptor cleanup, wrong private filesystem, privilege setup failure, ruleset/rule rejection and enforcement failure; all stop before the application sentinel |
+| Descriptor/argument/runtime handling | Passed component checks | Extra descriptors close; socket stdio is rejected; empty/spaced argv, stdin and exit 37 are preserved; private runtime symlinks/unsafe modes and proxy ownership/permissions/read-only failures are rejected |
+| Pre-policy hooks | Passed negative check | Production static guard still rejects real ABI 3 under LD_PRELOAD, LD_AUDIT, BASH_ENV, ENV, PYTHONSTARTUP, NODE_OPTIONS and mock-named environment settings; initialization sentinel remains absent |
+| Real supported-kernel IPC enforcement | Unavailable | Task 1.6 requires an operator-provided ABI >= 9 rootless environment. Current host and its containers share ABI 3; test mocks do not implement enforcement |
+| Complete IP/IPC/alternate-transport release gate | Incomplete | Tasks 1.6–1.8 and 1.4 remain unchecked. No bootstrap activation or supported restricted session is claimed |
+| Wrapper regressions | Passed | `python3 -m unittest discover -s tests -p test_wrapper.py -v`: all 55 tests pass in 134.698 seconds, including the retained restricted-startup hold |
+| Runtime runner smoke | Passed | `bash tests/run-runtime.sh -k image_smoke`: one real-rootless test passes in 4.104 seconds across both state modes; the new optional guard-runner branch does not change ordinary runner behavior |
+| Structural checks | Passed | Bash syntax, whitespace including new source/component files, and strict OpenSpec change validation pass |
+
+The rootless toolchain uses Alpine base digest
+`sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e`,
+GCC `13.2.1_git20240309-r1`, musl-dev `1.2.5-r4`, and binutils `2.42-r1`.
+Its immutable image ID is
+`0b69ba43c894c4599fcfc0fa7b5e3c150ec26fcf7a2690e3c83708688ff9402c`.
+Build logs contain the existing ambient-capability warnings but succeed without
+adding privileges or changing policy. Compilation runs without networking after
+operator preparation of that toolchain. Reproducibility above applies to this
+exact toolchain image; it does not assert unchanged future package repositories.
+Test binaries and the runner's volume are removed; no host compiler is installed.
+
+## IPC design blocker and restricted startup hold: 2026-11-06
+
+Implementation of `add-enforced-network-egress` is paused. A real-rootless
+candidate-wrapper probe reached a controlled TLS service outside an offline
+agent through a filesystem Unix socket in its writable workspace. The agent had
+only `lo`, no delegated Podman socket, and no authorized egress relay. The output
+was `UNAPPROVED_HOST_IPC_REACHED_WITH_ONLY_LOOPBACK`; the probe completed in
+4.701 seconds. The same exposure can exist in shared application state. This
+invalidates the full isolation claim despite the earlier passing IP checks.
+
+The reproducible credential-free harness now includes this IPC case:
+`bash tests/run-runtime.sh --network-feasibility`. A green harness result means
+that both the IP properties and the **IPC bypass** were reproduced; it does not
+mean the security gate passed. Its explicit `DESIGN BLOCKER` line identifies the
+unapproved workspace socket crossing a namespace with only loopback attached.
+Fixtures use only disposable certificates, controlled endpoints and owned
+containers/native volumes. No real credentials, login, or model requests are used.
+
+Restricted startup is now held closed before image/state operations, including
+the otherwise measured backend/version. There is no fallback or bypass flag.
+Unrestricted mode must be selected explicitly and retains the existing broader
+network behavior. The prospective `--network` acceptance cases remain incomplete
+and blocked by this hold; their historical candidate results below do not apply
+to a released restricted feature. The dedicated `restricted_startup_hold` case
+checks that no agent/state is created. Do not remove the hold or mark tasks 1.4
+and 7.1 complete until the IPC design and enforcement evidence are reviewed.
+
+A one-time socket-file scan is insufficient as the complete solution: host
+applications can create new sockets after startup in shared writable trees.
+The current plan also forbids custom seccomp profiles and preserves live host
+workspace/shared-state binds. A kernel-enforced IPC boundary or a different bind
+strategy needs an explicit design/compatibility decision; no exception to that
+scope has been silently accepted. Planning artifacts remain the original proposed
+design pending that decision.
+
+| Work completed before the hold | Result | Limits |
+| --- | --- | --- |
+| Wrapper regressions | Passed | 54 tests in 137.568 seconds, including explicit maintenance authorization and network preflight failures; these regressions explicitly select unrestricted mode |
+| Existing rootless acceptance | Passed | 13 tests in 157.484 seconds: identity/state/privacy, tmpfs, CA, worktrees, delegation/child binds, lifecycle, concurrency, image tools and build filtering |
+| Trusted policy/proxy tests | Passed | 12 tests, most recent run 0.448 seconds, including malformed/duplicate policies, protected paths/aliases/snapshots, exact authorities, address rejection, connection without second DNS lookup, oversized headers and log redaction |
+| Candidate network lifecycle | Passed for measured IP properties | Five cases in 70.413 seconds: concurrent different policies/shared and isolated state, owned signal cleanup, failed/interrupted creates for agent/proxy, offline default, real proxy TLS/streaming/WebSocket/CA and proxy death; this predates the IPC blocker and is insufficient for full enforcement |
+| Candidate stalled proxy removal | Passed | One case in 18.016 seconds: stalled TERM-ignoring engine shim remains bounded, status 37 preserved, remaining proxy ID reported and then removed by fixture cleanup |
+| Candidate redirect/port/host rejection | Passed | Targeted production-proxy case in 14.371 seconds after special-address hardening: redirects, deceptive suffix, alternate port, direct IP authority and admin-style HTTP request denied; token-bearing redirect target absent from protected diagnostics |
+| Candidate native CLI modes | Passed for startup only | One case in 31.167 seconds: six real Claude 2.1.316 version invocations under ordinary/native-bypass/YOLO modes across shared/isolated state, plus effective optional-traffic variables; no authenticated behavior is claimed |
+| Authenticated API/account login, refresh, transports | Unavailable | No real credentials or model calls authorized/used; these remain separate acceptance tasks |
+
+The date/versioned policy inventory and optional-traffic settings were checked
+against official standalone CLI documentation and byte presence in the installed
+native Claude 2.1.316 binary (ordinary text-only search skips the binary).
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_AUTOUPDATER`,
+`DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`,
+`ENABLE_CLAUDEAI_MCP_SERVERS`, and `CLAUDE_CODE_DISABLE_ARTIFACT` were present.
+Environment and version checks do not establish real telemetry/login/refresh
+compatibility. API and account inventories remain unverified for authentication.
+
+## Network topology feasibility: 2026-11-06
+
+This is a feasibility gate for `add-enforced-network-egress`, not production
+wrapper enforcement or authenticated provider compatibility. The unchanged image
+reports Claude Code 2.1.316, Node 22.23.4 and Python 3.11.2. The environment is
+Linux 6.6.87.2-microsoft-standard-WSL2, Podman client 4.3.1/server 4.9.3,
+rootless Netavark, seccomp enabled with its standard profile, SELinux disabled.
+
+| Check | Result | Evidence and limits |
+| --- | --- | --- |
+| Unix proxy topology | Passed | `bash tests/run-runtime.sh --network-feasibility`: one test passes in 5.768 seconds with two concurrent sessions; controlled HTTPS bodies and certificate/hostname verification traverse a loopback relay and a read-only socket-directory bind |
+| Direct bypass attempts | Passed | Each agent has only `lo`; direct IPv4/IPv6 TCP, host aliases, private/LAN and metadata addresses fail; external DNS/UDP and QUIC-port datagrams fail; own loopback is a positive control |
+| Socket and session ownership | Passed | Caller UID/GID with keep-id can connect but cannot unlink the read-only socket; distinct session tokens are returned; disposable fixtures, containers and runner volume are removed |
+| Security policy | Passed in available environment | No privileges, extra capabilities, custom seccomp, relabels, disabled labels, or host networking added; this does not establish SELinux-enforcing support |
+| Same-host service bind paths | Passed | Runner uses native disposable volume paths identically on host and client, with explicit Unix service access |
+| Local-engine client and SELinux-enforcing host | Unavailable | Current container supplies the same-host service client; no independently validated local rootless/SELinux-enforcing environment is available |
+| Provider authentication and production proxy | Unavailable | Fixture proxy has a test-only exact loopback upstream; it is not the production policy implementation and uses no real credentials or model requests |
+
+The initial candidate support matrix is limited to the measured same-host Unix
+service/rootless Netavark/server 4.9.3 topology. Other backends/versions and local
+client paths remain unverified. Runtime integration must not silently substitute
+an internal bridge, privileges, or unrestricted networking for a failed gate.
+
 ## Delegated-socket carriage return rejection: 2026-11-01
 
 Checks for `reject-delegated-socket-carriage-returns` run as UID/GID 1000
@@ -224,3 +530,85 @@ an arbitrary client container is not automatically a valid bind source on the
 host. Record actual engine/kernel/architecture, image CLI/OpenSpec versions,
 commands, and acceptance results here after a successful run. Do not mark the
 outstanding OpenSpec runtime tasks complete based only on synthetic coverage.
+
+## ABI-3 bootstrap revision — 2026-11-06
+
+The revised initial target is Linux 6.6.87.2-microsoft-standard-WSL2 x86_64,
+Landlock ABI 3, rootless Podman client 4.3.1/server 4.9.3 with Netavark,
+standard OCI seccomp enabled and SELinux disabled. Earlier ABI-9 requirements and
+ABI-3 rejection results above describe the superseded prototype. No upgrade is
+required by the revised design. Full restricted startup is still held closed.
+
+`bash tests/run-runtime.sh --guard`: **passed, 10 tests**, no skips. Production
+revision `abi3-seccomp-mux-v1`, static binary SHA-256
+`846834e148a7a999cbde789a4d52d64727b6eb02e7f54121ec2a178089777069`, using the
+previously recorded immutable GCC/musl toolchain. Repeated builds matched; the
+ELF has no dynamic/interpreter segment or mock environment hooks.
+
+Real production-guard tests passed on that WSL kernel for ABI-3 MAKE_SOCK/REFER
+and additive seccomp installation under the standard OCI profile; denied new
+Unix/VSOCK/other-family sockets, datagram/raw socket pairs, compat int-0x80,
+x32, io_uring setup/enter/register and pidfd_getfd; allowed IPv4/IPv6 creation
+without an external route; own loopback; fixed-peer stream/seqpacket pairs,
+explicit destination sends and SCM_RIGHTS within those pairs; denied socket
+publication/link/rename on the host workspace bind; preserved ordinary file
+rename/link and Node/Python subprocesses; and Claude 2.1.316 --version. A separate
+real test passed for the sole verified provider preconnection and FD 3 handoff.
+This provider test exchanges synthetic bytes, not proxy policy or TLS traffic.
+
+The real test caught and corrected an old minimal-header error: MAKE_SOCK is bit
+9, not bit 7 (MAKE_DIR). Shared-header mocks alone had not detected this. Real
+kernel checks are mandatory; historical ABI-9 mock passes remain component-only.
+
+A connected pair can bind/autobind a private pathname or abstract name without
+becoming a listener or changing its fixed peer. The operator explicitly approved
+this narrow allowance after the probe. Tests cover private naming, failed listen,
+fixed-peer delivery and denied publication on host binds. New unconnected Unix
+sockets and named Unix services remain unavailable, including on private tmpfs.
+
+Mocked component tests separately cover ABI below 3, blocked queries, malformed
+rule/metadata preparation, blocked filter installation, descriptor/stdio hygiene,
+unsafe runtime paths, pre-policy loader hooks, argv/stdin and exit propagation.
+They do not count as kernel enforcement evidence. Full existing/late socket
+mount-matrix tests, multiplexed TLS/streaming/WebSocket acceptance, production
+wrapper integration/lifecycle and actual authenticated Claude tool execution
+remain pending. No credentials or model calls were used.
+
+## Authenticated check commands and evidence limits
+
+These commands describe optional real-key check 6.4 and the account acceptance
+procedure for 6.5. Actual account results are recorded above; the commands alone
+are not evidence. Repeating them with real credentials requires operator approval. First prepare the
+protected installation, guard, images, policy and runtime as described in README.
+Run from a disposable workspace and record CLI version, policy revision, marker
+output and passed/failed/unavailable status without saving keys, headers, login
+URLs or raw session transcripts. Existing API/account endpoint inventories remain
+candidates until their actual flows pass. Do not add an exception after a denial
+without an explicit reviewed policy revision.
+
+```bash
+# Common prepared provider environment (installation and egress_image from README).
+export CLAUDE_CONTAINER_NETWORK=provider
+export CLAUDE_CONTAINER_NETWORK_POLICY="$installation/network/policies/default.json"
+export CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR="$HOME/.local/state/claude-egress"
+export CLAUDE_CONTAINER_EGRESS_IMAGE="$egress_image"
+
+# Optional API check: only with an available key and explicit model-call authorization.
+CLAUDE_CONTAINER_NETWORK_PROFILE=anthropic-api \
+    "$installation/claude-container.sh" -p 'Reply exactly API_PROFILE_OK. Do not use tools.'
+
+# Account: only after authorizing a real login in the selected state.
+env -u ANTHROPIC_API_KEY CLAUDE_CONTAINER_NETWORK_PROFILE=anthropic-account \
+    "$installation/claude-container.sh" auth login --claudeai
+env -u ANTHROPIC_API_KEY CLAUDE_CONTAINER_NETWORK_PROFILE=anthropic-account \
+    "$installation/claude-container.sh" -p 'Reply exactly ACCOUNT_PROFILE_OK. Do not use tools.'
+```
+
+The installed 2.1.316 `auth login --help` confirms `--claudeai`, `--console`,
+`--email` and `--sso`; do not assume an unverified no-browser option exists.
+Host browser steps are outside the boundary. Verify actual container token
+exchange, callback/manual-code behavior, streaming and later token refresh;
+a successful login or CLI exit alone does not prove refresh. Do not edit/import
+real tokens to manufacture a refresh result. Record unavailable/unsupported flows
+without weakening TLS, namespaces, seccomp or endpoint policy. SSO hosts require
+a separate explicit profile revision and are not automatically enabled.

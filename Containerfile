@@ -43,4 +43,5 @@ RUN apt-get update \
     && chmod 1777 /claude-home
 
 WORKDIR /workspace
+COPY network/relay.py network/mux.py /opt/claude-egress/
 ENTRYPOINT ["claude"]

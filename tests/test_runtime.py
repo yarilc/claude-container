@@ -35,6 +35,8 @@ class RuntimeTests(unittest.TestCase):
         self.host_home = self.native / 'synthetic-host-home'
         self.host_home.mkdir(mode=0o700)
         self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.host_home),
+                    'CLAUDE_CONTAINER_NETWORK': 'unrestricted',
+                    'CLAUDE_CONTAINER_MAINTENANCE': '1',
                     'CLAUDE_CONTAINER_IMAGE': IMAGE,
                     'CLAUDE_CONTAINER_STATE_DIR': str(self.state)}
         if os.environ.get('CONTAINER_HOST'):
@@ -154,14 +156,18 @@ CHECK
         for relative in ('.git/config', '.claude/settings.json', '.test-state/token',
                          'custom-private-home/.claude/token', '.env',
                          '__pycache__/module.pyc', '.agents/skills/private.md',
-                         'nested/unrelated.txt', 'README.md'):
+                         'nested/unrelated.txt', 'README.md', 'network/policies/secret.json',
+                         'network/proxy.py'):
             path = context / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('synthetic excluded sentinel')
+        (context / 'network/relay.py').write_text('explicit runtime input')
+        (context / 'network/mux.py').write_text('explicit transport input')
         self.build_fixture(context, '''COPY . /claude-build-context/
 RUN test -f /claude-build-context/Containerfile \\
     && test -f /claude-build-context/.containerignore \\
-    && test -z "$(find /claude-build-context -mindepth 1 ! -path /claude-build-context/Containerfile ! -path /claude-build-context/.containerignore -print -quit)"
+    && test -f /claude-build-context/network/relay.py \\
+    && test -z "$(find /claude-build-context -mindepth 1 ! -path /claude-build-context/Containerfile ! -path /claude-build-context/.containerignore ! -path /claude-build-context/network ! -path /claude-build-context/network/relay.py ! -path /claude-build-context/network/mux.py -print -quit)"
 ''')
 
     def test_image_smoke_both_state_modes(self):

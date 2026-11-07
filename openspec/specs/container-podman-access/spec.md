@@ -7,7 +7,7 @@ Control access from wrapper-launched Claude and shell sessions to the host Podma
 ## Requirements
 
 ### Requirement: Podman API access requires the exact opt-in value
-The wrapper SHALL grant access to the host Podman API only when `CLAUDE_CONTAINER_PODMAN` equals the exact string `1`. An unset, empty, or different value SHALL disable that access, omit the socket mount, and ensure `CONTAINER_HOST` is absent from the launched container environment, including values supplied by image or engine defaults.
+The wrapper SHALL grant access to the host Podman API only when `CLAUDE_CONTAINER_PODMAN` equals the exact string `1` and the operator explicitly selects unrestricted runtime networking. Exact socket opt-in in offline or provider mode SHALL fail before delegation-endpoint checks, image operations, or resource creation. An unset, empty, or different value SHALL disable that access, omit the socket mount, and ensure `CONTAINER_HOST` is absent from the launched container environment, including values supplied by image or engine defaults.
 
 #### Scenario: Variable is unset
 - **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN` unset
@@ -19,7 +19,7 @@ The wrapper SHALL grant access to the host Podman API only when `CLAUDE_CONTAINE
 - **AND** it does not mount the host Podman socket and container `CONTAINER_HOST` is absent
 
 #### Scenario: Access is explicitly enabled
-- **GIVEN** the selected Unix socket serves a reachable engine that reports rootless operation and an absolute host-side socket path
+- **GIVEN** unrestricted runtime networking is selected and the selected Unix socket serves a reachable engine that reports rootless operation and an absolute host-side socket path
 - **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
 - **THEN** it mounts the service-reported host-side socket at `/run/podman/podman.sock`
 - **AND** it sets `CONTAINER_HOST=unix:///run/podman/podman.sock` in the container
@@ -38,8 +38,13 @@ The wrapper SHALL grant access to the host Podman API only when `CLAUDE_CONTAINE
 
 #### Scenario: Enabled delegation replaces inherited defaults
 - **GIVEN** the image defines a different container `CONTAINER_HOST`
-- **WHEN** delegation is enabled and its selected service passes verification
+- **WHEN** unrestricted runtime networking is selected, delegation is enabled, and its selected service passes verification
 - **THEN** the container receives exactly `CONTAINER_HOST=unix:///run/podman/podman.sock`
+
+#### Scenario: Restricted mode rejects exact opt-in
+- **WHEN** offline or provider mode is selected with exact `CLAUDE_CONTAINER_PODMAN=1`
+- **THEN** startup rejects the combination before querying the delegation endpoint or performing image/resource operations
+- **AND** the diagnostic explains that host API access bypasses network enforcement and requires explicit unrestricted mode
 
 ### Requirement: Socket validation is conditional
 The wrapper SHALL validate the selected delegation socket only when Podman API access is enabled. Disabled delegation SHALL NOT require or query that endpoint separately from mandatory launch-engine verification. An enabled missing, non-socket, or inaccessible endpoint SHALL fail before image operations or launch with an actionable path-specific error.
@@ -66,14 +71,14 @@ The wrapper SHALL validate the selected delegation socket only when Podman API a
 - **THEN** it verifies that launch engine but does not expose the launch socket inside the session
 
 ### Requirement: Access policy applies across launch modes
-The wrapper SHALL apply the same access policy in Claude and `--container-shell` modes, including when combined with `--container-build` or `--container-git-worktree`. Host Podman SHALL remain required for image operations and launching the outer container regardless of the opt-in.
+The wrapper SHALL apply the same access policy in Claude and `--container-shell` modes, including when combined with `--container-build` or `--container-git-worktree`. Restricted modes SHALL reject exact socket opt-in in every composition, including YOLO/native permission settings. Host Podman SHALL remain required for image operations and launching the outer container regardless of the opt-in.
 
 #### Scenario: Shell mode follows the opt-in
-- **WHEN** the caller launches with `--container-shell`, with and without `CLAUDE_CONTAINER_PODMAN=1`
+- **WHEN** the caller selects unrestricted networking and launches with `--container-shell`, with and without `CLAUDE_CONTAINER_PODMAN=1`
 - **THEN** only the enabled launch receives the socket mount and `CONTAINER_HOST`
 
 #### Scenario: Build and workspace options preserve the access policy
-- **WHEN** the caller launches with `--container-build --container-git-worktree` in either access mode
+- **WHEN** the caller selects unrestricted networking and explicitly authorized maintenance with `--container-build --container-git-worktree` in either access mode
 - **THEN** the image build and parent workspace mount retain their existing behavior
 - **AND** only the enabled launch receives the socket mount and `CONTAINER_HOST`
 
@@ -82,12 +87,12 @@ The wrapper SHALL apply the same access policy in Claude and `--container-shell`
 - **THEN** it fails with the existing host Podman prerequisite error
 
 ### Requirement: Document the optional authority grant
-Wrapper help and README SHALL document exact `CLAUDE_CONTAINER_PODMAN=1`, the disabled default, endpoint selection, and remapped socket support. They SHALL distinguish launch-engine verification from delegation verification, explain that delegation permits host mounts beyond the workspace, and show migration for child-container workflows.
+Wrapper help and README SHALL document exact `CLAUDE_CONTAINER_PODMAN=1`, the disabled default, endpoint selection, and remapped socket support. They SHALL distinguish launch-engine verification from delegation verification, explain that delegation permits host mounts beyond the workspace, and show migration for child-container workflows through explicit unrestricted mode. Documentation SHALL explain restricted-mode rejection and that delegated builds need a separately enforced environment or policy broker; child proxy variables alone are insufficient.
 
 #### Scenario: Discover and enable access
 - **WHEN** a user reads wrapper help and README usage instructions
 - **THEN** the exact enabling value and disabled default are stated
-- **AND** the README shows `CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh` and explains that delegation socket setup is needed only for enabled access
+- **AND** the README shows `CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh` and explains that delegation socket setup is needed only for enabled access
 - **AND** it explains control over the service user's containers, volumes, and additional host bind mounts beyond the workspace
 
 #### Scenario: Explain enforced rootless verification

@@ -39,8 +39,17 @@ if args[:2] == ['--remote', '--url']:
                      os.environ.get('FAKE_HOST_SOCKET', '/host/podman.sock') + '\n'))
     sys.exit(int(os.environ.get('FAKE_SOCKET_STATUS', '0')))
 elif args[0] == 'info':
+    if args[-1] == '{{json .Host}}':
+        print(os.environ.get('FAKE_PLATFORM',json.dumps({'kernel':'6.6.87.2-microsoft-standard-WSL2','arch':'amd64',
+            'security':{'seccompEnabled':True,'selinuxEnabled':False,'apparmorEnabled':False}})))
+        sys.exit(0)
+    if args[-1] == '{{.Host.NetworkBackend}}':
+        print(os.environ.get('FAKE_BACKEND', 'netavark'))
+        sys.exit(0)
     sys.stdout.write(os.environ.get('FAKE_INFO_RAW', os.environ.get('FAKE_INFO', 'true linux false') + '\n'))
     sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0')))
+elif args[0] == 'version':
+    print(os.environ.get('FAKE_SERVER_VERSION', '4.9.3'))
 elif args[:2] == ['image', 'exists']:
     sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
 elif args[0] == 'build':
@@ -117,7 +126,8 @@ class WrapperTests(unittest.TestCase):
         self.project.mkdir(parents=True)
         self.log = self.base / 'calls.jsonl'
         self.state = self.base / 'state'
-        self.env = {'PATH': os.environ['PATH']}
+        self.env = {'PATH': os.environ['PATH'], 'CLAUDE_CONTAINER_NETWORK': 'unrestricted',
+                    'CLAUDE_CONTAINER_MAINTENANCE': '1'}
         self.env['HOME'] = str(self.base / 'host-home')
         self.env.pop('CLAUDE_CONFIG_DIR', None)
         self.env.update(PATH=str(self.bin) + ':' + self.env['PATH'],
@@ -193,6 +203,47 @@ class WrapperTests(unittest.TestCase):
         self.assertIn('beyond the workspace', result.stdout)
         self.assertFalse(self.calls())
         self.assertFalse(self.state.exists())
+
+    def test_network_preflight_rejections_precede_image_operations(self):
+        for values in (
+            {'CLAUDE_CONTAINER_NETWORK': 'invalid'},
+            {'CLAUDE_CONTAINER_NETWORK': 'provider'},
+            {'CLAUDE_CONTAINER_NETWORK': 'offline', 'CLAUDE_CONTAINER_PODMAN': '1'},
+            {'CLAUDE_CONTAINER_NETWORK': 'provider', 'CLAUDE_CONTAINER_PODMAN': '1'},
+        ):
+            for flags in ((), ('--container-shell', '--container-build', '--container-git-worktree')):
+                with self.subTest(values=values, flags=flags):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper(*flags, **values)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(self.calls())
+        for values in ({'FAKE_BACKEND': 'cni'}, {'FAKE_SERVER_VERSION': '5.0.0'}):
+            self.log.unlink(missing_ok=True)
+            result = self.run_wrapper(CLAUDE_CONTAINER_NETWORK='offline',
+                                      CONTAINER_HOST='unix:///run/service.sock',
+                                      FAKE_INFO='true linux true', **values)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('unsupported restricted network', result.stderr)
+            self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
+
+    def test_maintenance_is_separate_from_runtime_mode(self):
+        for maintenance in ('', '0', 'true', 'yes', '01'):
+            for explicit in (False, True):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*(['--container-build'] if explicit else []),
+                    CLAUDE_CONTAINER_MAINTENANCE=maintenance, FAKE_IMAGE_STATUS='1')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('MAINTENANCE=1', result.stderr)
+                self.assertFalse(any(c[0] in ('build', 'pull', 'create') for c in self.calls()))
+
+    def test_restricted_unprotected_installation_fails_before_image_operations(self):
+        result = self.run_wrapper('--container-shell', '--container-build',
+                                  CLAUDE_CONTAINER_NETWORK='offline',
+                                  CONTAINER_HOST='unix:///run/service.sock',
+                                  FAKE_INFO='true linux true')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('network policy preflight failed', result.stderr)
+        self.assertFalse(any(c[0] in ('image', 'build', 'pull', 'create') for c in self.calls()))
 
     def test_argument_forwarding_and_defaults(self):
         result = self.run_wrapper('-p', 'hello world', '', '--help')
