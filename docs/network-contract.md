@@ -186,7 +186,7 @@ CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR="$HOME/.local/state/claude-egress" \
 CLAUDE_CONTAINER_EGRESS_IMAGE="$egress_image" \
 ./claude-container.sh
 
-# Select anthropic-account for the verified account login/reuse/refresh flow.
+# Select anthropic-account (api.anthropic.com, platform.claude.com) for account login/reuse/refresh.
 # Prepare service/image/runtime per README; see validation.md for evidence limits.
 # Explicit broad-network compatibility and host API authority.
 CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_PODMAN=1 \
@@ -255,6 +255,39 @@ This is not exclusive Anthropic application access: encrypted HTTP Host/authorit
 content, domain fronting with matching SNI, and shared services remain opaque. Network activity performed remotely by provider-hosted tools is outside
 the local boundary. Rootless/backend support must be based on controlled positive
 and negative tests, not an `--internal` flag or a failed Internet request alone.
+
+### Residual exfiltration to allowed services
+
+Destination and SNI binding cannot distinguish the operator's credentials from
+attacker-supplied ones. A prompt-injected agent can send workspace data to any
+allowed host with a foreign API key or account. Base profile hosts
+(policy revision `anthropic-2026-11-08-v2`):
+
+| Profile | Allowed hosts (443) |
+| --- | --- |
+| `anthropic-api` | `api.anthropic.com` |
+| `anthropic-account` | `api.anthropic.com`, `platform.claude.com` |
+
+`claude.ai` and `claude.com` were removed from `anthropic-account` after a
+static endpoint inventory of CLI 2.1.316 (OAuth code exchange and refresh at
+`platform.claude.com`, account calls at `api.anthropic.com`, authorization pages
+in the host browser); sessions now receive policy denials for them. A separately
+named operator profile is required to re-add them. `--container-setup` shows
+this notice and requires an acknowledgement each time provider mode is selected.
+The disclosure and the host reduction do not prevent the channel; only offline
+mode removes it.
+
+### Credential-injecting interception (not implemented)
+
+A stronger design would let the proxy hold the provider credentials and inject
+them into requests, so the agent never sees them and requests carrying other
+credentials could be refused. It requires terminating provider TLS in the proxy
+with a local CA trusted by the agent, re-signing upstream certificates, moving
+credential custody and refresh into the proxy, and parsing HTTP in a much larger
+trusted proxy. It conflicts with this contract's no-decryption guarantee and the
+client's end-to-end certificate validation. It is a separately evaluated option
+only: it is not implemented and requires an explicit operator decision and its
+own change. Provider tunnels continue to forward TLS end to end.
 
 
 ## N01–N14 implementation and acceptance map

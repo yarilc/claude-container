@@ -69,6 +69,27 @@ def current_release(root):
     return release
 
 
+def residual_notice():
+    """Disclose the foreign-credential channel of every provider profile."""
+    print('Residual exfiltration: provider mode binds each tunnel to an approved host, but it cannot tell your')
+    print('credentials from attacker-supplied ones. A prompt-injected agent can send workspace data to an allowed')
+    print('host using a foreign API key or account. Allowed hosts: '
+          + '; '.join(method + ': ' + ', '.join(item['hosts']) for method, item in PROFILE.auth.items()) + '.')
+    print('Only offline mode removes this channel. See docs/network-contract.md (Residual exfiltration).')
+
+
+def choose_network(default):
+    """Ask for the network mode; provider mode requires an explicit acknowledgement each time."""
+    while True:
+        mode = ask('Network mode', default, ('offline', 'provider', 'unrestricted'))
+        if mode != 'provider':
+            return mode
+        residual_notice()
+        if yes('Acknowledge that allowed provider hosts can receive data sent with foreign credentials?'):
+            return mode
+        print('Provider mode not acknowledged; choose the network mode again.')
+
+
 def questionnaire():
     print(NAME + ' sandbox setup — no host packages will be installed. Ctrl+C cancels.')
     print('Podman must already be installed. Setup uses host Python 3 and GNU coreutils.')
@@ -86,7 +107,7 @@ def questionnaire():
     value['installation'] = str(root)
     print('offline: no external network; provider: approved CONNECT hosts with initial and retried TLS SNI binding; unrestricted: ordinary network access.')
     print('Provider mode rejects ECH/GREASE and unverifiable TLS names; encrypted Host/shared-service routing is not filtered.')
-    value['network'] = ask('Network mode', value['network'], ('offline', 'provider', 'unrestricted'))
+    value['network'] = choose_network(value['network'])
     default_auth = next(iter(PROFILE.auth))
     value['auth'] = 'none'
     if value['network'] != 'offline':
@@ -112,7 +133,7 @@ def questionnaire():
         if choice == 'disable-delegation':
             value['podman'] = False
         else:
-            value['network'] = ask('Network mode', value['network'], ('offline', 'provider', 'unrestricted'))
+            value['network'] = choose_network(value['network'])
             if value['network'] != 'offline' and value['auth'] == 'none':
                 value['auth'] = ask('Authentication method', default_auth, tuple(PROFILE.auth))
     if value['network'] == 'offline':

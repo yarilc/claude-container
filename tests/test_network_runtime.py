@@ -257,11 +257,28 @@ left.close(); right.close()
         shutil.copyfile(ROOT / 'tests/tls_binding_fixture.py', self.project / 'binding.py')
         for profile, hosts in (('controlled-test', 'localhost.localdomain'),
                                ('controlled-api', 'api.anthropic.com'),
-                               ('controlled-account', 'api.anthropic.com,claude.ai,claude.com,platform.claude.com')):
+                               ('controlled-account', 'api.anthropic.com,platform.claude.com')):
             result = self.shell('python3 binding.py ' + hosts + '\n', **(environment | {
                 'CLAUDE_CONTAINER_NETWORK_PROFILE': profile}))
             self.assert_success(result)
             self.assertIn('tls-destination-binding-ok', result.stdout)
+        # N21: hosts removed from the account inventory are policy denials, even
+        # though the fixture resolver and certificate would still serve them.
+        result = self.shell("""python3 - <<'PY'
+import socket
+for host in ('claude.ai', 'claude.com'):
+    connection = socket.create_connection(('127.0.0.1', 18080), 5)
+    connection.sendall(('CONNECT ' + host + ':443 HTTP/1.1\\r\\n\\r\\n').encode())
+    response = connection.recv(64)
+    assert not response.startswith(b'HTTP/1.1 200'), response
+    connection.close()
+print('removed-account-hosts-denied')
+PY
+""", **(environment | {'CLAUDE_CONTAINER_NETWORK_PROFILE': 'controlled-account'}))
+        self.assert_success(result)
+        self.assertIn('removed-account-hosts-denied', result.stdout)
+        self.assertIn('policy-denied', result.stderr)
+        self.assertIn('claude.ai', result.stderr)
 
     def test_provider_uses_real_proxy_and_cleans_resources(self):
         context, environment = self.provider_fixture()

@@ -132,6 +132,41 @@ elif args[0] == 'start':
 '''
 
 
+class AccountInventoryTests(unittest.TestCase):
+    """Claude-specific exact provider inventories (N21)."""
+    def setUp(self):
+        import sys
+        sys.path.insert(0, str(ROOT / 'network'))
+        import agent_profile
+        import policy
+        self.policy = policy
+        self.rules = agent_profile.load().policy_rules()
+        self.value = json.loads((ROOT / agent_profile.POLICY).read_text())
+
+    def hosts(self, name):
+        return {(d['host'], d['port']) for d in self.value['profiles'][name]['destinations']}
+
+    def test_shipped_inventories_are_exact(self):
+        self.policy.validate(json.loads(json.dumps(self.value)), self.rules)
+        self.assertEqual(self.hosts('anthropic-api'), {('api.anthropic.com', 443)})
+        self.assertEqual(self.hosts('anthropic-account'), {('api.anthropic.com', 443), ('platform.claude.com', 443)})
+        self.assertEqual(self.value['revision'], 'anthropic-2026-11-08-v2')
+
+    def test_removed_account_hosts_require_a_separate_profile(self):
+        for host in ('claude.ai', 'claude.com'):
+            with self.subTest(host=host):
+                value = json.loads(json.dumps(self.value))
+                value['profiles']['anthropic-account']['destinations'].append({'host': host, 'port': 443})
+                with self.assertRaisesRegex(self.policy.PolicyError, 'exact base profile'):
+                    self.policy.validate(value, self.rules)
+        value = json.loads(json.dumps(self.value))
+        value['profiles']['account-with-web'] = {
+            'authentication': 'account', 'disable_optional_traffic': True,
+            'destinations': [*value['profiles']['anthropic-account']['destinations'],
+                             {'host': 'claude.ai', 'port': 443}, {'host': 'claude.com', 'port': 443}]}
+        self.policy.validate(value, self.rules)
+
+
 class WrapperTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='claude-wrapper-', dir=os.environ.get('SANDBOX_TEST_TMPDIR'))

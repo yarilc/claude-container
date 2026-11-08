@@ -96,6 +96,9 @@ standard OCI seccomp and usable Landlock ABI >= 3. Unsupported setups
 fail closed. Image pulls/build RUN steps remain outside runtime filtering and
 require separate maintenance authorization. Allowed services can receive data;
 provider-hosted remote tools and encrypted application content are not filtered.
+Binding cannot tell your credentials from foreign ones: an injected agent can send
+workspace data to an allowed host (api: api.anthropic.com; account: also
+platform.claude.com) with an attacker's key or account. Only offline removes this.
 Restricted startup requires a protected static guard and SHA-256 manifest in
 network/bin plus a current protected local qualification report. Run setup or
 --container-qualify alone after preparation or relevant updates. Kernel/server

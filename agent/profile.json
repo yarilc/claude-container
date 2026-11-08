@@ -26,7 +26,7 @@
     "account": {
       "description": "reuses Claude account login",
       "policy_profile": "anthropic-account",
-      "hosts": ["api.anthropic.com", "claude.ai", "claude.com", "platform.claude.com"],
+      "hosts": ["api.anthropic.com", "platform.claude.com"],
       "login_args": ["auth", "login", "--claudeai"]
     },
     "api": {

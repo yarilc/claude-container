@@ -377,10 +377,15 @@ Special-use exclusions also use the dated
 reviewed 2026-11-06, rather than relying on Python-version classifications alone.
 
 `anthropic-api` permits only `api.anthropic.com:443`. The separate
-`anthropic-account` inventory adds `claude.ai`, `claude.com`, and
-`platform.claude.com` on 443. These inventories were checked against
+`anthropic-account` inventory adds only `platform.claude.com:443` (policy revision
+`anthropic-2026-11-08-v2`). The inventories were checked against
 [official standalone CLI requirements](https://code.claude.com/docs/en/network-config)
-on 2026-11-06. On 2026-11-07 an operator-reported account request using existing
+on 2026-11-06. A static endpoint inventory of CLI 2.1.316 on 2026-11-08 found
+OAuth code exchange and token refresh at `platform.claude.com`, account API calls
+at `api.anthropic.com`, and authorization pages opened in the host browser, so
+`claude.ai` and `claude.com` were removed from the account profile and are denied.
+Operators who need them must define a separately named profile in an operator
+policy; the exact base profile cannot be extended. On 2026-11-07 an operator-reported account request using existing
 OAuth credentials returned ACCOUNT_PROFILE_OK and exit 0 through the restricted
 wrapper. A subsequent fresh isolated login and separate ACCOUNT_LOGIN_OK request
 also succeeded with exit 0. An automatic refresh after the recorded token expired
@@ -428,6 +433,18 @@ communication with Anthropic applications. Allowed services can receive session
 data. Encrypted HTTP Host/authority, domain fronting with matching SNI, shared
 services and provider-hosted remote tools remain outside the filter. Git hosting, registries, web browsing, external MCP endpoints,
 documentation, connectors and plugin downloads need explicit extra authorization.
+
+### Residual exfiltration to allowed services
+
+Destination and SNI binding cannot tell your credentials from attacker-supplied
+ones. A prompt-injected agent can send workspace data to any allowed host using
+a foreign API key or account: `api.anthropic.com` under `anthropic-api`, and
+`api.anthropic.com` or `platform.claude.com` under `anthropic-account`. Setup
+asks you to acknowledge this whenever provider mode is selected. Narrowing the
+account inventory reduces the number of such hosts but does not close the
+channel; only offline mode removes it. Credential-injecting TLS interception is
+evaluated in the [network contract](docs/network-contract.md#credential-injecting-interception-not-implemented)
+and is not implemented.
 
 Provider releases require proxy enforcement identity `tls-clienthello-sni-v2`.
 Deploy protected wrapper code and the rebuilt immutable proxy image together;

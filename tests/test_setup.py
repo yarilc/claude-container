@@ -157,6 +157,8 @@ class SetupTests(unittest.TestCase):
         value = self.value | changes
         result = [('Protected native installation directory', value['installation']),
                   ('Network mode', value['network'])]
+        if value['network'] == 'provider':
+            result += [('Acknowledge that allowed provider hosts', 'yes')]
         if value['network'] != 'offline':
             result += [('Authentication method', value['auth'])]
         result += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
@@ -263,7 +265,7 @@ class SetupTests(unittest.TestCase):
         with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', ROOT):
             # Provider/account defaults remain selected through input retries;
             # requesting delegation must not silently broaden the network mode.
-            answers = iter([str(self.base / 'installed'), 'invalid', '', '', 'shared', '',
+            answers = iter([str(self.base / 'installed'), 'invalid', '', 'yes', '', 'shared', '',
                             'yes', '', 'no', 'no', 'no', str(self.bin / COMMAND), 'default', ''])
             with patch('builtins.input', side_effect=lambda prompt: next(answers)), patch('builtins.print'):
                 value, old = setup.questionnaire()
@@ -271,6 +273,43 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(value['network'], 'provider')
             self.assertFalse(value['podman'])
             self.assertEqual(value['auth'], LOGIN_METHOD)
+
+    def questionnaire_output(self, inputs):
+        answers, printed = iter(inputs), []
+        with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', ROOT), \
+                patch('builtins.input', side_effect=lambda prompt: (printed.append(prompt), next(answers))[1]), \
+                patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))):
+            value, _ = setup.questionnaire()
+        self.assertRaises(StopIteration, next, answers)
+        return value, '\n'.join(printed)
+
+    def test_provider_residual_notice_requires_acknowledgement(self):
+        # Declining returns to the mode question; nothing is substituted or saved.
+        value, output = self.questionnaire_output([
+            str(self.base / 'installed'), 'provider', 'no', 'offline', 'shared', '',
+            'no', 'no', 'no', 'no', str(self.bin / COMMAND), ''])
+        self.assertEqual(value['network'], 'offline')
+        self.assertEqual(output.count('Residual exfiltration:'), 1)
+        self.assertEqual(output.count('Network mode ['), 2)
+        self.assertIn('Provider mode not acknowledged', output)
+        for method, item in PROFILE.auth.items():
+            self.assertIn(method + ': ' + ', '.join(item['hosts']), output)
+        self.assertFalse([key for key in value if 'ack' in key])
+        self.assertEqual(set(value), set(common.defaults()))
+
+    def test_delegation_conflict_switch_to_provider_requires_acknowledgement(self):
+        value, output = self.questionnaire_output([
+            str(self.base / 'installed'), 'offline', 'shared', '', 'yes', 'change-network', 'provider', 'yes', '',
+            'disable-delegation', 'no', 'no', 'no', str(self.bin / COMMAND), '', ''])
+        self.assertEqual((value['network'], value['auth'], value['podman']), ('provider', LOGIN_METHOD, False))
+        self.assertEqual(output.count('Residual exfiltration:'), 1)
+
+    def test_unrestricted_selection_has_no_provider_notice(self):
+        value, output = self.questionnaire_output([
+            str(self.base / 'installed'), 'unrestricted', '', 'shared', '', 'no', 'no', 'no', 'no',
+            str(self.bin / COMMAND), ''])
+        self.assertEqual(value['network'], 'unrestricted')
+        self.assertNotIn('Residual exfiltration', output)
 
     def test_questionnaire_cancellation_has_no_mutation(self):
         code, output = pty_run(['bash', str(ROOT / WRAPPER), '--container-setup'],

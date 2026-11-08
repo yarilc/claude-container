@@ -66,6 +66,18 @@ Host/authority, shared-service routing and provider forwarding remain opaque;
 this does not guarantee exclusive access to Anthropic applications. Allowed
 services can still receive session data.
 
+Selecting provider mode prints a residual-exfiltration notice listing the hosts
+of each profile (`account: api.anthropic.com, platform.claude.com`;
+`api: api.anthropic.com`) and asks `Acknowledge that allowed provider hosts can
+receive data sent with foreign credentials? (yes/no)`. Destination binding cannot
+tell your credentials from attacker-supplied ones, so a prompt-injected agent can
+send workspace data to an allowed host with a foreign API key or account. Answering
+`no` returns to the network-mode question; no other mode is chosen for you. The
+acknowledgement is required on every setup run that selects provider mode,
+including the delegation-conflict network change, and is not saved. Only offline
+mode removes this channel; see
+[Residual exfiltration](network-contract.md#residual-exfiltration-to-allowed-services).
+
 The candidate image and protected release must both implement
 `tls-clienthello-sni-v2`; missing/old enforcement identity fails readiness before
 agent startup and candidate activation. Deploy matching code and image together.

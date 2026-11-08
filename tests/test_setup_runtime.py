@@ -71,6 +71,8 @@ class SetupRuntime(unittest.TestCase):
 
     def answers(self, mode, ca=False):
         answers = [('Protected native installation directory', str(self.root)), ('Network mode', mode)]
+        if mode == 'provider':
+            answers += [('Acknowledge that allowed provider hosts', 'yes')]
         if mode != 'offline':
             answers += [('Authentication method', 'account')]
         answers += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),

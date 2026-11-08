@@ -1,5 +1,102 @@
 # Validation record
 
+## Residual exfiltration disclosure and account profile reduction (N21): 2026-11-08
+
+Change: `openspec/changes/disclose-residual-exfiltration/`.
+
+- **Setup:** selecting provider mode in `--container-setup` prints a
+  residual-exfiltration notice and requires an acknowledgement. Declining
+  returns to the network-mode question.
+- **Documentation:** help, README, `docs/setup.md` and
+  `docs/network-contract.md` disclose the foreign-credential channel.
+- **Interception:** credential-injecting TLS interception is documented as
+  evaluated and not implemented.
+- **Account profile:** narrowed to `api.anthropic.com` and
+  `platform.claude.com`, under policy revision `anthropic-2026-11-08-v2`.
+
+### Static endpoint inventory
+
+Method: a `grep` of the installed CLI 2.1.316 binary for `https://` URLs on
+Anthropic hosts. No credentials were used and no requests were made.
+
+| Host | Endpoints found | Where it is used |
+| --- | --- | --- |
+| `platform.claude.com` | `/v1/oauth/token` | OAuth code exchange and refresh, from the container |
+| `platform.claude.com`, `claude.com` | `/oauth/authorize`, `/cai/oauth/authorize` | Authorization pages, opened in the host browser |
+| `api.anthropic.com` | `/api/oauth/...` (profile, usage, roles, API key creation) | Account calls |
+| `claude.ai`, `claude.com` | Settings, upgrade, download and docs links; remote-code and connector features | User-facing links, or features disabled by `disable_optional_traffic` |
+
+A credential-free `GET /api/oauth/usage` through the proxy returned 401 on both
+allowed hosts. The path exists there and the proxy permits it.
+
+### Credential-free suites
+
+**Sandbox:**
+- 101 tests passed, 9 skipped: policy, TLS ClientHello, TLS proxy, mux, session,
+  agent profile, alignment, platform and the new `AccountInventoryTests`.
+- `test_setup` has the same failures as the unmodified baseline (protected-path
+  checks on drvfs and a world-writable `/tmp`), plus the three new
+  questionnaire tests for the same reason. With the release lookup stubbed, the
+  three new tests and the existing default/conflict questionnaire test passed.
+
+**Host:**
+
+| Suite | Result |
+| --- | --- |
+| `--network-policy` | 14 OK |
+| `--network` | 19 OK. `test_tls_destination_binding_controlled_profiles` confirms the controlled two-host account inventory and `policy-denied` for `claude.ai` and `claude.com`; evidence `policy=anthropic-2026-11-08-v2`. |
+| `--guard` | 19 OK, 1 idle skip |
+| `--qualification` | 15 OK |
+| `--setup-runtime` | Initial run: 1 pass, 1 failure. The provider test did not answer the new acknowledgement prompt (`PTY prompt timeout: Authentication method`). Only the test answer list was fixed. |
+
+Host reruns, with `SANDBOX_TEST_TMPDIR` on native storage:
+
+| Suite | Result |
+| --- | --- |
+| `test_wrapper.py` | 64 OK, including `AccountInventoryTests` and the help tests |
+| `test_setup.py` | 60 OK, including the three acknowledgement and notice tests |
+| `--setup-runtime` | 2 OK, including the fresh provider setup with the acknowledgement |
+
+A real managed setup rerun showed the notice and acknowledgement and installed
+policy `anthropic-2026-11-08-v2`. Its locally qualified sessions are the ones
+used for the authenticated checks below.
+
+### Operator-reported authenticated checks
+
+All checks ran through the managed restricted wrapper in provider mode:
+- profile `anthropic-account`;
+- policy `anthropic-2026-11-08-v2`, digest `0c0c8651…a5ac`;
+- guard `abi3-seccomp-mux-v1`;
+- locally qualified installation;
+- shared state;
+- CLI 2.1.316.
+
+No credentials, URLs or bodies are recorded.
+
+| Check | Result |
+| --- | --- |
+| Logout, fresh login and ordinary requests | Passed; the session in use was authenticated through the narrowed profile |
+| Forced refresh | `expiresAt` set to one minute in the past; the request returned `ACCOUNT_REFRESH_OK` and exit 0. The stored expiry advanced from 07:31:58 to 07:57:52. The exit diagnostics held only one `transport-closed` record and no policy denials. |
+| Second refresh | After a second forced expiry, re-entering an interactive session refreshed the token |
+| `/usage` panel | "Failed to load usage data" right after session start, but loaded after the first request in the same session with the same policy. This matches the CLI's 5-second usage timeout and refresh-coordination path, not a policy denial. |
+
+The `/usage` failure was not reproduced as a denial.
+
+Denials observed in an earlier v2 session:
+- optional traffic: `statsig.anthropic.com`, `github.com`, `pypi.org`,
+  `registry.npmjs.org`;
+- at one instant: `claude.ai`, `console.anthropic.com` and
+  `mcp-proxy.anthropic.com`.
+
+The last two hosts and the optional-traffic hosts were never allowed. The
+feature behind the `claude.ai` attempt is unidentified and was not needed for
+login, requests, refresh or usage. Fallback D3 (restoring the four-host profile)
+was not needed.
+
+After the checks, the policy's `tested.authentication` metadata was updated to
+record them. Destinations and revision are unchanged, but the digest changes to
+`f26ff7ad…a7fa`, so installations must rerun setup and requalify.
+
 ## Retried ClientHello binding and cleanup (N22, N24): 2026-11-08
 
 Change: `openspec/changes/bind-retried-tls-hello/`. Destination-binding
