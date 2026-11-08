@@ -135,8 +135,50 @@ def verified_resumption():
                 session = secure.session
 
 
+def retried_switch_rejected():
+    """After a real HelloRetryRequest, a retried hello naming another host never reaches the server."""
+    random = bytes.fromhex('cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c')
+
+    def flight(name, curve=None):
+        context = ssl.create_default_context(cafile=CA)
+        context.minimum_version = ssl.TLSVersion.TLSv1_3
+        if curve:
+            context.set_ecdh_curve(curve)
+        outgoing = ssl.MemoryBIO()
+        client = context.wrap_bio(ssl.MemoryBIO(), outgoing, server_hostname=name)
+        try:
+            client.do_handshake()
+        except ssl.SSLWantReadError:
+            pass
+        return outgoing.read()
+
+    with tunnel() as raw:
+        raw.sendall(flight(HOSTS[0]))
+        received = b''
+        while len(received) < 5 or len(received) < 5 + int.from_bytes(received[3:5], 'big'):
+            part = raw.recv(16384)
+            assert part, 'no HelloRetryRequest'
+            received += part
+        assert received[11:43] == random, 'fixture did not send a HelloRetryRequest'
+        raw.sendall(b'\x14\x03\x03\x00\x01\x01' + flight('alternate.test', 'prime256v1'))
+        later = received[5 + int.from_bytes(received[3:5], 'big'):]
+        while True:
+            try:
+                part = raw.recv(16384)
+            except ConnectionResetError:
+                part = b''
+            if not part:
+                break
+            later += part
+        while later[:6] == b'\x14\x03\x03\x00\x01\x01':
+            later = later[6:]
+        assert later == b'', 'server answered the switched retried hello'
+
+
 fragmented_verified_tls()
 verified_resumption()
+assert get('/retry-switch-control') == b'retry-switch-control-serverhello'
+retried_switch_rejected()
 assert get('/alternate-control') == b'alternate-verified-control-ok'
 for host in HOSTS:
     for version in (ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_3):
@@ -180,4 +222,5 @@ with tunnel() as partial:
     assert partial.recv(1) == b''
 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as workers:
     assert all(value == b'abc' for value in workers.map(lambda _: get('/stream'), range(8)))
-print('tls-destination-binding-ok profiles=' + ','.join(HOSTS) + ' zero-byte-rejections=' + str(len(observed)))
+print('tls-destination-binding-ok profiles=' + ','.join(HOSTS) + ' zero-byte-rejections=' + str(len(observed))
+      + ' retried-switch-rejected=1')

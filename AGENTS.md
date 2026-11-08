@@ -206,9 +206,13 @@ that home. Do not recursively repair permissions or import credentials. Keep
 host binds or add privileges to make an internal sandbox work.
 
 Provider tunnels require trusted-proxy initial TLS 1.2/1.3 ClientHello inspection
-and exact normalized SNI/CONNECT binding before forwarding client bytes. Reject
-missing/malformed/mismatched SNI, non-TLS, ECH including GREASE, limits and absolute
-timeouts without unchecked fallback. Require `tls-clienthello-sni-v1` in protected
+and exact normalized SNI/CONNECT binding before forwarding client bytes. After a
+TLS 1.3 HelloRetryRequest the retried ClientHello is bound the same way; client
+bytes stay held until the upstream's first handshake message is classified.
+TLS 1.2 renegotiation is encrypted and remains an accepted, documented limitation.
+Reject missing/malformed/mismatched SNI, non-TLS, ECH including GREASE, limits and absolute
+timeouts without unchecked fallback. Require `tls-clienthello-sni-v2` (defined once in
+`network/revisions.py`) in protected
 manifest/readiness identities; old images must fail before agent execution.
 Preserve end-to-end certificate validation. This does not prove exclusive
 Anthropic application access: encrypted HTTP Host, shared services and provider

@@ -18,6 +18,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import NETWORK, PROFILE, ROOT, test_setting
+from revisions import TLS_ENFORCEMENT
 
 DIGEST = 'c' * 64
 PROXY = 'b' * 64
@@ -95,7 +96,7 @@ class SessionHelper(unittest.TestCase):
         self.install = self.base / 'installed'
         (self.install / 'network/bin').mkdir(parents=True)
         (self.install / 'agent').mkdir()
-        for name in ('session.py', 'agent_profile.py', 'policy.py', 'proxy_hardening.py', 'platform_check.py',
+        for name in ('session.py', 'revisions.py', 'agent_profile.py', 'policy.py', 'proxy_hardening.py', 'platform_check.py',
                      'relay.py', 'mux.py', 'resolv.conf', 'qualification_proxy.py',
                      'qualification_probe.py', 'qualification_runtime.py'):
             shutil.copyfile(NETWORK / name, self.install / 'network' / name)
@@ -203,6 +204,29 @@ class SessionHelper(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, invalid)
             self.assertIn(b'invalid fixed qualification input', result.stderr)
 
+    def test_prepare_probe_uses_pipes_and_reports_failures(self):
+        guard = self.install / 'network/bin/sandbox-egress-guard'
+        # Like the real guard: exit 78 silently unless stdout/stderr are ordinary descriptors.
+        guard.write_text('#!/bin/sh\n[ -S /dev/stdout ] || [ -S /dev/stderr ] && exit 78\n'
+                         'echo "Landlock ABI 3; required >= 3; query-only, enforcement unverified"\n')
+        caller, peer = socket.socketpair()
+        self.addCleanup(caller.close)
+        self.addCleanup(peer.close)
+        command = [sys.executable, '-I', str(self.install / 'network/session.py'), 'prepare', *self.network(),
+                   '--mode', 'offline', '--server-version', '4.9.3', '--backend', 'netavark',
+                   '--endpoint', 'unix:///run/service.sock', '--engine', 'true linux true']
+        result = subprocess.run(command, input=PLATFORM.encode(), stdout=subprocess.PIPE, stderr=caller,
+                                env=os.environ | self.env)
+        caller.close()
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.decode(), DIGEST + '\n')
+        self.assertIn(b'Landlock ABI 3', peer.recv(65536))
+        guard.write_text('#!/bin/sh\nexit 78\n')
+        result = self.prepare()
+        self.assertEqual(result.returncode, 78)
+        self.assertIn(b'sandbox egress guard probe failed (status 78)', result.stderr)
+        self.assertEqual(result.stdout, b'')
+
     def test_prepare_refusals_stop_before_the_guard_and_keep_status(self):
         result = self.prepare(env={'FAKE_CONTROL_FAIL': 'preflight'})
         self.assertEqual(result.returncode, 23)
@@ -220,7 +244,7 @@ class SessionHelper(unittest.TestCase):
     def ready_env(self, ready=None):
         if not unix_sockets_available():
             self.skipTest('AF_UNIX unavailable; run on the host')
-        return {'FAKE_READY': ready or f'{POLICY_IDENTITY} guard={DIGEST} mux=1 tls=tls-clienthello-sni-v1'}
+        return {'FAKE_READY': ready or f'{POLICY_IDENTITY} guard={DIGEST} mux=1 tls=' + TLS_ENFORCEMENT}
 
     def test_start_creates_verifies_and_records_the_owned_proxy(self):
         result = self.start(env=self.ready_env(), text=True)
@@ -241,7 +265,9 @@ class SessionHelper(unittest.TestCase):
         self.assertEqual(create[-1], 'd' * 64)
 
     def test_start_fails_closed_on_identity_hardening_and_invalid_results(self):
-        cases = [({'FAKE_READY': 'wrong-policy guard=' + DIGEST + ' mux=1 tls=tls-clienthello-sni-v1'},
+        cases = [({'FAKE_READY': 'wrong-policy guard=' + DIGEST + ' mux=1 tls=' + TLS_ENFORCEMENT},
+                  'identity mismatch'),
+                 ({'FAKE_READY': f'{POLICY_IDENTITY} guard={DIGEST} mux=1 tls=tls-clienthello-sni-v1'},
                   'identity mismatch'),
                  ({'FAKE_CONFIG': '{"PidsLimit":0,"Memory":268435456}'}, 'proxy hardening unavailable'),
                  ({'FAKE_EFFECTIVE': '{"pids":129}'}, 'proxy hardening unavailable'),

@@ -27,7 +27,7 @@ MANIFEST = (
     'network/guard.c', 'network/guard_landlock.h', 'network/guard_seccomp.h',
     'network/control.py', 'network/policy.py', 'network/agent_profile.py', 'network/session.py',
     'network/proxy.py', 'network/proxy_hardening.py',
-    'network/tls_client_hello.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf',
+    'network/tls_client_hello.py', 'network/revisions.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf',
     'network/platform_check.py', 'network/qualify.py', 'network/qualification_records.py',
     'network/qualification_probe.py', 'network/qualification_runtime.py',
     'network/qualification_peer.py', 'network/qualification_proxy.py',

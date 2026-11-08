@@ -26,6 +26,50 @@ counts = []
 counts_lock = threading.Lock()
 
 
+HELLO_RETRY_RANDOM = bytes.fromhex('cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c')
+
+
+def first_flight(name, curve=None):
+    context = ssl.create_default_context(cafile='/test/cert.pem')
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    if curve:
+        context.set_ecdh_curve(curve)
+    outgoing = ssl.MemoryBIO()
+    client = context.wrap_bio(ssl.MemoryBIO(), outgoing, server_hostname=name)
+    try:
+        client.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    return outgoing.read()
+
+
+def retry_switch(address):
+    """Send a retried ClientHello naming alternate.test; report what the server answered."""
+    with socket.create_connection(address, timeout=5) as raw:
+        raw.sendall(first_flight('localhost.localdomain'))
+        received = b''
+        while len(received) < 5 or len(received) < 5 + int.from_bytes(received[3:5], 'big'):
+            part = raw.recv(16384)
+            assert part, 'no HelloRetryRequest'
+            received += part
+        assert received[11:43] == HELLO_RETRY_RANDOM, 'no HelloRetryRequest'
+        raw.sendall(b'\x14\x03\x03\x00\x01\x01' + first_flight('alternate.test', 'prime256v1'))
+        later = received[5 + int.from_bytes(received[3:5], 'big'):]
+        while True:
+            # Skip the server's compatibility ChangeCipherSpec records.
+            while later[:6] == b'\x14\x03\x03\x00\x01\x01':
+                later = later[6:]
+            if len(later) >= 6:
+                return 'serverhello' if later[0] == 22 and later[5] == 2 else 'other'
+            try:
+                part = raw.recv(16384)
+            except ConnectionResetError:
+                part = b''
+            if not part:
+                return 'closed' if not later else 'other'
+            later += part
+
+
 class Endpoint(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/alternate-control':
@@ -35,6 +79,15 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                     secure.sendall(b'GET / HTTP/1.1\r\nHost: alternate.test\r\nConnection: close\r\n\r\n')
                     assert secure.recv(1024).startswith(b'HTTP/1.0 200')
             body = b'alternate-verified-control-ok'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == '/retry-switch-control':
+            # Unfiltered positive control: this OpenSSL server answers a retried
+            # ClientHello that names another host after its HelloRetryRequest.
+            body = b'retry-switch-control-' + retry_switch(('127.0.0.1', 8443)).encode()
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()

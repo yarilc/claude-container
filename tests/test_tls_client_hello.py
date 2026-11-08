@@ -44,6 +44,20 @@ def generated(version):
     return outgoing.read()
 
 
+def record(kind, payload, version=b'\x03\x03'):
+    return bytes([kind]) + version + vector(payload)
+
+
+def server_hello(random_value=b's' * 32, kind=2):
+    body = b'\x03\x03' + random_value + vector(b'', 1) + b'\x13\x01\x00' + vector(b'')
+    return record(22, bytes([kind]) + len(body).to_bytes(3, 'big') + body)
+
+
+HRR = server_hello(tls.HELLO_RETRY_RANDOM)
+CCS = record(20, b'\x01')
+EARLY = record(23, b'e' * 64)
+
+
 class ClientHelloTests(unittest.TestCase):
     def accept(self, wire, expected='allowed.test', split=None):
         parser = tls.ClientHello(expected)
@@ -53,7 +67,8 @@ class ClientHelloTests(unittest.TestCase):
             self.assertFalse(parser.feed(wire[:split]))
             self.assertTrue(parser.feed(wire[split:]))
         parser.finish()
-        self.assertEqual(bytes(parser.original()), wire)
+        self.assertEqual(bytes(parser.original()) + bytes(parser.surplus()), wire)
+        self.assertEqual(bytes(parser.held()), wire)
         return parser
 
     def reject(self, wire, reason=None):
@@ -82,7 +97,8 @@ class ClientHelloTests(unittest.TestCase):
         parser = tls.ClientHello('allowed.test')
         for index, byte in enumerate(wire):
             self.assertEqual(parser.feed(bytes([byte])), index == len(wire) - 1)
-        self.assertEqual(bytes(parser.original()), wire)
+        self.assertEqual(bytes(parser.original()) + bytes(parser.surplus()), wire)
+        self.assertEqual(bytes(parser.held()), wire)
 
     def test_normalization(self):
         self.accept(records(message(sni(b'ALLOWED.TEST.'))))
@@ -144,6 +160,84 @@ class ClientHelloTests(unittest.TestCase):
             except tls.TLSRejected as error:
                 self.assertIn(str(error), ('tls-malformed', 'tls-identity', 'tls-ech', 'tls-overflow', 'tls-unsupported'))
             self.assertEqual(len(parser.wire) + len(parser.hello), tls.STORAGE)
+
+    def test_hello_must_end_at_a_record_boundary(self):
+        hello = message()
+        self.reject(records(hello + b'\x01\0\0\0'), 'tls-malformed')
+        self.reject(records(hello + message(sni(b'other.test'))), 'tls-malformed')
+        # A later record is surplus, kept for the caller and never part of original().
+        parser = self.accept(records(hello) + records(message(sni(b'other.test'))))
+        self.assertEqual(bytes(parser.original()), records(hello))
+
+    def test_retry_mode_prefixes(self):
+        hello = records(message())
+        for prefix in (b'', CCS, EARLY, CCS + EARLY, EARLY + CCS + EARLY, record(23, b'x' * tls.MAX_CIPHERTEXT)):
+            for split in (None, 1, len(prefix) + 3):
+                with self.subTest(prefix=len(prefix), split=split):
+                    parser = tls.ClientHello('allowed.test', retry=True)
+                    wire = prefix + hello
+                    if split is None:
+                        self.assertTrue(parser.feed(wire))
+                    else:
+                        self.assertFalse(parser.feed(wire[:split]))
+                        self.assertTrue(parser.feed(wire[split:]))
+                    self.assertEqual(bytes(parser.original()), wire)
+        # Byte-by-byte delivery of the whole prefixed flight.
+        parser = tls.ClientHello('allowed.test', retry=True)
+        wire = CCS + EARLY + records(message(), 7)
+        for index, byte in enumerate(wire):
+            self.assertEqual(parser.feed(bytes([byte])), index == len(wire) - 1)
+
+    def test_retry_mode_rejections(self):
+        hello = records(message())
+        cases = {
+            'ccs-payload': (record(20, b'\x02') + hello, 'tls-malformed'),
+            'ccs-length': (record(20, b'\x01\x01') + hello, 'tls-malformed'),
+            'alert': (record(21, b'\x02\x28') + hello, 'tls-malformed'),
+            'application-after-handshake-start': (records(message(), 40)[:45] + EARLY, 'tls-malformed'),
+            'oversized-early-data': (record(23, b'x' * (tls.MAX_CIPHERTEXT + 1)), 'tls-malformed'),
+            'other-name': (CCS + records(message(sni(b'other.test'))), 'tls-identity'),
+            'ech': (CCS + records(message(sni() + extension(0xfe0d, b''))), 'tls-ech'),
+            'too-many-records': (CCS * tls.MAX_RECORDS + hello, 'tls-overflow'),
+        }
+        for name, (wire, reason) in cases.items():
+            with self.subTest(name):
+                parser = tls.ClientHello('allowed.test', retry=True)
+                with self.assertRaises(tls.TLSRejected) as caught:
+                    if not parser.feed(wire):
+                        parser.finish()
+                self.assertEqual(str(caught.exception), reason)
+        # Outside retry mode no record type other than handshake is accepted first.
+        self.reject(CCS + hello, 'tls-malformed')
+        self.reject(EARLY + hello, 'tls-malformed')
+
+    def test_server_hello_observer(self):
+        ordinary = server_hello()
+        tls12 = server_hello(b'\x12' * 32) + record(22, b'\x0b\0\0\0')
+        cases = (
+            (HRR, tls.RETRY), (HRR + CCS, tls.RETRY), (ordinary, tls.NO_RETRY), (tls12, tls.NO_RETRY),
+            (record(21, b'\x02\x28'), tls.NO_RETRY), (CCS + HRR, tls.NO_RETRY),
+            (server_hello(tls.HELLO_RETRY_RANDOM, kind=4), tls.NO_RETRY),
+            (b'HTTP/1.1 400 Bad Request\r\n', tls.NO_RETRY), (b'\x16\x03\x03\0\0', tls.NO_RETRY),
+        )
+        for wire, expected in cases:
+            with self.subTest(wire=wire[:8]):
+                observer = tls.ServerHello()
+                self.assertEqual(observer.feed(wire), expected)
+                observer = tls.ServerHello()
+                decisions = [observer.feed(bytes([byte])) for byte in wire]
+                self.assertEqual(decisions[-1], expected)
+                # The decision is known as soon as the random is complete, not later.
+                if expected == tls.RETRY:
+                    self.assertEqual(decisions.index(tls.RETRY), 5 + tls.ServerHello.NEEDED - 1)
+        # Handshake fragmented across one-byte records.
+        body = HRR[5:]
+        fragmented = b''.join(record(22, body[i:i + 1]) for i in range(len(body)))
+        self.assertEqual(tls.ServerHello().feed(fragmented), tls.RETRY)
+        observer = tls.ServerHello()
+        self.assertIsNone(observer.feed(HRR[:20]))
+        self.assertEqual(observer.eof(), tls.NO_RETRY)
+        self.assertEqual(len(observer.header) + len(observer.prefix), 5 + tls.ServerHello.NEEDED)
 
 
 if __name__ == '__main__':

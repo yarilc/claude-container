@@ -23,6 +23,7 @@ NETWORK = Path(__file__).resolve().parent
 sys.path.insert(0, str(NETWORK))
 from policy import PolicyError  # noqa: E402
 import agent_profile  # noqa: E402
+from revisions import TLS_ENFORCEMENT as TLS  # noqa: E402
 
 GUARD = 'sandbox-egress-guard'
 EGRESS = '/opt/sandbox-egress'
@@ -33,7 +34,6 @@ PROXY_URL = 'http://127.0.0.1:18080'
 LOCAL = 'localhost,127.0.0.1,::1'
 PROXY_VARIABLES = ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY',
                    'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy')
-TLS = 'tls-clienthello-sni-v1'
 READY_SECONDS = 10
 CHECK_SECONDS = 5
 QUALIFICATION_TARGETS = ('/workspace', '/shared-state', '/isolated-home', '/worktree-parent')
@@ -110,6 +110,23 @@ def guard_digest(installation):
     return read(Path(installation) / 'network/bin' / (GUARD + '.sha256')).split(' ', 1)[0]
 
 
+def probe_guard(installation):
+    """Query the guard ABI through pipes and relay the output to stderr.
+
+    The guard exits 78 without writing when its stderr is not a terminal, file,
+    pipe or null device (for example a journald socket), so never let it
+    inherit the caller's descriptors.
+    """
+    result = subprocess.run([str(Path(installation) / 'network/bin' / GUARD), '--probe'],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    sys.stderr.buffer.write(result.stdout + result.stderr)
+    sys.stderr.flush()
+    if result.returncode:
+        raise Exit(result.returncode, f'sandbox egress guard probe failed (status {result.returncode}): '
+                   'requires Landlock ABI >= 3 and ordinary standard I/O; '
+                   'rerun from a terminal or see network/README.md')
+
+
 def prepare(args):
     run(control_command(args.installation, 'preflight', args))
     platform = sys.stdin.buffer.read()
@@ -118,7 +135,7 @@ def prepare(args):
          '--endpoint', args.endpoint, '--engine', args.engine],
         input=platform, stdout=subprocess.DEVNULL)
     digest = guard_digest(args.installation)
-    run([Path(args.installation) / 'network/bin' / GUARD, '--probe'], stdout=sys.stderr)
+    probe_guard(args.installation)
     record = [digest]
     if args.probe:
         output = run(control_command(args.installation, 'qualification-input', args,

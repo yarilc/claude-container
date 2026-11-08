@@ -234,7 +234,7 @@ CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 bash ./clau
 | --- | --- |
 | unset or empty | Ordinary launch stops with setup guidance |
 | `offline` | `--network=none`; own loopback services only |
-| `provider` | Same isolation plus an external CONNECT proxy with initial TLS SNI binding |
+| `provider` | Same isolation plus an external CONNECT proxy with initial and retried TLS SNI binding |
 | `unrestricted` | Explicit ordinary runtime networking; socket delegation is eligible |
 
 Restricted agent containers and their session proxies explicitly drop all Linux
@@ -418,13 +418,18 @@ CONNECT preserves end-to-end TLS and existing opt-in CA trust without decryption
 The trusted proxy holds client bytes until a bounded TLS 1.2/1.3 initial
 ClientHello has exactly one normalized SNI matching the approved CONNECT name.
 Missing, malformed or different SNI, non-TLS, ECH (including GREASE), inspection
-limits and timeout fail closed. This verifies the initial TLS name, not exclusive
+limits and timeout fail closed. After a TLS 1.3 HelloRetryRequest, the retried
+ClientHello must name the same host before the proxy forwards it; client bytes
+are held until the server's first handshake message shows whether a retry
+happened. TLS 1.2 renegotiation is an accepted limitation: its ClientHello is
+encrypted and the proxy does not decrypt TLS, so it is not inspected.
+This verifies the TLS names the proxy can see, not exclusive
 communication with Anthropic applications. Allowed services can receive session
 data. Encrypted HTTP Host/authority, domain fronting with matching SNI, shared
 services and provider-hosted remote tools remain outside the filter. Git hosting, registries, web browsing, external MCP endpoints,
 documentation, connectors and plugin downloads need explicit extra authorization.
 
-Provider releases require proxy enforcement identity `tls-clienthello-sni-v1`.
+Provider releases require proxy enforcement identity `tls-clienthello-sni-v2`.
 Deploy protected wrapper code and the rebuilt immutable proxy image together;
 old images fail readiness before Claude starts. ECH/GREASE clients are unsupported
 unless configured to use a supported non-ECH handshake; no automatic bypass or

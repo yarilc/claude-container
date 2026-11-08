@@ -246,8 +246,11 @@ login/refresh/streaming/WebSocket evidence. No untested entry counts as passed.
 
 Destination filtering permits data to be sent to allowed services. The Claude
 proxy binds an approved CONNECT hostname/address to exactly matching normalized
-SNI in the initial TLS 1.2/1.3 ClientHello before forwarding client bytes. ECH/GREASE,
-missing/malformed/mismatched names and inspection limits/timeouts fail closed.
+SNI in the initial TLS 1.2/1.3 ClientHello before forwarding client bytes, and
+binds the retried ClientHello after a TLS 1.3 HelloRetryRequest the same way.
+ECH/GREASE, missing/malformed/mismatched names and inspection limits/timeouts
+fail closed. TLS 1.2 renegotiation is an accepted limitation: its ClientHello
+is encrypted under the established session and the proxy never decrypts TLS.
 This is not exclusive Anthropic application access: encrypted HTTP Host/authority,
 content, domain fronting with matching SNI, and shared services remain opaque. Network activity performed remotely by provider-hosted tools is outside
 the local boundary. Rootless/backend support must be based on controlled positive
@@ -278,7 +281,7 @@ and negative tests, not an `--internal` flag or a failed Internet request alone.
 | Item | Implementation | Required acceptance |
 | --- | --- | --- |
 | N15 | Provider help/setup/security guidance distinguishes CONNECT/address, initial TLS SNI and encrypted application routing | Review visible guarantees and ECH/GREASE compatibility guidance |
-| N16 | Trusted proxy ClientHello parser/gate, bounded buffers/deadline, redacted denials and mandatory `tls-clienthello-sni-v1` identity | Unit/proxy tests plus controlled production acceptance; old readiness fails before agent sentinel |
+| N16 | Trusted proxy ClientHello parser/gate, bounded buffers/deadline, redacted denials and mandatory `tls-clienthello-sni-v2` identity (retried ClientHello binding added by N22) | Unit/proxy tests plus controlled production acceptance; old readiness fails before agent sentinel |
 | N17 | Controlled two-name shared-address TLS fixture with verified certificates and upstream byte counters | Matching success, alternate-name positive control, mismatched zero-byte rejection, fragmentation/limits/concurrency/failure checks and API/account inventory coverage |
 
 Current measured status belongs to `docs/validation.md`. Parser and upstream-stub

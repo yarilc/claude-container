@@ -57,7 +57,9 @@ currently valid report, requalifying when required. No fallback network mode is
 selected during update or rollback.
 
 Provider mode authorizes CONNECT hostname/address and requires matching SNI in
-the initial TLS ClientHello before forwarding client bytes. It preserves
+the initial TLS ClientHello, and in the retried ClientHello after a TLS 1.3
+HelloRetryRequest, before forwarding client bytes. TLS 1.2 renegotiation is
+encrypted and not inspected. It preserves
 end-to-end certificate verification. ECH (including GREASE), missing/malformed or
 different names and inspection timeout/overflow fail closed. Encrypted HTTP
 Host/authority, shared-service routing and provider forwarding remain opaque;
@@ -65,7 +67,7 @@ this does not guarantee exclusive access to Anthropic applications. Allowed
 services can still receive session data.
 
 The candidate image and protected release must both implement
-`tls-clienthello-sni-v1`; missing/old enforcement identity fails readiness before
+`tls-clienthello-sni-v2`; missing/old enforcement identity fails readiness before
 agent startup and candidate activation. Deploy matching code and image together.
 Unsupported clients require a supported non-ECH configuration; failures never
 trigger unchecked tunneling. A rollback to a historical release also removes

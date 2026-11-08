@@ -84,8 +84,9 @@ single final LF; extra blank or nonblank records stop startup before builds.
 Delegated socket verification also rejects any CR character, including CRLF.
 Restricted modes reject Podman delegation, including shell and YOLO. Provider
 mode uses an external CONNECT proxy; removing proxy variables cannot grant a
-direct route. The trusted proxy requires initial TLS 1.2/1.3 SNI matching CONNECT
-before forwarding client bytes. Missing/malformed SNI, ECH/GREASE and inspection
+direct route. The trusted proxy requires initial TLS 1.2/1.3 SNI, and the TLS 1.3
+retried SNI after a HelloRetryRequest, to match CONNECT before forwarding client
+bytes. TLS 1.2 renegotiation is encrypted and not inspected. Missing/malformed SNI, ECH/GREASE and inspection
 limits/timeouts fail closed. This does not prove exclusive Anthropic application
 access: encrypted Host, shared-service routing and remote forwarding remain opaque.
 Network restriction requires a protected installation outside

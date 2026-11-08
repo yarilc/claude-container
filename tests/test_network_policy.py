@@ -17,6 +17,7 @@ from sandbox_profile import (GUARD, HOST, NARROW_PROFILE, NETWORK, POLICY_FILE, 
                              WIDE_METHOD, WIDE_PROFILE, test_setting)
 import policy
 import proxy
+from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT
 import mux
 
 
@@ -171,8 +172,10 @@ class PolicyTests(unittest.TestCase):
             manifest = json.loads((session / 'config/manifest.json').read_text())
             self.assertEqual(manifest['sha256'], hashlib.sha256(elf).hexdigest())
             self.assertEqual(manifest['protocol'], 1)
-            self.assertEqual(manifest['tls_enforcement'], 'tls-clienthello-sni-v1')
+            self.assertEqual(manifest['tls_enforcement'], TLS_ENFORCEMENT)
             self.assertEqual(manifest['session'], session.name)
+            # The agent mounts the protected network/resolv.conf; no per-session copy.
+            self.assertEqual(sorted(path.name for path in session.iterdir()), ['config', 'logs', 'transport'])
             preflight = command.copy()
             preflight[3] = 'preflight'
             for target in ('/', '/tmp', '/tmp/child', '/run/nested', '/var/tmp/child'):
@@ -274,11 +277,11 @@ class AsyncProxyTests(unittest.IsolatedAsyncioTestCase):
 class TLSManifestTests(unittest.TestCase):
     def test_required_enforcement_identity(self):
         manifest = {'policy': 'fixture-policy', 'profile': NARROW_PROFILE, 'session': 'fixture',
-                    'protocol': 1, 'revision': 'abi3-seccomp-mux-v1', 'required_abi': 3,
+                    'protocol': 1, 'revision': GUARD_REVISION, 'required_abi': GUARD_REQUIRED_ABI,
                     'filter': 'native-x86_64-v1', 'sha256': 'a' * 64,
-                    'tls_enforcement': 'tls-clienthello-sni-v1'}
+                    'tls_enforcement': TLS_ENFORCEMENT}
         proxy.validate_manifest(manifest, 'fixture-policy', NARROW_PROFILE, 'fixture')
-        for value in (None, '', 'old', True):
+        for value in (None, '', 'old', True, 'tls-clienthello-sni-v1'):
             changed = manifest.copy()
             if value is None:
                 del changed['tls_enforcement']

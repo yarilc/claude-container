@@ -14,7 +14,26 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import AGENT_IMAGE, PROFILE, ROOT, env as profile_env
+from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT
 ENABLED = os.environ.get('SANDBOX_GUARD_TESTS') == '1'
+
+
+class GuardRevisionSource(unittest.TestCase):
+    """The C guard keeps its own defines; they must match network/revisions.py."""
+
+    def define(self, name, value):
+        text = (ROOT / 'network' / name).read_text()
+        match = re.search(r'^#define ' + value + r' (\S+)$', text, re.MULTILINE)
+        self.assertIsNotNone(match, f'{value} missing from network/{name}')
+        return match[1]
+
+    def test_guard_defines_match_the_shared_revisions(self):
+        self.assertEqual(self.define('guard.c', 'GUARD_REVISION'), f'"{GUARD_REVISION}"')
+        self.assertEqual(self.define('guard_landlock.h', 'GUARD_REQUIRED_ABI'), str(GUARD_REQUIRED_ABI))
+        version = re.search(r'puts\("sandbox-egress-guard " GUARD_REVISION " required-abi=(\d+) ',
+                            (ROOT / 'network/guard.c').read_text())
+        self.assertIsNotNone(version, 'guard --version format changed')
+        self.assertEqual(int(version[1]), GUARD_REQUIRED_ABI)
 
 
 @unittest.skipUnless(ENABLED, 'run tests/run-runtime.sh --guard with a prepared toolchain')
@@ -80,7 +99,7 @@ class GuardTests(unittest.TestCase):
         self.compile(repeated)
         self.assertEqual(hashlib.sha256(data).digest(), hashlib.sha256(repeated.read_bytes()).digest())
         result = subprocess.run([str(self.binary), '--version'], capture_output=True, text=True, check=True)
-        self.assertIn('abi3-seccomp-mux-v1 required-abi=3', result.stdout)
+        self.assertIn(f'{GUARD_REVISION} required-abi={GUARD_REQUIRED_ABI} ', result.stdout)
         print('production guard sha256=' + hashlib.sha256(data).hexdigest(), flush=True)
 
     def test_actual_kernel_query_refuses_unsupported_abi(self):
@@ -354,9 +373,9 @@ class GuardTests(unittest.TestCase):
         sys.path.insert(0, str(ROOT / "network"))
         from policy import revision
         manifest = {'sha256': hashlib.sha256(self.binary.read_bytes()).hexdigest(),
-                    'revision': 'abi3-seccomp-mux-v1', 'required_abi': 3,
+                    'revision': GUARD_REVISION, 'required_abi': GUARD_REQUIRED_ABI,
                     'filter': 'native-x86_64-v1', 'protocol': 1,
-                    'tls_enforcement': 'tls-clienthello-sni-v1',
+                    'tls_enforcement': TLS_ENFORCEMENT,
                     'policy': revision(json.loads((config / 'policy.json').read_text())),
                     'profile': 'controlled-test', 'session': 'guarded-synthetic'}
         (config / 'manifest.json').write_text(json.dumps(manifest))

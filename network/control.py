@@ -14,6 +14,7 @@ import ipaddress
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from policy import PolicyError, canonical, load, overlaps, revision, selected, trusted_path
 import agent_profile
+from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT
 
 GUARD = 'sandbox-egress-guard'
 
@@ -40,7 +41,7 @@ def main():
     installation = trusted_path(args.installation, args.writable, directory=True)
     profile = agent_profile.load(installation / agent_profile.PROFILE, writable=args.writable)
     for name in (profile.wrapper, 'network/control.py', 'network/policy.py', 'network/agent_profile.py', 'network/session.py',
-                 'network/relay.py', 'network/mux.py', 'network/resolv.conf', agent_profile.POLICY):
+                 'network/revisions.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf', agent_profile.POLICY):
         trusted_path(installation / name, args.writable)
     diagnostics = installation / 'setup/diagnostics.py'
     if diagnostics.exists() or diagnostics.is_symlink():
@@ -69,9 +70,9 @@ def main():
         raise PolicyError('native bootstrap ELF layout invalid')
     if any(struct.unpack_from('<I', data, offset + i * size)[0] in (2, 3) for i in range(count)):
         raise PolicyError('native bootstrap must not have dynamic loading or an interpreter')
-    guard_identity = {'sha256': identity, 'revision': 'abi3-seccomp-mux-v1',
-                      'required_abi': 3, 'filter': 'native-x86_64-v1', 'protocol': 1,
-                      'tls_enforcement': 'tls-clienthello-sni-v1'}
+    guard_identity = {'sha256': identity, 'revision': GUARD_REVISION,
+                      'required_abi': GUARD_REQUIRED_ABI, 'filter': 'native-x86_64-v1', 'protocol': 1,
+                      'tls_enforcement': TLS_ENFORCEMENT}
     for name in ('platform_check.py', 'qualify.py', 'qualification_records.py', 'qualification_probe.py',
                  'qualification_runtime.py', 'qualification_peer.py', 'qualification_proxy.py'):
         trusted_path(installation / 'network' / name, args.writable)
@@ -121,9 +122,6 @@ def main():
         (session / 'config/manifest.json').write_text(json.dumps(guard_identity | {
             'policy': revision(value), 'profile': args.profile, 'session': session.name}, sort_keys=True) + '\n')
         (session / 'config/manifest.json').chmod(0o400)
-        # No external DNS from the agent. Own hosts entries remain usable.
-        (session / 'resolv.conf').write_text('nameserver 127.0.0.1\noptions attempts:1 timeout:1\n')
-        (session / 'resolv.conf').chmod(0o400)
         print(revision(value))
 
 

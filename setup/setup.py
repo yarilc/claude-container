@@ -84,7 +84,7 @@ def questionnaire():
     previous = load(old / 'setup.json') if old else defaults(root)
     value = previous.copy()
     value['installation'] = str(root)
-    print('offline: no external network; provider: approved CONNECT hosts with initial TLS SNI binding; unrestricted: ordinary network access.')
+    print('offline: no external network; provider: approved CONNECT hosts with initial and retried TLS SNI binding; unrestricted: ordinary network access.')
     print('Provider mode rejects ECH/GREASE and unverifiable TLS names; encrypted Host/shared-service routing is not filtered.')
     value['network'] = ask('Network mode', value['network'], ('offline', 'provider', 'unrestricted'))
     default_auth = next(iter(PROFILE.auth))

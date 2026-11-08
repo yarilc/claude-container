@@ -9,9 +9,10 @@ import socket
 import sys
 import time
 
-from mux import Channel, OPEN_OK, OPEN_ERR, StreamClosed, ProtocolError, bridge
+from mux import Channel, IDLE_TIMEOUT as STREAM_IDLE, MAX_DATA, OPEN_OK, OPEN_ERR, StreamClosed, ProtocolError, bridge, bounded
 from policy import PolicyError, hostname, load, public_address, revision, selected
-from tls_client_hello import ClientHello, TLSRejected, STORAGE, INSPECTION_TIMEOUT, ENFORCEMENT
+from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT as ENFORCEMENT
+from tls_client_hello import ClientHello, ServerHello, TLSRejected, STORAGE, INSPECTION_TIMEOUT, NO_RETRY, RETRY
 
 
 MAX_HEADER = 8192
@@ -92,25 +93,97 @@ class Proxy:
         self.dns_pending = 0
         self.inspection_storage = 0
 
-    async def inspect(self, stream, writer, host):
+    def reserve(self):
         if self.inspection_storage + STORAGE > STORAGE * MAX_CONNECTIONS:
             raise TLSRejected('tls-overflow')
         self.inspection_storage += STORAGE
+
+    async def inspect(self, stream, writer, host):
+        """Forward only the validated initial ClientHello; later bytes stay held in the parser."""
+        parser = ClientHello(host)
         try:
-            parser = ClientHello(host)
-            try:
-                async with asyncio.timeout(INSPECTION_TIMEOUT):
-                    while not parser.done:
+            async with asyncio.timeout(INSPECTION_TIMEOUT):
+                while not parser.done:
+                    data = await stream.read()
+                    if not data:
+                        parser.finish()
+                    parser.feed(data)
+        except asyncio.TimeoutError:
+            raise TLSRejected('tls-timeout') from None
+        writer.write(parser.original())
+        await asyncio.wait_for(writer.drain(), 30)
+        return parser
+
+    async def retry_gate(self, stream, reader, writer, parser):
+        """Bind a TLS 1.3 retried ClientHello to the authorized host (RFC 8446 section 4.1.4).
+
+        Client bytes after the initial ClientHello are held until the upstream's
+        first handshake message shows whether it is a HelloRetryRequest. Upstream
+        bytes are classified before they are relayed, so the client can never
+        answer a retry the proxy has not seen. Without a retry, held bytes are
+        forwarded unchanged and the tunnel continues opaquely.
+        """
+        observer = ServerHello()
+        decided = asyncio.Event()
+        state = {'reading': False, 'stop': False}
+
+        async def upstream():
+            while not state['stop']:
+                state['reading'] = True
+                data = await bounded(reader.read(MAX_DATA), STREAM_IDLE)
+                state['reading'] = False
+                if not data:
+                    observer.eof()
+                    decided.set()
+                    return
+                if observer.feed(data):
+                    decided.set()
+                await stream.send(data)
+
+        relay = asyncio.create_task(upstream())
+        decision = asyncio.create_task(decided.wait())
+        waiter = None
+        try:
+            async with asyncio.timeout(INSPECTION_TIMEOUT):
+                retrying = False
+                while observer.decision != NO_RETRY and not (retrying and parser.done):
+                    if observer.decision == RETRY and not retrying:
+                        # Everything held so far must form the retried ClientHello.
+                        retrying = True
+                        parser.next_hello()
+                        continue
+                    if relay.done() and relay.exception():
+                        raise relay.exception()
+                    waiter = waiter or asyncio.create_task(stream.readable())
+                    pending = {waiter} | {task for task in (relay, decision) if not task.done()}
+                    await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    if waiter.done():
+                        waiter.result()
+                        waiter = None
                         data = await stream.read()
-                        if not data:
-                            parser.finish()
-                        parser.feed(data)
-            except asyncio.TimeoutError:
-                raise TLSRejected('tls-timeout') from None
-            writer.write(parser.original())
-            await asyncio.wait_for(writer.drain(), 30)
+                        if not data or (retrying and parser.done):
+                            raise TLSRejected('tls-malformed')
+                        if retrying:
+                            parser.feed(data)
+                        else:
+                            parser.hold(data)
+        except asyncio.TimeoutError:
+            raise TLSRejected('tls-timeout') from None
+        except TLSRejected as error:
+            if str(error) == 'tls-identity':
+                raise TLSRejected('tls-retry-identity') from None
+            raise
         finally:
-            self.inspection_storage -= STORAGE
+            for task in (waiter, decision):
+                if task:
+                    task.cancel()
+            state['stop'] = True
+            # A read can be cancelled without losing data; a relay send in flight completes.
+            if state['reading']:
+                relay.cancel()
+            await asyncio.gather(relay, return_exceptions=True)
+        writer.write(parser.held() if retrying else parser.surplus())
+        await asyncio.wait_for(writer.drain(), 30)
 
     async def connect(self, host, port):
         if (host, port) not in self.rules:
@@ -152,7 +225,13 @@ class Proxy:
                 return
             stream.opened = True
             await stream.channel.frame(OPEN_OK, stream.ident)
-            await self.inspect(stream, upstream_writer, host)
+            self.reserve()
+            try:
+                parser = await self.inspect(stream, upstream_writer, host)
+                await self.retry_gate(stream, upstream_reader, upstream_writer, parser)
+            finally:
+                parser = None
+                self.inspection_storage -= STORAGE
             await bridge(stream, upstream_reader, upstream_writer)
         except TLSRejected as error:
             self.audit.record(str(error), host, port)
@@ -192,7 +271,7 @@ def validate_manifest(manifest, policy_identity, profile, session):
     if (manifest.get('policy') != policy_identity or manifest.get('profile') != profile or
             manifest.get('session') != session or manifest.get('protocol') != 1 or
             manifest.get('tls_enforcement') != ENFORCEMENT or
-            manifest.get('revision') != 'abi3-seccomp-mux-v1' or manifest.get('required_abi') != 3 or
+            manifest.get('revision') != GUARD_REVISION or manifest.get('required_abi') != GUARD_REQUIRED_ABI or
             manifest.get('filter') != 'native-x86_64-v1' or
             not re.fullmatch(r'[a-f0-9]{64}', manifest.get('sha256', ''))):
         raise ValueError('invalid protected session manifest')

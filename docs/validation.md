@@ -1,5 +1,78 @@
 # Validation record
 
+## Retried ClientHello binding and cleanup (N22, N24): 2026-11-08
+
+Change: `openspec/changes/bind-retried-tls-hello/`. Destination-binding
+enforcement identity is now `tls-clienthello-sni-v2`. After the initial
+ClientHello, the proxy holds client bytes until the upstream's first handshake
+message is classified. After a TLS 1.3 HelloRetryRequest, the retried ClientHello
+must name the same host before it is forwarded. TLS 1.2 renegotiation is
+documented as an accepted, uninspected limitation. N24 cleanup:
+- the per-session `resolv.conf` write is removed;
+- revisions are defined once in `network/revisions.py`;
+- the host probe runs through pipes and reports failures with an actionable message;
+- `test_tls_proxy.py` imports independently of the test runner's start directory.
+
+### Observed gap
+
+Unfiltered, an OpenSSL 3.0.22 server restricted to P-256 sends a
+HelloRetryRequest to a default Python client whose ClientHello names
+`allowed.test`. When it then receives a ChangeCipherSpec and a ClientHello naming
+`alternate.test`, it answers with a ServerHello; its SNI callback saw both names.
+
+Reproduction: in memory with `ssl.MemoryBIO`, in
+`tests/test_tls_proxy.py::test_real_openssl_retry_binding`, and with the new
+fixture endpoint `/retry-switch-control`, which returned `serverhello` in a
+local run. The retry gap was therefore exploitable against OpenSSL-based
+endpoints that serve both names.
+
+### Executed in the restricted Claude session
+
+The session has no `AF_UNIX` bind, no Podman service, and `/tmp` is `noexec`.
+`SANDBOX_TEST_TMPDIR` pointed to an executable drvfs directory outside the
+repository.
+
+| Command | Result |
+| --- | --- |
+| `test_tls_client_hello.py` | Passed: 11 tests. New: record-boundary rule, retry-mode prefixes (CCS, early data, byte-by-byte), retry-mode rejections and the `ServerHello` observer (HRR, TLS 1.2/1.3 ServerHello, alert, non-TLS, one-byte records, early decision, fixed storage) |
+| `test_tls_proxy.py` | Passed: 12 tests, run three times. New: matching retry with held early data and CCS; zero-byte rejection of switched, missing, ECH, alert, trailing and non-TLS retried hellos with `tls-retry-identity` or the fixed reason; held pipelined second hello; no-retry TLS 1.3, TLS 1.2 and alert flights forwarded unchanged; deadline, EOF and overflow; concurrent failure isolation; reservation release; and a real OpenSSL HRR handshake through the proxy plus the switched-SNI rejection, with an unfiltered positive control. With the gate removed, 9 cases fail |
+| `test_session.py` | Passed: 15 tests, 7 skipped (AF_UNIX). New: probe output relayed when the caller's stderr is a socket, and a silent status-78 probe reported with the actionable message. The test fails against the previous inherited-descriptor probe |
+| `test_guard.py` | Passed: `GuardRevisionSource` (18 runtime cases skipped). Fails on an edited `GUARD_REVISION` define |
+| `test_network_policy.py` | Passed: 14 tests, the snapshot case skipped here (needs protected native ancestors). A v1 manifest is rejected |
+| `test_mux.py`, `test_alignment.py`, `test_agent_profile.py`, `test_platform.py`, `test_qualification.py` | Passed (runtime-only cases skipped) |
+| `test_wrapper.py`, `test_setup.py` | Unavailable here: drvfs reports mode 0777 and refuses `chmod`. The same 62 wrapper errors occur on the unchanged checkout. To run on the host |
+| `bash -n claude-container.sh`, `git diff --check` | Passed |
+
+### Executed on the WSL host
+
+Operator run on 2026-11-08, with a native temporary directory and rootless
+Podman. There were no initial failures.
+
+| Command | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests -p test_wrapper.py` | Passed: 62 tests |
+| `python3 -m unittest discover -s tests -p test_setup.py` | Passed: 57 tests |
+| `python3 -m unittest discover -s tests -p test_session.py` | Passed: 15 tests, none skipped. The socket-stderr probe and the v1 readiness rejection ran |
+| `bash tests/run-runtime.sh --guard` | Passed: 19 tests, 1 skipped (the 305-second idle check belongs to `--guard-idle`). Guard sha256 `0c647dfe…7ec9`, unchanged revision `abi3-seccomp-mux-v1`. Controlled TLS evidence reported `enforcement=tls-clienthello-sni-v2`. The TLS binding fixture passed through the production guard, relay and proxy. Its assertions include `/retry-switch-control` = `serverhello` and the rejection of a switched retried hello after a real fixture HelloRetryRequest, under normal, pressure and delayed-close-ack faults |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 14 tests. The snapshot test confirms that the session directory holds only `config`, `logs` and `transport`; v1 manifests are rejected |
+| `bash tests/run-runtime.sh --network` | Passed: 19 tests in 890 s. Results: v2 readiness; 64 slow inspections at a 41 MiB peak against a 256 MiB limit; 64 verified TLS connections at a 46 MiB peak; pids and memory exhaustion enforced in the session cgroup; the synthetic Messages API run through the real Claude Bash tool |
+| `bash tests/run-runtime.sh --qualification` | Passed: 15 tests, `status=locally-qualified` |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| Managed `--container-setup`, offline and provider launches | Operator reported success after rebuilding the installation and images |
+
+The guard run printed a `DeprecationWarning` for an invalid `\S` escape in the
+readiness shim of `tests/test_network_runtime.py`. The regular expression still
+worked. The escape is now doubled in the generated script.
+
+Not separately observed: the operator did not record a provider launch of the
+pre-change installation failing readiness. That rejection is covered by the
+`tls` case of `test_readiness_binds_policy_guard_and_protocol` (`--network`), by
+the v1 readiness case in `test_session.py` and by the v1 manifest rejection.
+
+Unavailable: whether real Anthropic endpoints send a HelloRetryRequest to the
+installed client. This was not measured, and no credentials or model calls
+were used.
+
 ## Restricted session helper extraction: 2026-11-08
 
 Change: `openspec/changes/extract-network-session/`. `network/session.py` now owns

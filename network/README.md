@@ -23,6 +23,12 @@ sandbox-egress-guard --provider -- /absolute/program [args...]
 ```
 
 `--probe` queries Landlock ABI >= 3 only; it does not attest enforcement.
+Like every guard mode, it exits 78 without writing when stdout or stderr is not a
+terminal, regular file, pipe or `/dev/null` (for example a journald socket).
+`session.py prepare` and qualification therefore run it through pipes and relay
+its output; a failed probe reports `sandbox egress guard probe failed (status N)`.
+The guard revision and required ABI are defined once for Python code in
+`network/revisions.py`; `tests/test_guard.py` checks that the C defines match.
 Native Linux and WSL2 x86_64 are eligible with usable ABI >= 3, standard OCI
 seccomp and rootless same-host Unix Netavark/Podman >= 4.9. Kernel releases are
 not pinned and stable server versions have no upper bound. SELinux/AppArmor
@@ -318,7 +324,7 @@ accepts only multiplex data frames. Neither exposes policy-changing operations,
 administration or descriptor transfer. Error logs use bounded normalized
 host/port/session/reason fields; framing errors never log raw payloads. Log
 retention remains capped at 1 MiB. TLS stays end-to-end with certificate validation;
-the initial ClientHello SNI is bound to CONNECT before client bytes are forwarded.
+the initial and retried ClientHello SNI is bound to CONNECT before client bytes are forwarded.
 There is no TLS interception, application-content filtering, domain-fronting
 protection for matching SNI or control over provider-hosted remote tools and shared services.
 
@@ -329,7 +335,7 @@ TLS requests, concurrent streaming, WebSocket and certificate/destination-denial
 checks through the production static guard and confined relay. These are
 credential-free transport tests, not authenticated agent compatibility.
 
-## Initial TLS ClientHello inspection
+## TLS ClientHello inspection
 
 The destination-binding parser in `tls_client_hello.py` supports TLS 1.2 legacy
 ClientHello and TLS 1.3 ClientHello with `supported_versions`. It reconstructs
@@ -344,8 +350,9 @@ GREASE ECH) are rejected. No extension is stripped and no unchecked retry occurs
 Inspection retains at most 64 KiB of handshake bytes and 96 KiB of original wire
 bytes, consumes at most 128 records with 16 KiB plaintext payloads, and never
 allocates from a peer-declared length. A fixed 8 KiB extension-presence bitmap
-bounds duplicate detection metadata. Original wire bytes, including consumed
-trailing data, remain ordered and unchanged. Parser rejection exposes only a
+bounds duplicate detection metadata. The ClientHello must end at a record
+boundary; later records are surplus and stay held. Original wire bytes remain
+ordered and unchanged. Parser rejection exposes only a
 fixed reason code, never raw SNI or handshake data. Tests:
 `python3 -m unittest discover -s tests -p test_tls_client_hello.py -v`.
 
@@ -366,16 +373,31 @@ at most 10 MiB per 64-stream session, in addition to existing mux credit bounds
 and fixed parser metadata. EOF, timeout, rejection and cancellation release the
 reservation and close the upstream. Valid streams remain independent.
 
-After validation, original bytes are flushed once and the existing bounded
-bridge carries opaque traffic. Rejections after OPEN_OK use stream CLOSE, never
+After validation, the ClientHello records are flushed once. The proxy then
+holds any further client bytes, within the same reservation and a new 10-second
+deadline, until it classifies the upstream's first handshake message
+(`ServerHello` in `tls_client_hello.py`, fixed storage). Upstream bytes are
+classified before they are relayed, so the client cannot answer a retry the
+proxy has not seen. Without a TLS 1.3 HelloRetryRequest, the held bytes are
+forwarded unchanged. After one, the held and following client bytes must form
+optional ChangeCipherSpec/early-data records and a retried ClientHello that
+passes the same validation and names the same host; only then are they
+forwarded. OpenSSL 3.0 servers answer a retried ClientHello that names another
+host, so this binding is required, not defensive only. Afterwards the existing
+bounded bridge carries opaque traffic.
+
+TLS 1.2 renegotiation is an accepted limitation. Its ClientHello is encrypted
+under the established session; the proxy does not decrypt TLS and cannot
+inspect it. TLS 1.3 has no renegotiation, and RFC 8446 forbids a second
+HelloRetryRequest, so no later ClientHello is inspected. Rejections after OPEN_OK use stream CLOSE, never
 a second OPEN response. Direct use of the inherited mux channel receives the
-same trusted-proxy inspection. Denial reasons are `tls-identity`, `tls-malformed`,
-`tls-unsupported`, `tls-ech`, `tls-overflow`, and `tls-timeout`; only the authorized
+same trusted-proxy inspection. Denial reasons are `tls-identity`, `tls-retry-identity`,
+`tls-malformed`, `tls-unsupported`, `tls-ech`, `tls-overflow`, and `tls-timeout`; only the authorized
 normalized destination is logged, with existing bounded/redacted audit fields.
 Run `python3 -m unittest discover -s tests -p test_tls_proxy.py -v` for proxy/relay
 zero-byte rejection, concurrent inspection, deadline and channel-death checks.
 
-Provider manifests and readiness require `tls-clienthello-sni-v1` in addition to
+Provider manifests and readiness require `tls-clienthello-sni-v2` in addition to
 policy, guard digest and mux v1 identities. Rebuild and select the immutable proxy
 image together with the matching protected release; an old proxy fails before
 agent startup. Setup packages the parser and smoke-checks the candidate before
@@ -389,4 +411,4 @@ and early ECH `0xff02`, `0xff03`, `0xff04`
 ([draft-ietf-tls-esni-07](https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-07)).
 These cannot be treated as ordinary unknown extensions when validating visible
 server-name identity. New name-hiding mechanisms require explicit reassessment;
-initial ClientHello inspection does not establish later application identity.
+ClientHello inspection does not establish later application identity.

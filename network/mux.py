@@ -67,6 +67,12 @@ class Stream:
             await self.channel.frame(DATA, self.ident, bytes(view[:size]))
             view = view[size:]
 
+    async def readable(self):
+        """Wait until read() would not block; consumes nothing, so it is safe to cancel."""
+        async with self.changed:
+            async with asyncio.timeout(IDLE_TIMEOUT):
+                await self.changed.wait_for(lambda: self.closed or self.buffer or self.remote_eof)
+
     async def read(self):
         async with self.changed:
             async with asyncio.timeout(IDLE_TIMEOUT):

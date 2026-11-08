@@ -6,6 +6,7 @@ import shutil
 import select
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -14,6 +15,8 @@ import hashlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'network'))
+from revisions import TLS_ENFORCEMENT  # noqa: E402
 IMAGE = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
 
 
@@ -176,7 +179,7 @@ left.close(); right.close()
                     if mode == 'provider':
                         session = next(self.runtime.iterdir())
                         self.assertTrue((session / 'transport/proxy.sock').is_socket())
-                        self.assertIn('tls=tls-clienthello-sni-v1', (session / 'transport/ready').read_text())
+                        self.assertIn('tls=' + TLS_ENFORCEMENT, (session / 'transport/ready').read_text())
                         proxy_id = self.podman('ps', '--no-trunc', '--filter',
                             f'label=io.claude-container.egress={session.name}', '--format', '{{.ID}}')
                         self.assertEqual(len(proxy_id), 64)
@@ -243,7 +246,7 @@ left.close(); right.close()
         sys.path.insert(0, str(ROOT / 'network'))
         from policy import revision
         print('controlled TLS evidence: proxy=' + proxy_id + ' fixture=' + fixture_id
-              + ' enforcement=tls-clienthello-sni-v1 policy=' + revision(value), flush=True)
+              + ' enforcement=' + TLS_ENFORCEMENT + ' policy=' + revision(value), flush=True)
         self.policy_file = policy_file
         if self._shared_fixtures:
             type(self)._provider_cache = (context, fixture_id, value)
@@ -504,7 +507,7 @@ time.sleep(300)
         shim_dir.mkdir()
         shim = shim_dir / 'podman'
         shim.write_text('''#!/usr/bin/env python3
-import os,pathlib,subprocess,sys,time
+import os,pathlib,re,subprocess,sys,time
 args=sys.argv[1:]; real=os.environ['NETWORK_REAL_PODMAN']
 if args and args[0]=='start':
  result=subprocess.run([real,*args],capture_output=True,text=True)
@@ -514,7 +517,7 @@ if args and args[0]=='start':
    paths=list(pathlib.Path(os.environ['NETWORK_RUNTIME']).glob('session.*/transport/ready'))
    if paths:
     ready=paths[0].read_text(); case=os.environ['NETWORK_READY_CASE']
-    if case=='tls': ready=ready.replace(' tls=tls-clienthello-sni-v1', '')
+    if case=='tls': ready=re.sub(r' tls=\\S+', '', ready)
     elif case=='guard': ready=ready.replace(' guard=', ' guard=wrong')
     elif case=='protocol': ready=ready.replace(' mux=1', ' mux=2')
     else: ready='wrong-policy '+ready

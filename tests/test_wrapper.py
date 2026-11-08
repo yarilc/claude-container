@@ -422,17 +422,19 @@ class WrapperTests(unittest.TestCase):
         (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
         shutil.copyfile(ROOT / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
         shutil.copyfile(ROOT / 'network/platform_check.py', install / 'network/platform_check.py')
-        for name in ('network/session.py', 'network/agent_profile.py', 'network/policy.py', 'agent/profile.json'):
+        for name in ('network/session.py', 'network/agent_profile.py', 'network/policy.py', 'network/revisions.py', 'agent/profile.json'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
         (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
         (install / 'network/control.py').write_text('''import pathlib,socket,sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from revisions import TLS_ENFORCEMENT
 args=sys.argv[1:]
 if args[0]=='snapshot':
  p=pathlib.Path(args[args.index('--session')+1]); (p/'transport').mkdir()
  (p/'config').mkdir(); (p/'logs').mkdir()
  s=socket.socket(socket.AF_UNIX); s.bind(str(p/'transport/proxy.sock')); s.close()
- (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +' mux=1 tls=tls-clienthello-sni-v1\\n')
+ (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +' mux=1 tls=' + TLS_ENFORCEMENT + '\\n')
  print('fixture-policy')
 ''')
         runtime = self.base / 'network-runtime'
