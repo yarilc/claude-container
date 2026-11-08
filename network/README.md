@@ -3,7 +3,7 @@
 `guard.c` implements the mandatory native bootstrap for restricted wrapper
 sessions in `add-enforced-network-egress`. The superseded IP-only startup hold
 is replaced by mandatory protected-asset, platform and in-container enforcement
-checks after the credential-free WSL gate. An ABI number or mock pass alone
+checks plus the credential-free installation gate. An ABI number or mock pass alone
 does not establish support.
 
 The guard accepts only:
@@ -16,9 +16,29 @@ claude-egress-guard --provider -- /absolute/program [args...]
 ```
 
 `--probe` queries Landlock ABI >= 3 only; it does not attest enforcement.
-The mandatory target is Linux 6.6.87.2-microsoft-standard-WSL2 x86_64.
-No kernel upgrade is required. See the versioned validation record for actual
+Native Linux and WSL2 x86_64 are eligible with usable ABI >= 3, standard OCI
+seccomp and rootless same-host Unix Netavark/Podman >= 4.9. Kernel releases are
+not pinned and stable server versions have no upper bound. SELinux/AppArmor
+enabled status alone is not rejection; compatibility is not guaranteed and
+actual policy denials stop startup. See the versioned validation record for actual
 IP/IPC/proxy checks and remaining authenticated-provider gaps.
+
+Restricted agents and session proxies use `--cap-drop=all` and
+`--security-opt=no-new-privileges` at container creation. The guard also retains
+its own no-new-privileges check. Keep caller UID/GID, `--userns=keep-id`, standard
+OCI seccomp, SELinux policy and mount restrictions; failures never cause a
+privileged or unrestricted retry. Unrestricted agent launches retain their
+existing arguments.
+
+Each session proxy has `--pids-limit=128 --memory=256m`. After readiness, the
+wrapper performs bounded inspect and exec checks of its actual cgroup v2
+`pids.max=128` and `memory.max=268435456`, zero capability sets, NoNewPrivs and
+standard seccomp before any agent runs. `network/proxy_hardening.py` is protected
+installed code; its fixed probe runs inside the proxy without extra mounts or
+an administration endpoint. Missing controllers, unknown cgroup layouts or
+ignored limits fail closed. Inspect rootless memory/pids controller delegation
+and the selected image when this diagnostic appears; do not add privileges or
+disable host policy. Proxy exhaustion never creates an unbounded replacement.
 
 The static single-threaded bootstrap validates terminal/pipe/file stdio (rejecting
 namespace/process/anonymous-inode handles and O_PATH capabilities) and closes
@@ -59,10 +79,61 @@ XDG_RUNTIME_DIR becomes private /tmp/claude-runtime for ordinary runtime files.
 Host-agent, named-cache and external supervisor workflows remain incompatible.
 
 The launcher still must validate immutable guard hash/ownership, effective binds,
-private PID/IPC namespaces, protected policy/frontend readiness and the full WSL
-IP/IPC/transport/lifecycle gate. No environment variable can bypass guard rules,
+private PID/IPC namespaces, protected policy/frontend readiness and the full local
+IP/IPC/transport gate plus matching evidence. No environment variable can bypass guard rules,
 choose an inherited FD or enable a reduced policy. Other architectures require
 an independently audited filter. Keep mandatory per-session refusal on failed enforcement; do not add fallback.
+
+## Local installation qualification
+
+After preparing protected code, guard, images and provider inputs, run the
+installed wrapper's `--container-qualify` alone. Guided setup does this before
+activating its candidate. No credential, public provider endpoint, image pull or
+build is required by the gate; necessary images must already be prepared under
+separate maintenance authorization. Direct environment-based invocation remains
+supported after a matching qualification report exists.
+
+The gate uses bounded disposable resources and fixed protected programs. An
+isolated dual-stack bridge hosts controlled TCP/UDP peers; unconfined positive
+controls prove reachability before network=none guard probes deny it. Existing
+and late Unix endpoints, aliases, pair retargeting/publication, descendants,
+alternate families, compat/x32 and asynchronous syscalls are checked alongside
+working loopback, connected pairs and ordinary persistence in both state modes.
+No missing peer, skipped check or unrelated connection error counts as denial.
+
+Provider qualification additionally exercises the selected production proxy code
+with a separate exact fixture policy and certificate, matching TLS/SNI, mismatched
+SNI with zero upstream bytes, denied authority and owned proxy loss. The fixed
+fixture entrypoint exists only in the dedicated internal probe operation; it
+does not add a production DNS/address/SNI bypass or change the selected policy.
+The agent always enters through the production guard/relay and N18 hardening.
+The probe exception accepts no application command or writable program input.
+
+`qualification/<fingerprint>.json` is a private strict report published atomically
+only after all controls pass, cleanup succeeds and before/after identities match.
+It binds current kernel/boot, ABI, server/endpoint, backend and OCI/security
+artifacts, protected code, inspected immutable images, policy/profile, CA trust
+and hardening. The shared validator is `platform_check.py`. Fixed host-side
+read-only file probes identify the server's seccomp/Netavark artifacts even when
+the Podman client itself runs in a container. A bounded read-only info request to
+the verified Unix API preserves server metadata omitted by older clients; backend
+binary paths are reported by the server rather than guessed from default locations.
+Report paths cannot escape via
+symlinks, become application-writable or be repaired recursively.
+
+Ordinary launches require matching evidence and still run all engine/path,
+bootstrap and readiness checks. Reboots and relevant updates require another
+gate; unidentifiable active LSM policy forces one each launch. Failures stay
+closed with `ineligible` or `qualification-required` status. A local pass reports
+`locally-qualified`, with a visible notice that the combination is not
+release-measured. Only an exact protected entry in `release_acceptance.json`
+permits `release-measured`; the shipped inventory is empty and the gate cannot
+grow it. Neither status proves real-provider authentication or all native/LSM
+combinations. Roll back by restoring the previous complete protected release.
+
+Run `bash tests/run-runtime.sh --qualification` on disposable native storage for
+contract and installed gate tests; run the existing guard/network/setup suites
+separately. See `docs/validation.md` for actual environments and unavailable checks.
 
 ## Operator build inputs
 

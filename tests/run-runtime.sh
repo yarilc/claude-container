@@ -18,6 +18,9 @@ elif [[ "${1:-}" == --setup ]]; then
 elif [[ "${1:-}" == --setup-runtime ]]; then
     pattern=test_setup_runtime.py
     shift
+elif [[ "${1:-}" == --qualification ]]; then
+    pattern=test_qualification.py
+    shift
 elif [[ "${1:-}" == --network-feasibility ]]; then
     pattern=test_network_feasibility.py
     shift

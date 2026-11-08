@@ -151,6 +151,9 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
 
 
 class TLSFixtureServer(http.server.ThreadingHTTPServer):
+    # The budget regression deliberately keeps MAX_STREAMS handshakes active.
+    request_queue_size = 128
+
     def process_request_thread(self, request, address):
         try:
             request.settimeout(12)

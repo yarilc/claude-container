@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import uuid
 import time
+import hashlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,8 +19,13 @@ IMAGE = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
 
 @unittest.skipUnless(os.environ.get('CLAUDE_RUNTIME_TESTS') == '1', 'requires real rootless engine')
 class NetworkRuntime(unittest.TestCase):
+    _shared_fixtures = False
+    _provider_cache = None
+
     @classmethod
     def setUpClass(cls):
+        cls._shared_fixtures = True
+        cls._provider_cache = None
         cls.guard_output = tempfile.TemporaryDirectory(prefix='network-guard-', dir=os.environ.get('CLAUDE_TEST_STATE_ROOT'))
         cls.addClassCleanup(cls.guard_output.cleanup)
         result = subprocess.run(['bash', str(ROOT / 'network/build-guard.sh'), cls.guard_output.name],
@@ -35,17 +41,18 @@ class NetworkRuntime(unittest.TestCase):
     def setUp(self):
         self.base = Path(tempfile.mkdtemp(prefix='network-runtime-', dir=os.environ.get('CLAUDE_TEST_STATE_ROOT')))
         self.addCleanup(shutil.rmtree, self.base)
-        self.install = self.base / 'installed'
-        self.install.mkdir(mode=0o700)
-        (self.install / 'network').mkdir(mode=0o700)
+        self.install = Path(self.guard_output.name) / 'installed' if self._shared_fixtures else self.base / 'installed'
+        self.install.mkdir(mode=0o700, exist_ok=True)
+        (self.install / 'network').mkdir(mode=0o700, exist_ok=True)
         self.wrapper = self.install / 'claude-container.sh'
         shutil.copyfile(ROOT / 'claude-container.sh', self.wrapper)
         self.wrapper.chmod(0o700)
-        for name in ('control.py', 'policy.py', 'relay.py', 'mux.py', 'resolv.conf'):
-            shutil.copyfile(ROOT / 'network' / name, self.install / 'network' / name)
+        for source in list((ROOT / 'network').glob('*.py')) + [ROOT / 'network/resolv.conf']:
+            shutil.copyfile(source, self.install / 'network' / source.name)
         binary_dir = self.install / 'network/bin'
-        binary_dir.mkdir(mode=0o700)
+        binary_dir.mkdir(mode=0o700, exist_ok=True)
         for name in ('claude-egress-guard', 'claude-egress-guard.sha256'):
+            (binary_dir / name).unlink(missing_ok=True)
             shutil.copyfile(Path(self.guard_output.name) / name, binary_dir / name)
         (binary_dir / 'claude-egress-guard').chmod(0o500)
         self.project = self.base / 'project'
@@ -58,14 +65,56 @@ class NetworkRuntime(unittest.TestCase):
                     'CLAUDE_CONTAINER_STATE_DIR': str(self.base / 'state'),
                     'CLAUDE_CONTAINER_IMAGE': IMAGE,
                     'CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR': str(self.runtime)}
+        self._qualified = set()
 
-    def shell(self, script, **environment):
+    def ensure_qualification(self, environment):
+        values = self.env | environment
+        # Prepare real reports on the same protected installation. Never copy or
+        # fabricate receipts; both state modes are covered by each actual gate.
+        inputs = {key:value for key,value in values.items() if key.startswith('CLAUDE_CONTAINER_')
+                  and key not in ('CLAUDE_CONTAINER_STATE_DIR','CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR')}
+        for key in ('CLAUDE_CONTAINER_NETWORK_POLICY','CLAUDE_CONTAINER_CA_BUNDLE'):
+            path = values.get(key)
+            if path and Path(path).is_file():
+                inputs[key + '_sha256'] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        token = json.dumps(inputs,sort_keys=True)
+        if token in self._qualified:
+            return
+        clean = {key:value for key,value in values.items() if not key.startswith('NETWORK_')}
+        clean['PATH'] = self.env['PATH']
+        check = subprocess.run(['python3','-I',str(self.install/'network/qualify.py'),'check'],
+            cwd=self.project,env=clean,capture_output=True,text=True,timeout=360)
+        if check.returncode:
+            result = subprocess.run([str(self.wrapper),'--container-qualify'],cwd=self.project,
+                env=clean,capture_output=True,text=True,timeout=360)
+            self.assert_success(result)
+        self._qualified.add(token)
+
+    def shell(self, script, qualify=True, **environment):
+        if qualify:
+            self.ensure_qualification(environment)
         return subprocess.run([str(self.wrapper), '--container-shell'], cwd=self.project,
                               env=self.env | environment, input='set -Eeuo pipefail\n' + script,
                               text=True, capture_output=True, timeout=45)
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def owned_proxies(self):
+        # Other operators/tests can legitimately have the same role label.
+        # Attribute resources to this disposable runtime, never to the role alone.
+        owned = []
+        for ident in self.podman('ps', '--all', '--no-trunc', '--filter',
+                                 'label=io.claude-container.egress', '--format', '{{.ID}}').splitlines():
+            result = subprocess.run(['podman', 'inspect', '--format', '{{json .Mounts}}', ident],
+                                    capture_output=True, text=True, timeout=10)
+            if result.returncode and ('no such' in result.stderr or 'not known' in result.stderr):
+                continue  # A concurrent foreign session may have exited.
+            self.assertEqual(result.returncode, 0, result.stderr)
+            if any(Path(mount['Source']).is_relative_to(self.runtime)
+                   for mount in json.loads(result.stdout) if mount.get('Source')):
+                owned.append(ident)
+        return owned
 
     def test_restricted_delegation_grid_and_disabled_override(self):
         for mode in ('offline', 'provider'):
@@ -92,17 +141,67 @@ class NetworkRuntime(unittest.TestCase):
         self.assert_success(result)
         self.assertIn('mode=offline', result.stderr)
         self.assertFalse(list(self.runtime.iterdir()))
-        result = self.shell('true\n', CLAUDE_CONTAINER_PODMAN='1')
+        result = self.shell('true\n', qualify=False, CLAUDE_CONTAINER_PODMAN='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('rejects CLAUDE_CONTAINER_PODMAN=1', result.stderr)
 
+    def test_restricted_hardening_identity_and_proxy_readiness(self):
+        _, provider = self.provider_fixture()
+        check = """from pathlib import Path
+import os,socket
+status=dict(line.split(':',1) for line in Path('/proc/self/status').read_text().splitlines())
+for key in ('CapInh','CapPrm','CapEff','CapBnd','CapAmb'): assert int(status[key],16)==0, key
+assert int(status['NoNewPrivs'])==1
+assert int(status['Seccomp'])==2
+assert os.getuid()==int(os.environ['EXPECTED_UID'])
+Path('owned-hardening-file').write_text('ok')
+assert Path('owned-hardening-file').stat().st_uid==os.getuid()
+left,right=socket.socketpair(); left.sendall(b'ok'); assert right.recv(2)==b'ok'
+left.close(); right.close()
+"""
+        for mode in ('offline', 'provider'):
+            for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
+                with self.subTest(mode=mode, isolated=bool(state)):
+                    environment = provider | {'CLAUDE_CONTAINER_NETWORK': mode,
+                        'CLAUDE_CONTAINER_STATE_DIR': state}
+                    script = ('EXPECTED_UID=' + str(os.getuid()) + " python3 - <<'PY'\n" + check
+                              + "PY\nprintf 'network-ready\\n'; read -r marker; exit 0")
+                    proc = self.start_session(script, environment)
+                    self.assertEqual((self.project / 'owned-hardening-file').stat().st_uid, os.getuid())
+                    if mode == 'provider':
+                        session = next(self.runtime.iterdir())
+                        self.assertTrue((session / 'transport/proxy.sock').is_socket())
+                        self.assertIn('tls=tls-clienthello-sni-v1', (session / 'transport/ready').read_text())
+                        proxy_id = self.podman('ps', '--no-trunc', '--filter',
+                            f'label=io.claude-container.egress={session.name}', '--format', '{{.ID}}')
+                        self.assertEqual(len(proxy_id), 64)
+                        status = self.podman('exec', proxy_id, 'cat', '/proc/1/status')
+                        fields = dict(line.split(':', 1) for line in status.splitlines())
+                        for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'):
+                            self.assertEqual(int(fields[key], 16), 0, key)
+                        self.assertEqual(int(fields['NoNewPrivs']), 1)
+                        self.assertEqual(int(fields['Seccomp']), 2)
+                    stdout, stderr = proc.communicate('done\n', timeout=25)
+                    self.assertEqual(proc.returncode, 0, stdout + stderr)
+                    self.assertFalse(list(self.runtime.iterdir()))
+
     def provider_fixture(self):
-        context = self.base / 'fixture'
+        if self._shared_fixtures and type(self)._provider_cache:
+            context, fixture_id, value = type(self)._provider_cache
+            policy_file = self.install/'test-policy.json'
+            policy_file.write_text(json.dumps(value)); policy_file.chmod(0o600)
+            self.policy_file = policy_file
+            shutil.copyfile(context/'cert.pem',self.project/'cert.pem')
+            return context, dict(CLAUDE_CONTAINER_NETWORK='provider',
+                CLAUDE_CONTAINER_NETWORK_POLICY=str(policy_file),CLAUDE_CONTAINER_NETWORK_PROFILE='controlled-test',
+                CLAUDE_CONTAINER_EGRESS_IMAGE=fixture_id)
+        context = (Path(self.guard_output.name) if self._shared_fixtures else self.base) / 'fixture'
         context.mkdir(mode=0o700)
         # Build production proxy from the checked-out source and pin the result
         # by immutable image ID for this disposable operator policy invocation.
         proxy_tag = 'localhost/claude-egress-test-' + uuid.uuid4().hex
-        self.addCleanup(self.podman, 'rmi', '--force', proxy_tag)
+        cleanup = type(self).addClassCleanup if self._shared_fixtures else self.addCleanup
+        cleanup(self.podman, 'rmi', '--force', proxy_tag)
         self.podman('build', '--pull=never', '--tag', proxy_tag, '--file',
                     str(ROOT / 'network/Containerfile'), str(ROOT / 'network'))
         proxy_id = self.podman('image', 'inspect', '--format', '{{.Id}}', proxy_tag)
@@ -117,7 +216,7 @@ class NetworkRuntime(unittest.TestCase):
         # Synthetic key is world-readable inside only this disposable test image.
         (context / 'key.pem').chmod(0o644)
         fixture_tag = 'localhost/claude-tls-test-' + uuid.uuid4().hex
-        self.addCleanup(self.podman, 'rmi', '--force', fixture_tag)
+        cleanup(self.podman, 'rmi', '--force', fixture_tag)
         self.podman('build', '--pull=never', '--tag', fixture_tag, str(context))
         fixture_id = self.podman('image', 'inspect', '--format', '{{.Id}}', fixture_tag)
         value = json.loads((ROOT / 'network/policies/default.json').read_text())
@@ -141,6 +240,8 @@ class NetworkRuntime(unittest.TestCase):
         print('controlled TLS evidence: proxy=' + proxy_id + ' fixture=' + fixture_id
               + ' enforcement=tls-clienthello-sni-v1 policy=' + revision(value), flush=True)
         self.policy_file = policy_file
+        if self._shared_fixtures:
+            type(self)._provider_cache = (context, fixture_id, value)
         return context, environment
 
     def test_tls_destination_binding_controlled_profiles(self):
@@ -156,6 +257,11 @@ class NetworkRuntime(unittest.TestCase):
 
     def test_provider_uses_real_proxy_and_cleans_resources(self):
         context, environment = self.provider_fixture()
+        # An unrelated container with the same role label must survive cleanup.
+        foreign = self.podman('create', '--network=none', '--label',
+            'io.claude-container.egress=unrelated-fixture', '--volume',
+            f'{self.base}:/unrelated:ro', '--entrypoint', '/bin/true', IMAGE)
+        self.addCleanup(self.podman, 'rm', '--force', '--ignore', foreign)
         result = self.shell("""test "$HTTP_PROXY" = http://127.0.0.1:18080
 test "$http_proxy" = "$HTTP_PROXY"
 test "$NO_PROXY" = localhost,127.0.0.1,::1
@@ -206,10 +312,11 @@ test "$(curl --fail --silent --show-error --max-time 10 https://localhost.locald
         self.assertEqual((self.base / 'state/ca').stat().st_mode & 0o777, 0o700)
         self.assertEqual((self.base / 'state/ca').stat().st_uid, os.getuid())
         self.assertFalse(list(self.runtime.iterdir()))
-        remaining = self.podman('ps', '--all', '--filter', 'label=io.claude-container.egress', '--format', '{{.ID}}')
-        self.assertEqual(remaining, '')
+        self.assertEqual(self.owned_proxies(), [])
+        self.podman('container', 'exists', foreign)
 
     def start_session(self, command, environment):
+        self.ensure_qualification(environment)
         proc = subprocess.Popen([str(self.wrapper), '--container-shell'], cwd=self.project,
                                 env=self.env | environment, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -241,6 +348,83 @@ test "$(curl --fail --silent --show-error --max-time 10 https://localhost.locald
         self.assertEqual(proc.returncode, 37, stdout + stderr)
         self.assertFalse(list(self.runtime.iterdir()))
 
+    def test_proxy_budgets_at_maximum_streams_and_slow_inspection(self):
+        _, environment = self.provider_fixture()
+        shutil.copyfile(ROOT / 'tests/proxy_budget_fixture.py', self.project / 'budget.py')
+        proc = self.start_session('python3 budget.py', environment)
+        session = next(self.runtime.iterdir()).name
+        proxy_id = self.podman('ps', '--no-trunc', '--filter',
+            f'label=io.claude-container.egress={session}', '--format', '{{.ID}}')
+
+        def sample(phase):
+            data = json.loads(self.podman('exec', proxy_id, 'python3', '-c',
+                "from pathlib import Path; import json; p=Path('/sys/fs/cgroup'); "
+                "print(json.dumps({n:int((p/n).read_text()) for n in "
+                "('memory.current','memory.peak','pids.current','pids.max','memory.max')}))"))
+            self.assertEqual(data['pids.max'], 128)
+            self.assertEqual(data['memory.max'], 268435456)
+            self.assertLessEqual(data['memory.peak'], 268435456)
+            self.assertLessEqual(data['pids.current'], 128)
+            print('proxy budget evidence: ' + phase + ' ' + json.dumps(data, sort_keys=True), flush=True)
+
+        sample('64-slow-inspections')
+        proc.stdin.write('continue\n'); proc.stdin.flush()
+        ready, _, _ = select.select([proc.stdout], [], [], 15)
+        self.assertTrue(ready, 'matching TLS phase timed out')
+        self.assertEqual(proc.stdout.readline().strip(), 'matching-ready')
+        sample('64-verified-TLS-connections')
+        stdout, stderr = proc.communicate('continue\n', timeout=25)
+        self.assertEqual(proc.returncode, 0, stdout + stderr)
+        self.assertIn('proxy-budget-64-streams-ok', stdout)
+        self.assertFalse(list(self.runtime.iterdir()))
+
+    def test_proxy_resource_exhaustion_is_bounded_and_fails_closed(self):
+        _, environment = self.provider_fixture()
+        processes = """import errno,subprocess
+children=[]
+try:
+ for _ in range(160):
+  try: children.append(subprocess.Popen(['sleep','5']))
+  except OSError as error:
+   assert error.errno==errno.EAGAIN, error
+   print('pids-budget-enforced',flush=True)
+   break
+ else: raise AssertionError('process budget not enforced')
+finally:
+ for child in children: child.kill()
+ for child in children: child.wait()
+"""
+        memory = "blocks=[]\nwhile True: blocks.append(bytearray(8*1024*1024))\n"
+        for kind, script in (('pids', processes), ('memory', memory)):
+            with self.subTest(resource=kind):
+                proc = self.start_session('printf "network-ready\\n"; read -r marker; '
+                    'if curl --fail --silent --max-time 3 --cacert cert.pem https://localhost.localdomain:8443/; '
+                    'then exit 42; fi; exit 37', environment)
+                session = next(self.runtime.iterdir()).name
+                proxy_id = self.podman('ps', '--no-trunc', '--filter',
+                    f'label=io.claude-container.egress={session}', '--format', '{{.ID}}')
+                result = subprocess.run(['podman', 'exec', proxy_id, 'python3', '-c', script],
+                    capture_output=True, text=True, timeout=15)
+                if kind == 'pids':
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('pids-budget-enforced', result.stdout)
+                    events = self.podman('exec', proxy_id, 'cat', '/sys/fs/cgroup/pids.events')
+                    self.assertGreater(int(events.split()[1]), 0)
+                else:
+                    self.assertEqual(result.returncode, 137, result.stdout + result.stderr)
+                    running = self.podman('inspect', '--format', '{{.State.Running}}', proxy_id)
+                    if running == 'true':
+                        events = dict(line.split() for line in self.podman('exec', proxy_id,
+                            'cat', '/sys/fs/cgroup/memory.events').splitlines())
+                        self.assertGreater(int(events['oom_kill']), 0)
+                    else:
+                        self.assertEqual(self.podman('inspect', '--format', '{{.State.OOMKilled}}', proxy_id), 'true')
+                print('proxy exhaustion evidence: ' + kind + ' enforced within actual session cgroup', flush=True)
+                self.podman('rm', '--force', '--time', '0', '--ignore', proxy_id)
+                stdout, stderr = proc.communicate('continue\n', timeout=25)
+                self.assertEqual(proc.returncode, 37, stdout + stderr)
+                self.assertFalse(list(self.runtime.iterdir()))
+
     def test_concurrent_policies_and_signal_cleanup_are_owned(self):
         _, environment = self.provider_fixture()
         value = json.loads(self.policy_file.read_text())
@@ -266,6 +450,7 @@ test "$(curl --fail --silent --show-error --max-time 10 https://localhost.locald
 
     def test_interrupted_and_failed_creation_recovers_both_roles(self):
         _, environment = self.provider_fixture()
+        self.ensure_qualification(environment)
         shim_dir = self.base / 'bin'
         shim_dir.mkdir()
         shim = shim_dir / 'podman'
@@ -306,7 +491,7 @@ time.sleep(300)
                     stdout, stderr = proc.communicate(timeout=25)
                     self.assertEqual(proc.returncode, 143 if phase == 'interrupt' else 17, stdout + stderr)
                     self.assertFalse(list(self.runtime.iterdir()))
-        self.assertEqual(self.podman('ps', '--all', '--filter', 'label=io.claude-container.egress', '--format', '{{.ID}}'), '')
+        self.assertEqual(self.owned_proxies(), [])
 
     def test_readiness_binds_policy_guard_and_protocol(self):
         _, environment = self.provider_fixture()
@@ -353,6 +538,8 @@ import errno,json,socket,sys
 try: socket.socket(socket.AF_UNIX)
 except OSError as error: assert error.errno==errno.EPERM
 else: raise AssertionError('guard missing')
+if sys.argv[1:]==['--version']:
+ print('Synthetic invocation fixture'); sys.exit(0)
 is_terminal=sys.stdin.isatty()
 print(json.dumps({'argv':sys.argv[1:],'stdin':'' if is_terminal else sys.stdin.read(),'tty':is_terminal}),flush=True)
 sys.exit(37)
@@ -364,6 +551,7 @@ sys.exit(37)
         self.podman('build', '--pull=never', '--tag', tag, str(context))
         for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
             environment = self.env | {'CLAUDE_CONTAINER_STATE_DIR': state, 'CLAUDE_CONTAINER_IMAGE': tag}
+            self.ensure_qualification(environment)
             arguments = ['-p', 'space value', '', '--help']
             try:
                 result = subprocess.run([str(self.wrapper), *arguments], cwd=self.project, env=environment,
@@ -495,12 +683,12 @@ test "$ANTHROPIC_API_KEY" = synthetic-not-a-real-key
     def test_unsafe_policy_and_missing_proxy_image_fail_before_agent(self):
         _, environment = self.provider_fixture()
         self.policy_file.chmod(0o666)
-        result = self.shell('touch agent-started\n', **environment)
+        result = self.shell('touch agent-started\n', qualify=False, **environment)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('policy preflight failed', result.stderr)
         self.assertFalse((self.project / 'agent-started').exists())
         self.policy_file.chmod(0o600)
-        result = self.shell('touch agent-started\n', **(environment | {
+        result = self.shell('touch agent-started\n', qualify=False, **(environment | {
             'CLAUDE_CONTAINER_EGRESS_IMAGE': 'sha256:' + '0' * 64}))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('proxy image is absent', result.stderr)
@@ -512,7 +700,7 @@ test "$ANTHROPIC_API_KEY" = synthetic-not-a-real-key
         guard.chmod(0o700)
         with guard.open('ab') as output:
             output.write(b'tampered')
-        result = self.shell('touch agent-started\n')
+        result = self.shell('touch agent-started\n', qualify=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('bootstrap digest mismatch', result.stderr)
         self.assertFalse((self.project / 'agent-started').exists())

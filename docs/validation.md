@@ -1,5 +1,171 @@
 # Validation record
 
+## Local restricted-platform qualification (N19): 2026-11-07–08
+
+Implementation is tracked by
+`openspec/changes/archive/2026-11-08-validate-linux-restricted-compatibility/`. Shared protected
+eligibility now admits Linux/WSL2 x86_64 with stable rootless Podman server >= 4.9,
+Netavark, a verified same-host Unix service, standard OCI seccomp and usable
+Landlock ABI >= 3. Exact kernel/server pins and upper bounds are removed.
+Actual guard installation and a complete matching local qualification remain
+mandatory. Enabled SELinux/AppArmor is permitted without a compatibility
+guarantee; policies and mount labels are never changed to obtain a pass.
+
+Measured environment: Ubuntu 24.04 on Linux
+`6.6.87.2-microsoft-standard-WSL2` x86_64, usable Landlock ABI 3,
+Podman client 4.3.1/server 4.9.3, Netavark 1.4.0 (package
+`netavark_1.4.0-4_amd64`), aardvark-dns 1.4.0, runc 1.3.4/libseccomp 2.5.5,
+systemd cgroup v2 with cpu/memory/pids controllers. OCI seccomp is enabled;
+SELinux and AppArmor are disabled on this host. The client endpoint is
+`unix:///run/podman/podman.sock`, mapped to host socket
+`/run/user/1000/podman/podman.sock`. Runtime, production proxy, toolchain and
+guard identities are the same as the N18 table below. The server-reported
+Netavark executable is `/usr/lib/podman/netavark`, SHA-256
+`b4344a1e60cf5614544df1cce0c9457219570f80aad7d7e039e724773c2841e6`.
+An old client truncates formatted server metadata; a bounded read-only raw
+Unix-service info query supplies authoritative backend identity. No guessed
+backend executable path is accepted.
+
+The installed operation uses disposable native state and protected fixed
+fixtures, not checkout test programs or supplied application commands. Both
+state modes exercise production guard/relay paths, controlled dual-stack IP and
+UDP peers, positive controls, existing/late Unix endpoints and aliases,
+publication/retargeting/descriptor/alternate-syscall rejection, actual local pair
+and file exchange, descendants and effective N18 settings. Provider qualification
+adds controlled certificate-verified TLS, mismatched-SNI zero-byte rejection,
+denied authority and proxy loss. Its exact synthetic policy/certificates remain
+separate from production inventories and do not change production address checks.
+
+Reports are private atomic files inside each protected release. Current boot,
+engine/backend/security identities, code/guard, immutable images, mode/profile/
+policy, CA trust and hardening determine the fingerprint. Missing/stale/unsafe
+reports stop ordinary application execution. Active LSM policy identity is not
+assumed reusable: the gate runs again at launch. The shipped release acceptance
+inventory is empty, so these installations correctly say `locally-qualified`,
+not `release-measured`; this document preserves measured regression evidence
+without manufacturing portable release fingerprints.
+
+| Check / command | Result | Evidence |
+| --- | --- | --- |
+| Platform unit suite | Passed: 4 tests, 0.002 s | Native/WSL kernel examples, later stable and packaged versions, malformed/prerelease evidence, ABI and enabled LSM eligibility |
+| Wrapper unit suite | Passed: 59 tests, 166.070 s | Both state modes, unchanged unrestricted behavior, early prerequisites, hardening and bounded cleanup |
+| `bash tests/run-runtime.sh --setup` | Passed: 52 tests, 15.934 s | Shared eligibility, mandatory candidate qualification/status, protected inventory and synthetic rollback/PTY |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 13 tests, 0.862 s | Protected complete helper inventory, snapshot and TLS policy checks |
+| TLS parser/proxy and mux unit suites | Passed: 7 parser tests (0.213 s), 5 proxy tests (0.246 s), 9 mux tests (0.222 s) | Inspection, zero-byte rejection, streaming, isolation and protocol regressions |
+| `bash tests/run-runtime.sh --qualification` | Passed: 13 tests, 123.575 s | Real installed offline/provider operations; missing/stale/unsafe reports; fixed-operation/input rejection; early/TLS-stage cancellation, concurrent atomic publication, preserved old records and ordinary-check shutdown budget |
+| Qualification contract rerun | Passed: 6 tests, 1.388 s | Explicit subprocess timeout plus descendant cleanup, failed positive control/final cleanup, identity change, active-LSM requalification and exact acceptance labels |
+| `bash tests/run-runtime.sh --guard` | Passed: 15 tests, 51.637 s | Real production filter/Landlock, Unix endpoints, descriptor and provider transport checks; component mocks remain separate |
+| Full `bash tests/run-runtime.sh --network` | Passed: 19 tests, 741.627 s | Actual report preparation/reuse, synthetic Claude tool/API, shared/isolated invocation/stdin/TTY, concurrent policies, interrupted creation, hardening/budgets/exhaustion, CA off/on, all controlled TLS profiles and Windows-backed workspace |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests, 168.411 s | Fresh protected provider/unrestricted setup, managed launch, provider rerun and offline migration, private matching reports before activation, preserved previous report/release after failed proxy or smoke candidates, separate authentication status |
+| Bash/Python syntax, tracked/untracked whitespace and OpenSpec strict validation | Passed | Changed shell scripts, Python AST parsing, `git diff --check`, explicit untracked source checks and strict N19 artifact validation |
+| Native Linux / enabled SELinux or AppArmor runtime | Unavailable | No separate native host or active-LSM target is available. Synthetic eligibility cases are not native enforcement evidence; no distribution matrix or compatibility guarantee is claimed |
+| Real authentication / user-service activation | Unavailable / not run | All credentials, TLS endpoints and state are synthetic; no paid requests, actual account login or real service/installation activation |
+
+Development verification found an early `readlink` call masking the existing
+missing-GNU-timeout diagnostic (two wrapper subcase failures). Resolving the
+normal wrapper path after its prerequisites restored both cases; the final full
+59-test run above passes. An earlier setup-runtime attempt failed provider
+qualification while unrestricted setup passed; a subsequent scoped provider
+rerun passed (138.532 s). The first failure is not relabeled as a pass or assigned
+an unverified cause. An intermediate filtered network run passed the arguments
+case but failed the following fixture setup when an already-read test module
+tried to overwrite its read-only guard. Fixture refresh now unlinks only its own
+old artifact before copying the immutable binary; this did not relax production
+path or guard checks. Final review additionally aligned TLS-subprocess cancellation
+with the driver cleanup budget and moved publication after the last cleanup.
+A focused real TLS-stage cancellation test passed (23.475 s), and contract tests
+verify that final-cleanup failure cannot publish a report.
+
+All required N19 credential-free checks have passing evidence on this WSL
+target. Native/active-LSM runtime and authenticated compatibility remain
+separate unavailable checks, not implicit passes. No host security policy was
+weakened, private-path exception introduced or real user service enabled.
+Existing operator installations must rerun setup to deploy the complete protected
+release, or explicitly qualify a prepared protected manual installation. These
+tests did not activate an operator installation. N20-N25 remain separate.
+
+## Restricted container hardening (N18): 2026-11-07
+
+Implementation is tracked by
+`openspec/changes/archive/2026-11-08-harden-restricted-containers/`. Restricted agent and session
+proxy creation now use `--cap-drop=all --security-opt=no-new-privileges`.
+Proxies additionally use `--pids-limit=128 --memory=256m`; bounded host-side
+inspect and an injected fixed protected probe verify configured budgets,
+effective cgroup v2 values, zero proxy capability sets, NoNewPrivs and seccomp
+before the agent starts. The helper is included in protected setup releases.
+Unrestricted session arguments and existing mount/CA/delegation rules are retained.
+
+Measured environment: Linux `6.6.87.2-microsoft-standard-WSL2` x86_64,
+Landlock ABI 3, rootless Netavark, Podman client 4.3.1/server 4.9.3, systemd
+cgroup manager and cgroup v2 with `memory`/`pids` controllers. Standard OCI
+seccomp remains enabled; SELinux/AppArmor are disabled on this measured host.
+No host security policy was changed. Native Linux/active-LSM compatibility is
+not established by these checks; N19 was still unimplemented at this checkpoint.
+
+| Artifact | Identity |
+| --- | --- |
+| Runtime image | `a96af83c8276d42d029a501ecfc6f886c446055ed5157a934cfeac486d9b0ef9` |
+| Production proxy image used by fixtures | `16604a740686c469ede6695bda2c3dc6ded5f9203979b5060acc383dcb0ef12f` |
+| Guard SHA-256 | `6dc1ab5478118317f1228b21c04b7dfe95de7a5472e4fb811bb0a53ba0342a2c` |
+| Toolchain image | `0b69ba43c894c4599fcfc0fa7b5e3c150ec26fcf7a2690e3c83708688ff9402c` |
+| Controlled budget fixture image | `db65b5242c5b7254915ca9ac498be08336946321ea80a5d73588c7405bd0ec78` |
+| Controlled exhaustion fixture image | `4f0c8b076385e1a9ea021cf27102df9bd9e1b0d1b9606de6ffc82178acc0f25f` |
+| Controlled policy SHA-256 | `45f645648427d15e9616b4212b168ed08a5d7347a5c10e2c3a4d5bcde8c4e1f5` |
+
+The controlled images add only synthetic TLS endpoints and test-only exact
+loopback policy entries as described in the destination-binding record below.
+The production proxy image and guard were not modified. No real credential,
+public provider login/refresh or paid model request was used. All state,
+installations and resource-exhaustion workloads were disposable; no real user
+service was enabled or operator installation activated.
+
+| Check / command | Result | Evidence |
+| --- | --- | --- |
+| `CLAUDE_TEST_TMPDIR=/tmp python3 -m unittest discover -s tests -p test_wrapper.py -v` | Passed: 59 tests, 199.363 s | Restricted/unrestricted argument grid, both state modes and shell/Claude; ignored/missing/malformed/mismatched budgets and capabilities fail before agent creation; probe timeout/interruption preserve owned cleanup |
+| `bash tests/run-runtime.sh --setup` | Passed: 50 tests, 21.647 s | Protected inventory, preferences, PTY, maintenance, activation and rollback synthetic checks |
+| TLS parser/proxy and mux unit suites | Passed: 12 TLS tests (0.776 s), 9 mux tests (0.481 s) | Existing inspection, concurrency, framing, streaming and failure behavior |
+| `bash tests/run-runtime.sh --guard` | Passed: 15 tests, 56.657 s | Production containers now use capability drop/no-new-privileges; controlled proxy uses both budgets; unchanged real IPC and TLS/streaming/WebSocket acceptance |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 13 tests, 0.968 s | Protected snapshot checks include the new helper inventory; destination/policy/readiness identity regressions |
+| `bash tests/run-runtime.sh --network -k restricted_hardening` | Passed: one test, 26.730 s | Offline/provider, shared/isolated state, zero agent/proxy capabilities, NoNewPrivs=1, Seccomp=2, keep-id file ownership, pair exchange and real proxy readiness |
+| `bash tests/run-runtime.sh --network -k proxy_budgets` | Passed: one test, 18.196 s | 64 simultaneous partial ClientHellos, then 64 certificate-verified TLS connections with concurrent streaming, under actual session proxy budgets |
+| `bash tests/run-runtime.sh --network -k resource_exhaustion` | Passed: one test, 34.252 s | Process limit returns EAGAIN and increments pids.events; memory allocation is killed with exit 137 and OOM evidence inside the proxy cgroup; proxy removal leaves egress closed and wrapper exit 37 intact |
+| Full `bash tests/run-runtime.sh --network` | Initial run: 16 passed, 3 failed, 390.708 s | Offline arguments/stdin exceeded its 30-second per-launch test deadline; two cleanup assertions counted an unrelated concurrent session proxy. This is not an all-pass suite |
+| `bash tests/run-runtime.sh --network -k guarded_arguments` | Passed: one test, 31.855 s | Isolated rerun verifies shared/isolated state, stdin, spaced/empty arguments, exit 37 and TTY without changing deadlines or runtime enforcement |
+| `bash tests/run-runtime.sh --network -k interrupted_and_failed_creation -k provider_uses_real_proxy` | Passed: two tests, 48.861 s | Cleanup assertions are scoped to the disposable runtime; provider fixture additionally retains an unrelated same-role container. CA off/on, streaming/WebSocket and interrupted/failed creation of both roles pass |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: two tests, 65.220 s | Disposable protected provider/unrestricted setup, helper packaging, managed launches, CA, rerun/offline mode and failed-candidate rollback; no real login or service activation |
+| Bash/Python syntax, whitespace and OpenSpec strict validation | Passed | `bash -n claude-container.sh`, changed Python AST parsing, `git diff --check`, strict N18 change validation |
+| Real authentication and user-service activation | Unavailable / not run | Outside credential-free acceptance; no new real-provider compatibility claim |
+
+The focused budget run measured `memory.max=268435456` and `pids.max=128`.
+With 64 partial ClientHellos active, `memory.current=40873984`,
+`memory.peak=41353216` and `pids.current=68`. With 64 verified TLS connections,
+the values were `memory.current=40644608`, `memory.peak=41353216` and
+`pids.current=68`. The count includes controlled upstream server threads and
+the exec sampler; these figures are fixture measurements, not a claim about
+all future workloads or a substitute for enforced budgets.
+
+Development checks exposed and corrected a race where shutdown could terminate
+the timeout leader before its TERM-ignoring exec child. The final wrapper owns
+and terminates the probe process group before reaping its leader; the regression
+passes timeout and signal cases without a surviving active client. An initial
+direct setup-unit run used `/tmp`, whose writable ancestors are correctly
+rejected by protected-path checks (4 failures and 22 errors). The supported
+native disposable setup harness then passed all 50 tests without weakening path
+validation. Historical and initial failures are not counted as final passes.
+The full network attempt also exposed two legacy cleanup assertions that
+required the entire host to have no containers with the egress role label.
+Both now inspect mount ownership under the test's private runtime instead;
+unrelated sessions are neither treated as test leaks nor removed. The provider
+regression includes an unrelated same-role container and verifies it survives.
+
+All 19 production-wrapper network scenarios have passing evidence across the
+initial 16 passes and the three isolated reruns. The initial full attempt is
+retained as failed, not relabeled as an all-pass run. No required N18 acceptance
+scenario remains failed or unavailable. N18 is complete for this checked-out
+implementation and measured environment. Existing operator installations must
+rerun setup to deploy the protected helper and wrapper together; these tests
+did not activate an operator installation. N19 is still separate.
+
 
 ## TLS destination-binding follow-up: 2026-11-07
 

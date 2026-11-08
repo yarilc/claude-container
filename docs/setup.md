@@ -42,12 +42,43 @@ this guarantee; use offline mode if the stronger boundary is required until a
 compatible candidate passes. Existing maintenance consent and rollback remain
 in force.
 
-Restricted modes retain the existing measured WSL/kernel/ABI/backend/security
-requirements; setup does not extend that support matrix. It diagnoses missing
+Restricted modes admit native Linux and WSL2 x86_64 with usable Landlock ABI >= 3,
+rootless same-host Unix Netavark/Podman >= 4.9 and standard OCI seccomp, followed
+by mandatory local qualification. There are no exact kernel pins or server upper
+bounds. Enabled SELinux/AppArmor is permitted without guaranteeing compatibility;
+denials stop preparation while policies stay active. Setup diagnoses missing
 Podman, UID/GID mappings/helpers, runtime directories and unsupported engines.
 Fix those host prerequisites separately. Setup never installs host packages,
 uses sudo, edits subordinate-ID mappings, enables lingering, changes WSL init,
 disables security policy or silently selects unrestricted networking.
+
+Restricted agents and their provider proxies drop all capabilities and enable
+no-new-privileges. Provider setup also requires delegated rootless cgroup v2
+`memory` and `pids` controllers: each proxy receives 256 MiB and 128 processes.
+The installed wrapper verifies the effective limits and proxy hardening before
+its smoke agent starts. An unavailable controller, ignored limit or incompatible
+image makes setup incomplete and preserves the previous working release.
+Inspect controller delegation and image compatibility separately; setup never
+adds privileges, changes host security policy or removes limits to proceed.
+
+Before activation, setup runs `--container-qualify` against its protected
+candidate using fixed disposable IP/IPC/TLS controls and no real credentials.
+Only a complete passing result is published atomically under the release's
+private `qualification/` directory. A failed or interrupted candidate keeps the
+previous release selected. Authentication remains a separate status.
+
+Existing managed installations must rerun setup. Manually prepared installations
+can invoke `--container-qualify` alone with their existing explicit environment
+configuration; this command never starts an ordinary Claude session or grants
+maintenance. Help and unrestricted launches do not require a report.
+
+Reports bind kernel/boot, ABI, engine/backend/security artifacts, protected code,
+immutable images, selected policy/profile, CA trust and hardening. Relevant changes
+require requalification. Unobservable active LSM policy state forces a new gate
+each ordinary launch rather than unsafe reuse. Missing/stale/unsafe reports and
+unavailable required controls block launch; permissions are not repaired.
+Setup distinguishes `locally-qualified` from an exact `release-measured` record.
+Local success is not a claim about every native distribution, LSM or auth flow.
 
 For restricted launch or optional delegation, setup verifies the selected
 same-host rootless Unix service. `default` derives the socket from the current
@@ -224,7 +255,8 @@ Synthetic tests use fake engines, PTYs and disposable native state:
 ```bash
 python3 -m unittest discover -s tests -p test_setup.py -v
 bash tests/run-runtime.sh --setup       # container-provided Python/native storage
-bash tests/run-runtime.sh --setup-runtime  # opt-in real rootless WSL acceptance
+bash tests/run-runtime.sh --setup-runtime  # opt-in real rootless setup acceptance
+bash tests/run-runtime.sh --qualification  # installed-path gate and report checks
 ```
 
 Runtime checks use existing prepared images, disposable installation/state and

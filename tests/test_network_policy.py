@@ -119,8 +119,8 @@ class PolicyTests(unittest.TestCase):
             root = Path(directory)
             install = root / 'installed'
             (install / 'network').mkdir(parents=True)
-            for name in ('control.py', 'policy.py', 'relay.py', 'mux.py', 'resolv.conf'):
-                shutil.copyfile(NETWORK / name, install / 'network' / name)
+            for source in list(NETWORK.glob('*.py')) + [NETWORK / 'resolv.conf']:
+                shutil.copyfile(source, install / 'network' / source.name)
             import hashlib, struct
             binary_dir = install / 'network/bin'
             binary_dir.mkdir()

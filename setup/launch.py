@@ -27,7 +27,7 @@ def main():
     trusted(wrapper)
     env = runtime_environment(value, release)
     protect_mounts(value, env, args, launcher=launcher)
-    if value['worktree']:
+    if value['worktree'] and '--container-qualify' not in args:
         args = ['--container-git-worktree', *args]
     os.execve('/bin/bash', ['bash', str(wrapper), *args], env)
 

@@ -36,11 +36,29 @@ host/LAN/metadata access, lateral session access, or proxy administration access
 
 ## Required kernel and IPC boundary
 
+Restricted agent and session proxy containers drop all capabilities and enable
+container-level no-new-privileges before code executes. Caller identity,
+keep-id user namespaces, standard OCI seccomp, host security policy and mount
+restrictions remain unchanged. Hardening rejection stops preparation without
+adding privileges or retrying with unrestricted networking. These additions do
+not change explicit unrestricted launches.
+
+Every session proxy has enforced budgets of 128 processes and 256 MiB memory.
+Provider startup verifies configured and effective cgroup v2 limits plus actual
+proxy hardening before agent execution. An unavailable controller, unknown
+cgroup layout or ignored limit blocks preparation. Proxy failure or exhaustion
+leaves outbound access closed and retains bounded owned cleanup and primary
+application/signal status. Per-session budgets do not replace multiplex/TLS
+inspection bounds.
+
 Both restricted modes require a protected static native bootstrap before any
-application, interpreter, relay or shell initialization. The mandatory initial
-target is Linux 6.6.87.2-microsoft-standard-WSL2 x86_64 with usable Landlock ABI 3.
-No kernel upgrade or ABI-9 IPC right is required. Native/rootless evidence is
-required for support; primitive or mocked probes alone do not establish it.
+application, interpreter, relay or shell initialization. Native Linux and WSL2
+x86_64 require usable Landlock ABI >= 3, rootless same-host Unix Netavark/Podman
+>= 4.9, standard OCI seccomp and the complete local qualification gate. Exact
+kernel/server pins and upper version bounds do not determine admission. The
+previous WSL 6.6.87.2 / server 4.9.3 results remain measured evidence. SELinux and
+AppArmor may stay enabled without guaranteed compatibility; policy failures stop
+startup without weakening them. An ABI query or mock pass alone is insufficient.
 
 The bootstrap sets no_new_privs, installs ABI-3 MAKE_SOCK/REFER filesystem rules,
 and stacks a restrictive native x86_64 seccomp filter on the standard OCI profile.
@@ -81,7 +99,14 @@ identities, engine/backend, standard OCI policy, filesystem and actual positive/
 negative results. Test Unix bypasses, alternate-family denial with positive
 controls, async/compat syscalls, actual tool execution and session lifecycle.
 Historical IP-only passes and mocked guard passes remain component evidence.
-Startup uses mandatory checks after the credential-free WSL gate; authenticated
+Startup requires current protected installation qualification plus mandatory
+per-session checks. Qualification uses controlled positive/negative IP/IPC,
+alternate-transport and provider TLS evidence in the actual production path;
+an unavailable required control is blocking. Reports bind the actual host/boot,
+engine/backend/security artifacts, code, immutable images, selected policy/profile,
+CA trust and hardening. Changed inputs invalidate reuse; unobservable active LSM
+policy identity causes a fresh gate each launch. Local qualification does not
+claim exhaustive platform acceptance. Authenticated
 account login/reuse/refresh has scoped manual evidence; optional real-key API
 readiness remains unverified. Actual tool execution has a separate synthetic
 Messages-API check.
@@ -117,11 +142,14 @@ bounded logs contain sanitized destination/port/reason, never secrets or payload
 
 ## Claude migration examples
 
-The following interfaces require the prepared protected guard and the measured
-platform. Use the protected installed wrapper path in place of
+The following interfaces require the prepared protected guard and a matching
+local qualification report. Use the protected installed wrapper path in place of
 `./claude-container.sh` when the checkout is agent-writable:
 
 ```bash
+# Qualify a prepared restricted installation without model requests.
+./claude-container.sh --container-qualify
+
 # Default offline shell; image must already exist.
 ./claude-container.sh --container-shell
 

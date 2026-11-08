@@ -24,6 +24,7 @@ are mounted read/write.
 
 Container options:
   --container-setup      interactively prepare a complete user installation
+  --container-qualify    verify a prepared restricted installation with fixed local controls
   --container-build      build or refresh the container image before starting
   --container-shell      open a shell instead of starting Claude Code
   --container-git-worktree mount the parent of the current directory read/write
@@ -76,16 +77,31 @@ before forwarding client bytes. Missing/malformed SNI, ECH/GREASE and inspection
 limits/timeouts fail closed. This does not prove exclusive Anthropic application
 access: encrypted Host, shared-service routing and remote forwarding remain opaque.
 Network restriction requires a protected installation outside
-writable workspace/state trees and host Python 3. Initial support is the tested
-same-host Unix service with rootless Netavark/server 4.9.3. Unsupported setups
+writable workspace/state trees and host Python 3. Eligible Linux/WSL2 x86_64
+installations require a same-host Unix rootless Netavark service, Podman >= 4.9,
+standard OCI seccomp and usable Landlock ABI >= 3. Unsupported setups
 fail closed. Image pulls/build RUN steps remain outside runtime filtering and
 require separate maintenance authorization. Allowed services can receive data;
 provider-hosted remote tools and encrypted application content are not filtered.
-Restricted startup requires WSL 6.6.87.2 x86_64, usable Landlock ABI 3 and a
-protected static guard and SHA-256 manifest in network/bin. The guard adds
+Restricted startup requires a protected static guard and SHA-256 manifest in
+network/bin plus a current protected local qualification report. Run setup or
+--container-qualify alone after preparation or relevant updates. Kernel/server
+exact pins and upper bounds do not determine support. SELinux/AppArmor remains
+active when enabled; compatibility is not guaranteed and denials stop startup.
+The guard adds
 unprivileged Landlock and restrictive seccomp, preserving the OCI profile.
 New Unix services are unavailable; fixed-peer pairs may have private inert names.
 See network/README.md for packaging and docs/validation.md for measured evidence.
+Restricted agents and session proxies drop all capabilities and enable
+no-new-privileges. Provider proxies require effective cgroup v2 limits of
+128 processes and 256 MiB memory; unavailable or ignored limits stop startup.
+Unrestricted sessions retain their existing container arguments.
+Qualification is credential-free, uses disposable fixed controls and never grants
+image maintenance or forwards an application command. ABI queries alone do not
+qualify an installation. Changed boot, engine/backend/security, code/images,
+policy/profile, CA trust or hardening invalidates evidence. Unknown active LSM
+policy identity requires the gate each launch. Locally-qualified installations
+are visibly distinguished from exact release-measured acceptance records.
 EOF
 }
 
@@ -93,6 +109,15 @@ EOF
 # Help takes precedence regardless of option order and never loads setup code.
 for arg in "$@"; do
     [[ "$arg" != --container-help ]] || { usage; exit 0; }
+done
+for arg in "$@"; do
+    if [[ "$arg" == --container-qualify ]]; then
+        [[ $# == 1 ]] || die '--container-qualify must be used alone'
+        command -v python3 >/dev/null || die 'host Python 3 is required for qualification'
+        script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
+        script_dir=$(dirname -- "$script_path")
+        exec python3 -I "$script_dir/network/qualify.py" qualify
+    fi
 done
 for arg in "$@"; do
     if [[ "$arg" == --container-setup ]]; then
@@ -105,11 +130,15 @@ for arg in "$@"; do
 done
 
 build_image=0
+qualification_probe=0
 shell_mode=0
 git_worktree=0
 args=()
 for arg in "$@"; do
     case "$arg" in
+        --container-qualify-probe)
+            [[ $# == 1 ]] || die 'the fixed qualification probe must be used alone'
+            qualification_probe=1 ;;
         --container-help) usage; exit 0 ;;
         --container-build) build_image=1 ;;
         --container-shell) shell_mode=1 ;;
@@ -149,6 +178,8 @@ fi
 command -v podman >/dev/null || die 'Podman is required on the host'
 command -v timeout >/dev/null && [[ $(timeout --version 2>/dev/null) == *'GNU coreutils'* ]] \
     || die 'GNU timeout is required on the host; install GNU coreutils'
+script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
 # Unix service access also supports running this wrapper inside another container
 # on the same host. TCP/SSH transports and Podman Machine are not supported.
 [[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'named remote connections are not supported; use local Podman or a local Unix CONTAINER_HOST'
@@ -177,22 +208,10 @@ if [[ "$network_mode" != unrestricted ]]; then
         || die 'cannot verify restricted network backend'
     capture_response network_version podman version --format '{{.Server.Version}}' \
         || die 'cannot verify restricted network server version'
-    [[ "${network_backend%$'\n'}" == netavark && "${network_version%$'\n'}" == 4.9.3 ]] \
-        || die 'unsupported restricted network backend/version: tested support requires rootless Netavark server 4.9.3'
     capture_response network_platform podman info --format '{{json .Host}}' \
         || die 'cannot verify restricted platform security policy'
-    printf '%s' "$network_platform" | python3 -I -c '
-import json,sys
-try:
-    host=json.load(sys.stdin); security=host["security"]
-    valid=(host["kernel"]=="6.6.87.2-microsoft-standard-WSL2" and host["arch"]=="amd64"
-           and security["seccompEnabled"] is True and security["selinuxEnabled"] is False
-           and security["apparmorEnabled"] is False)
-except (ValueError,KeyError,TypeError): valid=False
-sys.exit(0 if valid else 1)
-' || die 'unsupported restricted platform: verified WSL 6.6.87.2 x86_64, standard OCI seccomp, SELinux/AppArmor disabled required; no policy is disabled automatically'
-    # Mandatory native confinement is installed again inside the agent before
-    # any interpreter/application runs. ABI 3 is supported on the tested WSL host.
+elif ((qualification_probe)); then
+    die 'qualification probes require restricted networking'
 fi
 
 caller_uid=$(id -u)
@@ -217,8 +236,6 @@ if ((podman_access)); then
     [[ "$host_socket" == /* && "$host_socket" != *$'\n'* ]] || die "Podman socket $socket did not report an absolute host socket path"
 fi
 
-script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
-script_dir=$(dirname -- "$script_path")
 workspace=$(pwd -P)
 workspace_mount=$workspace
 ((git_worktree == 0)) || workspace_mount=$(dirname -- "$workspace")
@@ -306,9 +323,24 @@ if [[ "$network_mode" != unrestricted ]]; then
             --runtime "$CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR")
     fi
     python3 -I "$script_dir/network/control.py" preflight "${network_preflight[@]}"
+    printf '%s' "$network_platform" | python3 -I "$script_dir/network/platform_check.py" \
+        --server-version "${network_version%$'\n'}" --backend "${network_backend%$'\n'}" \
+        --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info" >/dev/null
     guard_identity=$(<"$script_dir/network/bin/claude-egress-guard.sha256")
     guard_digest=${guard_identity%% *}
     "$script_dir/network/bin/claude-egress-guard" --probe >&2
+fi
+
+qualification_token=''
+qualification_tls=0
+qualification_input=''
+if ((qualification_probe)); then
+    qualification_input=${CLAUDE_CONTAINER_QUALIFICATION_INPUT:-}
+    qualification_record=$(python3 -I "$script_dir/network/control.py" qualification-input \
+        "${network_preflight[@]}" --input "$qualification_input" --workspace "$workspace" --mode "$network_mode")
+    read -r qualification_token qualification_tls <<< "$qualification_record"
+    [[ "$qualification_token" =~ ^[a-f0-9]{32}$ && "$qualification_tls" =~ ^[01]$ ]] \
+        || die 'invalid fixed qualification input'
 fi
 
 if ((build_image)); then
@@ -334,6 +366,14 @@ if [[ "$network_mode" == provider ]]; then
     fi
 fi
 
+if [[ "$network_mode" != unrestricted ]]; then
+    capture_response runtime_image_id podman image inspect --format '{{.Id}}' "$image" \
+        || die 'cannot resolve restricted runtime image identity'
+    runtime_image_id=${runtime_image_id%$'\n'}
+    [[ "$runtime_image_id" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || die 'invalid restricted runtime image identity'
+    image=$runtime_image_id
+fi
+
 container_args=(
     --rm --interactive --read-only --read-only-tmpfs=false
     --userns=keep-id --user "$caller_uid:$caller_gid"
@@ -347,8 +387,21 @@ container_args=(
     --volume "$workspace_mount:$workspace_mount:rw"
     "${state_mounts[@]}"
 )
+if ((qualification_probe)); then
+    container_args+=(--label "io.claude-container.qualification=$qualification_token"
+        --volume "$qualification_input:/opt/claude-egress/qualification.json:ro"
+        --volume "$script_dir/network/qualification_probe.py:/opt/claude-egress/qualification_probe.py:ro"
+        --volume "$script_dir/network/qualification_runtime.py:/opt/claude-egress/qualification_runtime.py:ro")
+    for target in /workspace /shared-state /isolated-home /worktree-parent; do
+        container_args+=(--volume "$workspace:$target:rw")
+    done
+    if ((qualification_tls)); then
+        container_args+=(--volume "$(dirname -- "$qualification_input")/cert.pem:/opt/claude-egress/qualification-cert.pem:ro")
+    fi
+fi
 if [[ "$network_mode" != unrestricted ]]; then
     container_args+=(--network=none --pid=private --ipc=private
+        --cap-drop=all --security-opt=no-new-privileges
         --volume "$script_dir/network/bin/claude-egress-guard:/opt/claude-egress/guard:ro"
         --volume "$script_dir/network/resolv.conf:/etc/resolv.conf:ro")
     for variable in HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy https_proxy no_proxy all_proxy; do
@@ -377,7 +430,9 @@ if ((trust_host_ca)); then
     )
 fi
 
-if ((shell_mode)); then
+if ((qualification_probe)); then
+    args=(/usr/bin/python3 -I /opt/claude-egress/qualification_probe.py probe)
+elif ((shell_mode)); then
     container_args+=(--entrypoint /bin/bash)
     args=()
 elif ((yolo)); then
@@ -416,6 +471,8 @@ proxy_id=''
 proxy_pending=0
 proxy_cid=''
 proxy_output=''
+proxy_check_pid=''
+qualification_check_pid=''
 
 cleanup_warning() {
     printf 'claude-container: cleanup %s (container=%s proxy=%s session=%s); inspect the Podman engine for remaining session containers\n' \
@@ -537,6 +594,18 @@ shutdown() {
     trap '' TERM INT HUP
     set +e
     shutdown_deadline=$((SECONDS + 20))
+    if [[ -n "$qualification_check_pid" ]]; then
+        kill -TERM "$qualification_check_pid" 2>/dev/null || true
+        graceful_until=$((SECONDS + 13))
+        while child_running "$qualification_check_pid" && ((SECONDS < graceful_until && SECONDS < shutdown_deadline - 4)); do
+            sleep 0.05
+        done
+        if child_running "$qualification_check_pid"; then
+            cleanup_warning 'qualification helper did not confirm cleanup before the deadline'
+            kill -KILL "$qualification_check_pid" 2>/dev/null || true
+        fi
+        reap_client "$qualification_check_pid"
+    fi
     if [[ -n "$diagnostics_fd" ]]; then
         exec {diagnostics_fd}>&-
         diagnostics_fd=''
@@ -552,6 +621,14 @@ shutdown() {
             done
         fi
         [[ -z "$container_id" ]] || control rm --force --time 0 --ignore "$container_id" >/dev/null
+        if [[ -n "$proxy_check_pid" ]]; then
+            # GNU timeout owns a separate process group. Reap the whole group
+            # before its leader, including a client that ignores TERM.
+            kill -TERM -- "-$proxy_check_pid" 2>/dev/null || true
+            sleep 0.1
+            kill -KILL -- "-$proxy_check_pid" 2>/dev/null || true
+            reap_client "$proxy_check_pid"
+        fi
         reap_client "$create_pid"
         reap_client "$client_pid"
         # Drain the final client log before reaping its owned stderr adapter.
@@ -593,6 +670,17 @@ else
 fi
 session_token=${session_dir##*/}
 printf 'claude-container: network mode=%s\n' "$network_mode" >&2
+if [[ "$network_mode" != unrestricted ]] && ((qualification_probe == 0)); then
+    CLAUDE_CONTAINER_IMAGE="$image" python3 -I "$script_dir/network/qualify.py" check &
+    qualification_check_pid=$!
+    if wait "$qualification_check_pid"; then
+        qualification_check_pid=''
+    else
+        qualification_status=$?
+        qualification_check_pid=''
+        exit "$qualification_status"
+    fi
+fi
 if [[ "$network_mode" == provider ]]; then
     policy_identity=$(python3 -I "$script_dir/network/control.py" snapshot "${network_preflight[@]}" --session "$session_dir")
     printf 'claude-container: network profile=%s policy=%s\n' "$CLAUDE_CONTAINER_NETWORK_PROFILE" "$policy_identity" >&2
@@ -600,14 +688,27 @@ if [[ "$network_mode" == provider ]]; then
     proxy_cid=$session_dir/proxy.cid
     proxy_output=$session_dir/proxy.stdout
     proxy_pending=1
+    proxy_fixture_args=()
+    proxy_fixture_command=()
+    if ((qualification_probe)); then
+        proxy_fixture_args+=(--label "io.claude-container.qualification=$qualification_token")
+        if ((qualification_tls)); then
+            proxy_fixture_args+=(--entrypoint python3
+                --volume "$script_dir/network/qualification_proxy.py:/qualification-proxy.py:ro"
+                --volume "$(dirname -- "$qualification_input"):/qualification:ro")
+            proxy_fixture_command=(-I /qualification-proxy.py)
+        fi
+    fi
     podman create --name "claude-egress-$session_token" --cidfile "$proxy_cid" \
         --label "$proxy_label=$session_token" --read-only --read-only-tmpfs=false \
         --userns=keep-id --user "$caller_uid:$caller_gid" \
+        --cap-drop=all --security-opt=no-new-privileges \
+        --pids-limit=128 --memory=256m \
         --volume "$session_dir/config:/config:ro" \
         --volume "$session_dir/transport:/transport:rw" \
         --volume "$session_dir/logs:/logs:rw" \
         --env "EGRESS_PROFILE=$CLAUDE_CONTAINER_NETWORK_PROFILE" --env "EGRESS_SESSION=$session_token" \
-        "$CLAUDE_CONTAINER_EGRESS_IMAGE" >"$proxy_output" &
+        "${proxy_fixture_args[@]}" "$CLAUDE_CONTAINER_EGRESS_IMAGE" "${proxy_fixture_command[@]}" >"$proxy_output" &
     create_pid=$!
     wait "$create_pid"
     create_pid=''
@@ -624,6 +725,26 @@ if [[ "$network_mode" == provider ]]; then
         sleep 0.05
     done
     [[ $(<"$session_dir/transport/ready") == "$policy_identity guard=$guard_digest mux=1 tls=tls-clienthello-sni-v1" ]] || die 'egress proxy policy/bootstrap/protocol identity mismatch'
+    # Bounded, interruptible checks in the actual proxy cgroup; engine flags
+    # alone do not prove that rootless controllers applied their limits.
+    timeout --signal=TERM --kill-after=1s 5s podman inspect --type container \
+        --format '{{json .HostConfig}}' "$proxy_id" >"$session_dir/proxy.config" &
+    proxy_check_pid=$!
+    if ! wait "$proxy_check_pid"; then
+        proxy_check_pid=''
+        die 'cannot inspect proxy resource budgets; agent not started'
+    fi
+    proxy_check_pid=''
+    timeout --signal=TERM --kill-after=1s 5s podman exec "$proxy_id" python3 -I \
+        -c "$(<"$script_dir/network/proxy_hardening.py")" probe >"$session_dir/proxy.effective" &
+    proxy_check_pid=$!
+    if ! wait "$proxy_check_pid"; then
+        proxy_check_pid=''
+        die 'cannot verify effective proxy hardening; check rootless cgroup v2 memory/pids controllers and proxy image; agent not started'
+    fi
+    proxy_check_pid=''
+    python3 -I "$script_dir/network/proxy_hardening.py" verify \
+        "$session_dir/proxy.config" "$session_dir/proxy.effective"
     container_args+=(--volume "$session_dir/transport:/run/claude-egress:ro"
         --volume "$script_dir/network/relay.py:/opt/claude-egress/relay.py:ro"
         --volume "$script_dir/network/mux.py:/opt/claude-egress/mux.py:ro")
@@ -636,7 +757,9 @@ if [[ "$network_mode" == provider ]]; then
         --env ENABLE_CLAUDEAI_MCP_SERVERS=false --env CLAUDE_CODE_DISABLE_ARTIFACT=1
         )
     [[ -z "${ANTHROPIC_API_KEY:-}" ]] || container_args+=(--env ANTHROPIC_API_KEY)
-    if ((shell_mode)); then
+    if ((qualification_probe)); then
+        args=(/usr/bin/python3 -I /opt/claude-egress/relay.py /usr/bin/python3 -I /opt/claude-egress/qualification_probe.py probe)
+    elif ((shell_mode)); then
         args=(/usr/bin/python3 -I /opt/claude-egress/relay.py /bin/bash)
     else
         args=(/usr/bin/python3 -I /opt/claude-egress/relay.py /usr/local/bin/claude "${args[@]}")
@@ -646,6 +769,8 @@ if [[ "$network_mode" != unrestricted ]]; then
     container_args+=(--entrypoint /opt/claude-egress/guard)
     if [[ "$network_mode" == provider ]]; then
         args=(--provider -- "${args[@]}")
+    elif ((qualification_probe)); then
+        args=(--offline -- /usr/bin/python3 -I /opt/claude-egress/qualification_probe.py probe)
     elif ((shell_mode)); then
         args=(--offline -- /bin/bash)
     else

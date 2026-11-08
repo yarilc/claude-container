@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import uuid
+import importlib.util
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (IMAGE_ID, MANIFEST, SetupError, absolute, defaults, endpoint_url, installation_directory,
@@ -19,6 +20,9 @@ from common import (IMAGE_ID, MANIFEST, SetupError, absolute, defaults, endpoint
 
 
 SOURCE = Path(__file__).resolve().parents[1]
+platform_spec = importlib.util.spec_from_file_location('claude_platform', SOURCE / 'network/platform_check.py')
+platform_rules = importlib.util.module_from_spec(platform_spec)
+platform_spec.loader.exec_module(platform_rules)
 RUNTIME_IMAGE = 'localhost/claude-code:latest'
 TOOLCHAIN_IMAGE = 'localhost/claude-guard-toolchain:development'
 PROXY_IMAGE = 'localhost/claude-egress:local'
@@ -144,7 +148,7 @@ def run(command, env, *, capture=False, input=None, timeout=20):
                                    stdin=subprocess.PIPE if input is not None else None,
                                    stdout=subprocess.PIPE if capture else None,
                                    stderr=subprocess.PIPE if capture else None)
-        stdout, _ = process.communicate(input.encode() if input is not None else None, timeout=timeout)
+        stdout, stderr = process.communicate(input.encode() if input is not None else None, timeout=timeout)
     except subprocess.TimeoutExpired as error:
         stop_child(process, grouped)
         raise SetupError('Setup operation timed out; inspect owned resources before retrying.') from error
@@ -157,6 +161,10 @@ def run(command, env, *, capture=False, input=None, timeout=20):
             stop_child(process, grouped)
         raise
     if process.returncode:
+        if capture and '--container-qualify' in command and stderr:
+            for line in stderr.decode(errors='replace').splitlines():
+                if line.startswith('claude-container: status='):
+                    print(''.join(char for char in line[:2048] if char.isprintable()), file=sys.stderr)
         raise SetupError(f'Setup command failed (exit {process.returncode}): {command[0]} {command[1] if len(command) > 1 else ""}; check prerequisites and retry.')
     return stdout.decode('utf-8') if capture else ''
 
@@ -235,11 +243,10 @@ def verify_engine(env, restricted):
         backend = record(['podman', 'info', '--format', '{{.Host.NetworkBackend}}'], env)
         version = record(['podman', 'version', '--format', '{{.Server.Version}}'], env)
         host = json.loads(run(['podman', 'info', '--format', '{{json .Host}}'], env, capture=True))
-        security = host.get('security', {})
-        if (backend != 'netavark' or version != '4.9.3' or host.get('kernel') != '6.6.87.2-microsoft-standard-WSL2'
-                or host.get('arch') != 'amd64' or security.get('seccompEnabled') is not True
-                or security.get('selinuxEnabled') is not False or security.get('apparmorEnabled') is not False):
-            raise SetupError('Unsupported restricted platform: measured WSL 6.6.87.2 x86_64, rootless Netavark/server 4.9.3 and standard OCI seccomp required. No automatic fallback or security-policy change is allowed.')
+        try:
+            platform_rules.validate(host, version, backend, env.get('CONTAINER_HOST', ''), output)
+        except platform_rules.PlatformError as error:
+            raise SetupError('Unsupported restricted platform [status=ineligible]: ' + str(error) + '. No automatic fallback or security-policy change is allowed.') from error
 
 
 def verify_socket(url, env):
@@ -520,6 +527,18 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
 def smoke(value, release):
     env = runtime_environment(value, release, overrides=False)
     protect_mounts(value, env)
+    if value['network'] != 'unrestricted':
+        output = run(['bash', str(release / 'claude-container.sh'), '--container-qualify'],
+                     env, capture=True, timeout=360)
+        if output.splitlines().count('CLAUDE_QUALIFICATION_OK') != 1:
+            raise SetupError('Installed sandbox qualification did not confirm readiness.')
+        statuses=[line.split('=',1)[1] for line in output.splitlines()
+                  if line.startswith('CLAUDE_QUALIFICATION_STATUS=')]
+        if len(statuses)!=1 or statuses[0] not in ('locally-qualified','release-measured'):
+            raise SetupError('Installed sandbox qualification status is invalid.')
+        print('Sandbox qualification: ' + statuses[0])
+        if statuses[0]=='locally-qualified':
+            print('This installation passed local enforcement checks; its combination is not release-measured. SELinux/AppArmor compatibility is not guaranteed.')
     script = (release / 'setup/smoke.py').read_text()
     program = ('set -Eeuo pipefail\npython3 - ' + value['network'] + (' 1' if value['trust_ca'] else ' 0')
                + " <<'CLAUDE_SETUP_SMOKE'\n" + script + '\nCLAUDE_SETUP_SMOKE\n')

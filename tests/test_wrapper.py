@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import signal
+import shutil
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,8 @@ elif args[0] == 'version':
     print(os.environ.get('FAKE_SERVER_VERSION', '4.9.3'))
 elif args[:2] == ['image', 'exists']:
     sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
+elif args[:2] == ['image', 'inspect']:
+    print('d' * 64)
 elif args[0] == 'build':
     time.sleep(float(os.environ.get('FAKE_BUILD_DELAY', '0')))
     sys.exit(int(os.environ.get('FAKE_BUILD_STATUS', '0')))
@@ -61,6 +64,10 @@ elif args[0] == 'ps':
     else:
         print(os.environ.get('FAKE_NAMES', ''))
 elif args[0] == 'create':
+    if os.environ.get('FAKE_NETWORK') and any(a.startswith('io.claude-container.egress=') for a in args):
+        pathlib.Path(args[args.index('--cidfile') + 1]).write_text('b' * 64 + '\n')
+        print('b' * 64)
+        sys.exit(0)
     collision = pathlib.Path(str(log) + '.collision')
     if os.environ.get('FAKE_COLLISION') and (not collision.exists() or os.environ.get('FAKE_ALWAYS_COLLIDE')):
         collision.touch()
@@ -81,7 +88,12 @@ elif args[0] == 'create':
     print('a' * 64)
     sys.exit(int(os.environ.get('FAKE_CREATED_STATUS', '0')))
 elif args[0] == 'inspect':
+    if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64 and args[-2] == '{{json .HostConfig}}':
+        print(os.environ.get('FAKE_PROXY_CONFIG', '{"PidsLimit":128,"Memory":268435456}'))
+        sys.exit(0)
     print(state.read_text() if state.exists() and args[-1] == 'a' * 64 else 'foreign-session')
+elif args[0] == 'exec' and os.environ.get('FAKE_NETWORK'):
+    print(os.environ.get('FAKE_PROXY_EFFECTIVE', '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2}'))
 elif args[:2] == ['container', 'exists']:
     sys.exit(0 if os.environ.get('FAKE_COLLISION') else 1)
 elif args[0] == 'kill':
@@ -89,6 +101,8 @@ elif args[0] == 'kill':
     if pid.exists():
         os.kill(int(pid.read_text()), signal.SIGTERM)
 elif args[0] == 'rm':
+    if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64:
+        sys.exit(0)
     assert args[-1] == 'a' * 64, 'refusing to remove unrelated identity'
     state.unlink(missing_ok=True)
     pid = pathlib.Path(str(log) + '.pid')
@@ -98,6 +112,8 @@ elif args[0] == 'rm':
         except ProcessLookupError:
             pass
 elif args[0] == 'start':
+    if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64:
+        sys.exit(0)
     if os.environ.get('FAKE_START_STDERR'):
         sys.stderr.write(os.environ['FAKE_START_STDERR'])
         sys.stderr.flush()
@@ -143,7 +159,7 @@ class WrapperTests(unittest.TestCase):
         self.env['CLAUDE_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
 
     def run_wrapper(self, *args, cwd=None, caller_umask=-1, **env):
-        return subprocess.run([str(WRAPPER), *args], cwd=cwd or self.project,
+        return subprocess.run([str(getattr(self, 'wrapper', WRAPPER)), *args], cwd=cwd or self.project,
                               env=self.env | env, input='input payload',
                               text=True, capture_output=True, timeout=25, umask=caller_umask)
 
@@ -220,13 +236,12 @@ class WrapperTests(unittest.TestCase):
                     result = self.run_wrapper(*flags, **values)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertFalse(self.calls())
-        for values in ({'FAKE_BACKEND': 'cni'}, {'FAKE_SERVER_VERSION': '5.0.0'}):
+        fixture = self.restricted_fixture()
+        for values in ({'FAKE_BACKEND': 'cni'}, {'FAKE_SERVER_VERSION': '4.8.0'}):
             self.log.unlink(missing_ok=True)
-            result = self.run_wrapper(CLAUDE_CONTAINER_NETWORK='offline',
-                                      CONTAINER_HOST='unix:///run/service.sock',
-                                      FAKE_INFO='true linux true', **values)
+            result = self.run_wrapper(**(fixture | values | {'CLAUDE_CONTAINER_NETWORK':'offline'}))
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn('unsupported restricted network', result.stderr)
+            self.assertIn('ineligible restricted platform', result.stderr)
             self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
 
     def test_maintenance_is_separate_from_runtime_mode(self):
@@ -309,6 +324,117 @@ class WrapperTests(unittest.TestCase):
         volumes = [create[i+1] for i, a in enumerate(create) if a == '--volume']
         self.assertEqual(len(volumes), 2)
         self.assertIn(f'{self.state}:/claude-home:rw', volumes)
+
+    def restricted_fixture(self):
+        # Argument/lifecycle instrumentation only. Real guard and protected-path
+        # acceptance lives in test_network_runtime; no production check is changed.
+        install = self.base / 'synthetic-install'
+        (install / 'network/bin').mkdir(parents=True)
+        self.wrapper = install / 'claude-container.sh'
+        shutil.copyfile(WRAPPER, self.wrapper)
+        self.wrapper.chmod(0o700)
+        guard = install / 'network/bin/claude-egress-guard'
+        guard.write_text('#!/bin/sh\nexit 0\n')
+        guard.chmod(0o700)
+        (guard.parent / 'claude-egress-guard.sha256').write_text('c' * 64 + '  claude-egress-guard\n')
+        shutil.copyfile(ROOT / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
+        shutil.copyfile(ROOT / 'network/platform_check.py', install / 'network/platform_check.py')
+        (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
+        (install / 'network/control.py').write_text('''import pathlib,socket,sys
+args=sys.argv[1:]
+if args[0]=='snapshot':
+ p=pathlib.Path(args[args.index('--session')+1]); (p/'transport').mkdir()
+ (p/'config').mkdir(); (p/'logs').mkdir()
+ s=socket.socket(socket.AF_UNIX); s.bind(str(p/'transport/proxy.sock')); s.close()
+ (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +' mux=1 tls=tls-clienthello-sni-v1\\n')
+ print('fixture-policy')
+''')
+        runtime = self.base / 'network-runtime'
+        runtime.mkdir()
+        return dict(FAKE_NETWORK='1', FAKE_INFO='true linux true',
+                    CONTAINER_HOST='unix:///run/service.sock',
+                    CLAUDE_CONTAINER_NETWORK_POLICY=str(install / 'policy.json'),
+                    CLAUDE_CONTAINER_NETWORK_PROFILE='fixture',
+                    CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR=str(runtime),
+                    CLAUDE_CONTAINER_EGRESS_IMAGE='d' * 64)
+
+    def test_restricted_hardening_all_modes_and_unrestricted_unchanged(self):
+        values = self.restricted_fixture()
+        for mode in ('offline', 'provider', 'unrestricted'):
+            for state in ('', str(self.state)):
+                for flags in ((), ('--container-shell',)):
+                    with self.subTest(mode=mode, state=state, flags=flags):
+                        self.log.unlink(missing_ok=True)
+                        result = self.run_wrapper(*flags, **(values | {
+                            'CLAUDE_CONTAINER_NETWORK': mode, 'CLAUDE_CONTAINER_STATE_DIR': state}))
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        creates = [c for c in self.calls() if c[0] == 'create']
+                        self.assertEqual(len(creates), 2 if mode == 'provider' else 1)
+                        for create in creates:
+                            for option in ('--cap-drop=all', '--security-opt=no-new-privileges'):
+                                self.assertEqual(option in create, mode != 'unrestricted')
+                            self.assertIn('--userns=keep-id', create)
+                            self.assertIn(f'{os.getuid()}:{os.getgid()}', create)
+                            proxy = any(a.startswith('io.claude-container.egress=') for a in create)
+                            self.assertEqual('--pids-limit=128' in create, proxy)
+                            self.assertEqual('--memory=256m' in create, proxy)
+
+    def test_proxy_hardening_failure_never_starts_agent(self):
+        values = self.restricted_fixture() | {'CLAUDE_CONTAINER_NETWORK': 'provider'}
+        good = dict(pids=128, memory=268435456, capabilities=[0]*5, no_new_privs=1, seccomp=2)
+        cases = [{'FAKE_PROXY_CONFIG': raw} for raw in ('{}', 'null', 'not-json',
+            '{"PidsLimit":0,"Memory":268435456}', '{"PidsLimit":128,"Memory":0}')]
+        cases += [{'FAKE_PROXY_EFFECTIVE': json.dumps(good | change)} for change in (
+            {'pids':129}, {'memory':536870912}, {'capabilities':[0,0,1,0,0]},
+            {'no_new_privs':0}, {'seccomp':0}, {'memory':True})]
+        cases += [{'FAKE_PROXY_EFFECTIVE': raw} for raw in ('{}', 'null', 'not-json')]
+        cases += [{'FAKE_FAIL': name} for name in ('exec', 'inspect')]
+        for case in cases:
+            with self.subTest(case=case):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(**(values | case))
+                self.assertNotEqual(result.returncode, 0)
+                creates = [c for c in self.calls() if c[0] == 'create']
+                self.assertEqual(len(creates), 1)
+                self.assertIn('--pids-limit=128', creates[0])
+                self.assertIn('--memory=256m', creates[0])
+                self.assertTrue(any(c[0] == 'rm' and c[-1] == 'b' * 64 for c in self.calls()))
+
+    def test_proxy_probe_timeout_and_interruption_clean_only_proxy(self):
+        values = self.restricted_fixture() | {'CLAUDE_CONTAINER_NETWORK': 'provider', 'FAKE_STALL': 'exec'}
+        for interrupt in (False, True):
+            with self.subTest(interrupt=interrupt):
+                self.log.unlink(missing_ok=True)
+                marker = Path(str(self.log) + '.stalled-exec')
+                marker.unlink(missing_ok=True)
+                proc = subprocess.Popen([str(self.wrapper)], cwd=self.project, env=self.env | values,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    self.wait_marker(proc, '.stalled-exec')
+                    started = time.monotonic()
+                    if interrupt:
+                        proc.terminate()
+                    stdout, stderr = proc.communicate(timeout=22)
+                    self.assertEqual(proc.returncode, 143 if interrupt else 1, stdout + stderr)
+                    self.assertLess(time.monotonic() - started, 21)
+                    creates = [c for c in self.calls() if c[0] == 'create']
+                    self.assertEqual(len(creates), 1)
+                    self.assertTrue(any(c[0] == 'rm' and c[-1] == 'b' * 64 for c in self.calls()))
+                    # The timeout owns its exec child even when shutdown signals it.
+                    deadline = time.monotonic() + 2
+                    while Path('/proc/' + marker.read_text()).exists() and time.monotonic() < deadline:
+                        time.sleep(.02)
+                    if Path('/proc/' + marker.read_text() + '/stat').exists():
+                        self.assertEqual(Path('/proc/' + marker.read_text() + '/stat').read_text().split()[2], 'Z')
+                finally:
+                    if proc.poll() is None:
+                        proc.kill(); proc.communicate()
+                    if marker.exists():
+                        pid = int(marker.read_text())
+                        command = Path(f'/proc/{pid}/cmdline')
+                        if command.exists() and str(self.bin / 'podman').encode() in command.read_bytes():
+                            os.kill(pid, signal.SIGKILL)
+                    proc.stdout.close(); proc.stderr.close()
 
     def test_insecure_existing_state_rejected(self):
         self.state.mkdir(mode=0o777)

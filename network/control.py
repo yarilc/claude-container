@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import ipaddress
 
 # Isolated Python ignores PYTHONPATH and the script directory. Only import
 # helpers from the installation selected by this script's physical location.
@@ -16,7 +17,7 @@ from policy import PolicyError, canonical, load, overlaps, revision, selected, t
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=('preflight', 'snapshot'))
+    parser.add_argument('operation', choices=('preflight', 'snapshot', 'qualification-input'))
     parser.add_argument('--installation', required=True)
     parser.add_argument('--writable', action='append', default=[])
     parser.add_argument('--mount-target', action='append', default=[])
@@ -25,6 +26,9 @@ def main():
     parser.add_argument('--proxy-image')
     parser.add_argument('--runtime')
     parser.add_argument('--session')
+    parser.add_argument('--input')
+    parser.add_argument('--workspace')
+    parser.add_argument('--mode')
     args = parser.parse_args()
     for writable in args.writable:
         resolved = Path(writable).resolve()
@@ -63,8 +67,33 @@ def main():
     guard_identity = {'sha256': identity, 'revision': 'abi3-seccomp-mux-v1',
                       'required_abi': 3, 'filter': 'native-x86_64-v1', 'protocol': 1,
                       'tls_enforcement': 'tls-clienthello-sni-v1'}
+    for name in ('platform_check.py', 'qualify.py', 'qualification_records.py', 'qualification_probe.py',
+                 'qualification_runtime.py', 'qualification_peer.py', 'qualification_proxy.py'):
+        trusted_path(installation / 'network' / name, args.writable)
+    if args.operation == 'qualification-input':
+        from policy import unique_object
+        input_path = trusted_path(args.input or '', args.writable)
+        data = input_path.read_bytes()
+        if len(data) > 65536:
+            raise PolicyError('oversized qualification input')
+        value = json.loads(data, object_pairs_hook=unique_object)
+        if (not isinstance(value, dict) or set(value) != {'schema', 'token', 'addresses', 'workspace', 'provider', 'tls'} or
+                type(value['schema']) is not int or value['schema'] != 1 or
+                not isinstance(value['token'], str) or not re.fullmatch(r'[a-f0-9]{32}', value['token']) or
+                type(value['provider']) is not bool or type(value['tls']) is not bool or
+                value['provider'] != (args.mode == 'provider') or (value['tls'] and not value['provider']) or
+                value['workspace'] != args.workspace or not Path(args.workspace).is_absolute() or
+                not isinstance(value['addresses'], list) or len(value['addresses']) != 2 or
+                [ipaddress.ip_address(address).version for address in value['addresses']] != [4, 6]):
+            raise PolicyError('invalid fixed qualification input')
+        if value['tls']:
+            trusted_path(input_path.parent / 'cert.pem', args.writable)
+            trusted_path(input_path.parent / 'key.pem', args.writable)
+        print(value['token'], int(value['tls']))
+        return
     if not args.policy:
         return
+    trusted_path(installation / 'network/proxy_hardening.py', args.writable)
     policy_path = trusted_path(args.policy, args.writable)
     value = load(policy_path)
     selected(value, args.profile)

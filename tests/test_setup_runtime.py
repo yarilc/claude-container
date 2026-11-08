@@ -98,7 +98,14 @@ class SetupRuntime(unittest.TestCase):
         self.assertEqual(manual.read_text(), 'preserve existing installation')
         self.assertIn('Sandbox: ready', output)
         self.assertIn('Authentication: pending', output)
+        self.assertIn('Sandbox qualification: locally-qualified', output)
         release = (self.root / 'current').resolve()
+        reports = list((release / 'qualification').glob('*.json'))
+        self.assertEqual(len(reports), 1)
+        report = reports[0]
+        original_report = report.read_bytes()
+        self.assertEqual(json.loads(original_report)['identity']['mode'], 'provider')
+        self.assertEqual(report.stat().st_mode & 0o777, 0o600)
         first = json.loads((release / 'setup.json').read_text())
         self.tags.add(first['image'])
         self.assertEqual(first['network'], 'provider')
@@ -126,6 +133,7 @@ class SetupRuntime(unittest.TestCase):
         self.assertNotEqual(code, 0, output)
         self.assertIn('setup incomplete', output)
         self.assertEqual((self.root / 'current').resolve(), release)
+        self.assertEqual(report.read_bytes(), original_report)
         self.assertEqual(set(self.root.joinpath('releases').iterdir()), old_candidates)
         self.proxy_selection.write_text(current_proxy)
         for line in output.splitlines():
@@ -138,10 +146,16 @@ class SetupRuntime(unittest.TestCase):
         self.assertEqual((second / 'network/bin/claude-egress-guard').read_bytes(), guard)
         self.assertNotIn('Packaged guard', output)
         self.assertTrue(release.exists())
+        self.assertEqual(report.read_bytes(), original_report)
+        self.assertTrue(list((second / 'qualification').glob('*.json')))
         code, output = self.setup_run('offline')
         self.assertEqual(code, 0, output)
         self.assertIn('Authentication: not applicable', output)
         active = (self.root / 'current').resolve()
+        offline_reports = list((active / 'qualification').glob('*.json'))
+        self.assertEqual(len(offline_reports), 1)
+        offline_report = offline_reports[0].read_bytes()
+        self.assertEqual(json.loads(offline_report)['identity']['mode'], 'offline')
         self.assertEqual((active / 'network/bin/claude-egress-guard').read_bytes(), guard)
         # A reviewed update with an intentionally failing smoke must not activate.
         source = self.base / 'failed-source'
@@ -151,6 +165,7 @@ class SetupRuntime(unittest.TestCase):
         code, output = self.setup_run('offline', source=source)
         self.assertNotEqual(code, 0, output)
         self.assertEqual((self.root / 'current').resolve(), active)
+        self.assertEqual(offline_reports[0].read_bytes(), offline_report)
         self.assertEqual(set(self.root.joinpath('releases').iterdir()), before)
         self.assertFalse((self.root / '.setup.lock').exists())
         # Capture only setup-owned tags from failure reporting for cleanup.

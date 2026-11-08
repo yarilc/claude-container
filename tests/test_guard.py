@@ -185,6 +185,7 @@ class GuardTests(unittest.TestCase):
         image = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
         command = ['podman', 'run', '--rm', '--interactive', '--network=none',
                    '--pid=private', '--ipc=private', '--read-only',
+                   '--cap-drop=all', '--security-opt=no-new-privileges',
                    '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
                    '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777',
                    '--tmpfs', '/run:rw,nosuid,nodev,noexec,size=16m',
@@ -347,6 +348,8 @@ class GuardTests(unittest.TestCase):
         logs.mkdir(mode=0o700)
         name = harness.podman('create', '--read-only', '--userns=keep-id', '--user',
                               f'{os.getuid()}:{os.getgid()}',
+                              '--cap-drop=all', '--security-opt=no-new-privileges',
+                              '--pids-limit=128', '--memory=256m',
                               '--volume', f'{transport}:/transport:rw',
                               '--volume', f'{config}:/config:ro',
                               '--volume', f'{logs}:/logs:rw',

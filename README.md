@@ -187,9 +187,10 @@ See also the official
 
 Restricted sessions now use a protected static bootstrap combining Landlock ABI 3
 filesystem rules, an additional restrictive seccomp filter and private network,
-PID and IPC namespaces. The required WSL target is Linux
-6.6.87.2-microsoft-standard-WSL2 x86_64; no kernel upgrade or ABI-9 feature is
-required. The earlier IP-only candidate was bypassed through workspace Unix
+PID and IPC namespaces. Native Linux and WSL2 x86_64 are eligible with usable
+Landlock ABI >= 3 and successful local enforcement qualification. Kernel release
+strings are recorded as evidence rather than pinned; no ABI-9 feature is required.
+The earlier IP-only candidate was bypassed through workspace Unix
 sockets and is superseded. See [bootstrap build/tests](network/README.md) and
 [versioned evidence](docs/validation.md). Authenticated profile readiness remains partial. Actual Claude Bash-tool
 execution is checked separately with a controlled synthetic Messages API; it
@@ -208,12 +209,41 @@ authority. An absent image no longer triggers an implicitly authorized build.
 | `provider` | Same isolation plus an external CONNECT proxy with initial TLS SNI binding |
 | `unrestricted` | Explicit ordinary runtime networking; socket delegation is eligible |
 
-The measured target uses rootless Netavark/Podman server 4.9.3 through an explicit
-same-host Unix CONTAINER_HOST, standard OCI seccomp enabled, and SELinux/AppArmor
-disabled. The wrapper rejects unverified kernel/architecture/backend/security
-combinations rather than disabling a policy or falling back to unrestricted.
-Host Python 3 is required for protected preflight. SELinux-enforcing acceptance
-remains unavailable; no relabeling, label disablement or added privilege is used.
+Restricted agent containers and their session proxies explicitly drop all Linux
+capabilities and enable container-level `no-new-privileges` before startup.
+Caller UID/GID and `--userns=keep-id`, standard OCI seccomp, SELinux policy and
+existing mount restrictions remain in force. Hardening failures stop startup
+without a weaker retry. These settings do not change unrestricted sessions.
+Each provider proxy is limited to 128 processes and 256 MiB memory. Startup
+verifies Podman configuration and the effective limits inside the actual proxy
+cgroup before starting the agent. Rootless cgroup v2 `pids` and `memory`
+controllers must be available; missing, ignored or unverifiable limits stop
+provider preparation. Proxy exhaustion leaves outbound access closed.
+
+Restricted eligibility requires rootless Netavark/Podman server >= 4.9 through an
+explicit same-host Unix CONTAINER_HOST, host Python 3, standard OCI seccomp and
+actual guard enforcement. Stable later server versions have no upper pin.
+SELinux/AppArmor may remain enabled; compatibility is not guaranteed and any
+policy denial stops startup without relabeling, policy disablement or privileges.
+The previously measured WSL 6.6.87.2 / server 4.9.3 environment remains historical
+evidence, separate from qualification of another installation.
+
+**Migration:** restricted launches now require a protected matching local report.
+Rerun `--container-setup`, or run `--container-qualify` alone from a protected
+manually prepared installation with explicit environment settings. Qualification
+uses disposable credential-free controls, both state modes and the production
+guard/proxy path; it does not send real model requests or grant image maintenance.
+Ordinary direct environment-based invocation remains supported after qualification.
+Missing, unsafe or stale evidence blocks startup. A successful ABI/version probe
+alone is insufficient. Changed kernel/boot, engine/backend/security state, code,
+images, policy/profile, CA trust or hardening requires requalification. When an
+active LSM policy cannot be identified for safe reuse, the gate repeats each launch.
+Every launch still verifies paths, engine, guard and proxy readiness.
+
+`locally-qualified` means this installation passed its required controls. It does
+not certify every distribution, LSM policy or authenticated provider flow.
+`release-measured` additionally requires an exact matching protected acceptance
+entry; the default inventory is empty. See [qualification details](network/README.md#local-installation-qualification).
 
 The guard denies new Unix sockets, VSOCK and other families except IPv4/IPv6,
 which remain inside network=none. It allows only fixed-peer connected Unix
@@ -642,8 +672,8 @@ modes reject enabled delegation.
 Standard seccomp and SELinux policy remain in force. The wrapper adds no
 privileged mode, capabilities, custom security profiles, disabled labels, or
 automatic bind relabeling (the former OpenSpec `:z` option is removed). If host
-policy denies a bind, the engine error is reported; configure host policy
-explicitly. An internal sandbox failure does not relax these policies or tmpfs
+policy denies a bind, startup stops and reports the engine error; compatibility
+with that policy remains unguaranteed. An internal sandbox failure does not relax these policies or tmpfs
 options. `bwrap --version`, namespace probes, or a zero CLI exit status alone do
 not prove a sandboxed tool operation succeeded. See [validation](docs/validation.md)
 for tested environments, results, and outstanding checks.

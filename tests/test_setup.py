@@ -268,6 +268,19 @@ class SetupTests(unittest.TestCase):
                 setup.verify_engine(env, True)
         self.assertFalse(any(c['args'][0] in ('build', 'pull', 'tag') for c in self.calls()))
 
+    def test_shared_platform_rules_admit_native_and_active_lsm_without_version_pins(self):
+        env = self.env | {'CONTAINER_HOST':'unix:///some/socket'}
+        for kernel, selinux, apparmor in (('6.12-native', True, False), ('6.8-ubuntu', False, True),
+                                         ('6.6.99-microsoft-standard-WSL2', False, False)):
+            host = dict(kernel=kernel, arch='amd64', security=dict(
+                seccompEnabled=True, selinuxEnabled=selinux, apparmorEnabled=apparmor))
+            def response(command, *args, **kwargs):
+                return {'{{json .Host}}':json.dumps(host), '{{.Server.Version}}':'5.4.0',
+                        '{{.Host.NetworkBackend}}':'netavark'}.get(command[-1], 'true linux true')
+            with self.subTest(kernel=kernel), patch.object(setup, 'run', side_effect=response):
+                setup.verify_engine(env, True)
+        self.assertFalse(self.calls())
+
     def test_user_socket_activation_requires_consent_and_exact_post_verification(self):
         value = self.value | {'network': 'offline', 'endpoint': 'default'}
         changes = []
@@ -838,6 +851,26 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         with patch.object(setup, 'run', side_effect=common.SetupError('guard failed')):
             with self.assertRaises(common.SetupError):
                 setup.smoke(self.value, release)
+
+    def test_restricted_smoke_requires_qualification_and_displays_its_status(self):
+        _, release = self.release()
+        value = self.value | {'network':'offline','auth':'none'}
+        passing='CLAUDE_QUALIFICATION_STATUS=locally-qualified\nCLAUDE_QUALIFICATION_OK\n'
+        with patch.dict(os.environ,self.env | {'ANTHROPIC_API_KEY':'SYNTHETIC_SECRET',
+                        'CLAUDE_CONTAINER_MAINTENANCE':'1'},clear=True), \
+                patch.object(setup,'run',side_effect=[passing,'CLAUDE_SANDBOX_SETUP_SMOKE_OK\n']) as run, \
+                patch('builtins.print') as output:
+            setup.smoke(value,release)
+            self.assertEqual(run.call_args_list[0].args[0][-1],'--container-qualify')
+            self.assertEqual(run.call_args_list[1].args[0][-1],'--container-shell')
+            for call in run.call_args_list:
+                self.assertNotIn('ANTHROPIC_API_KEY',call.args[1])
+                self.assertNotIn('CLAUDE_CONTAINER_MAINTENANCE',call.args[1])
+            self.assertTrue(any('not release-measured' in str(call) for call in output.call_args_list))
+        for result in ('version-only\n','CLAUDE_QUALIFICATION_OK\n'):
+            with patch.object(setup,'run',return_value=result) as run, self.assertRaises(common.SetupError):
+                setup.smoke(value,release)
+            self.assertEqual(run.call_count,1)
 
     def test_authentication_is_optional_direct_terminal_and_no_automatic_model_call(self):
         _, release = self.release()

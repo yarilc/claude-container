@@ -50,13 +50,22 @@ socket path; bind the latter when the wrapper sees a remapped socket.
 Network mode defaults to offline. Restricted sessions must use the static ABI-3
 Landlock/additive-seccomp bootstrap before any application code. Keep fail-closed
 per-session checks; never restore the superseded IP-only path.
-Restricted modes require the measured
-same-host Unix launch service with rootless Netavark/server 4.9.3, host Python 3,
+Restricted modes require a verified
+same-host Unix launch service with rootless Netavark/Podman >= 4.9, host Python 3,
 and protected installed code outside all agent-writable mounts. Provider mode
 requires a protected versioned policy/profile, private native host-path runtime
 directory and immutable proxy image ID/digest. Never silently broaden support or
 fall back to unrestricted networking. Exact maintenance opt-in is separate from
 runtime policy and does not constrain host image pulls or build RUN traffic.
+Native Linux and WSL2 x86_64 require usable Landlock ABI >= 3 and current protected
+local enforcement qualification; exact kernel/server pins and upper bounds are
+not admission rules. Preserve active SELinux/AppArmor without guaranteeing their
+compatibility. Never disable policy or accept an unavailable required control.
+Keep shared platform rules in protected code and validate qualification reports
+against current boot, engine/backend/security, code/images, policy/profile, CA
+and hardening. Unobservable active LSM identity requires requalification each
+launch. Distinguish locally-qualified installations from exact release-measured
+evidence; no exhaustive distribution matrix is required or implied.
 
 ## Coding Style & Naming Conventions
 
@@ -98,12 +107,17 @@ automated synthetic state and require explicit credential/model-call approval.
 `bash tests/run-runtime.sh --guard` builds/tests the static native bootstrap using
 a prepared immutable toolchain image; see `network/README.md`. Link-time syscall
 mocks are component instrumentation only and must never enter a shipped guard.
-The required target is WSL 6.6.87.2 x86_64 with usable ABI 3. The guard adds a
+The recorded initial measured target is WSL 6.6.87.2 x86_64 with usable ABI 3;
+other eligible installations must pass their own local gate. The guard adds a
 restrictive in-process seccomp filter while preserving the standard OCI profile
 and SELinux policy. Existing connected pairs may have private inert names, but
 cannot listen, retarget or publish in host binds. Production guard checks and
 mocked component checks are separate. Record the WSL IP/IPC/proxy gate separately
 from authenticated compatibility; no kernel upgrade is required.
+Run `bash tests/run-runtime.sh --qualification` for protected installed-path,
+report, cancellation and concurrent gate acceptance. Ship fixed qualification
+fixtures with protected releases, without syscall mocks or application-command
+exceptions. Preserve per-launch enforcement even with a matching report.
 
 Run `python3 -m unittest discover -s tests -p test_setup.py -v` or
 `bash tests/run-runtime.sh --setup` for synthetic setup/PTY checks. The opt-in
