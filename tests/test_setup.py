@@ -169,6 +169,42 @@ class SetupTests(unittest.TestCase):
         self.assertFalse(self.calls())
         self.assertEqual(list(self.home.iterdir()), [])
 
+    def test_missing_mode_keeps_help_setup_and_fixed_qualification_dispatch(self):
+        cases = (
+            (['--container-setup'], 'requires an interactive terminal'),
+            (['--container-setup', '--version'], 'must be used alone'),
+            (['--container-qualify'], 'qualification requires an explicit same-host Unix endpoint'),
+            (['--container-qualify', 'application'], 'must be used alone'),
+            (['--container-qualify-probe', 'application'], 'must be used alone'),
+            (['--container-qualify-probe'], 'setup required:'),
+        )
+        for mode in (None, ''):
+            env = self.env.copy()
+            if mode is not None:
+                env['CLAUDE_CONTAINER_NETWORK'] = mode
+            for args, message in cases:
+                with self.subTest(mode=mode, args=args):
+                    result = subprocess.run(['/bin/bash', str(ROOT / 'claude-container.sh'), *args],
+                                            cwd=self.workspace, env=env, text=True,
+                                            capture_output=True, timeout=10)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual(result.stdout, '')
+                    if args != ['--container-qualify-probe']:
+                        self.assertNotIn('setup required:', result.stderr)
+            result = subprocess.run(['/bin/bash', str(ROOT / 'claude-container.sh'),
+                                     '--container-setup', '--container-qualify', '--container-help'],
+                                    cwd=self.workspace, env=env | {'CLAUDE_YOLO': 'invalid'},
+                                    text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Container options:', result.stdout)
+            code, output = pty_run(['/bin/bash', str(ROOT / 'claude-container.sh')],
+                                   env, self.workspace, [])
+            self.assertEqual(code, 1, output)
+            self.assertIn('setup required:', output)
+        self.assertFalse(self.calls())
+        self.assertEqual(list(self.home.iterdir()), [])
+
     def test_diagnostics_reclassifies_only_complete_known_lines_at_any_chunk_boundary(self):
         for original, expected in ((b'ERRO[0074] Should restart: false\n', b'INFO[0074] Should restart: false\n'),
                                    (b'time="2026-11-07T12:11:46Z" level=error msg="Should restart: false"\n',
@@ -633,6 +669,44 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         self.assertEqual(message['pid'], proc.pid)
         self.assertEqual(message['network'], '')
         self.assertEqual(message['maintenance'], '1')
+
+    def test_managed_real_wrapper_admits_saved_modes_and_preserves_network_overrides(self):
+        root, release = self.release()
+        command = Path(self.value['command'])
+        setup.activate(root, release, command)
+        for mode in ('offline', 'provider', 'unrestricted'):
+            saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else 'account',
+                                 'endpoint': 'default' if mode != 'unrestricted' else 'local',
+                                 'state_dir': str(self.base / 'state'),
+                                 'runtime_dir': str(self.base / 'egress'),
+                                 'proxy_image': 'sha256:' + 'b' * 64}
+            (release / 'setup.json').write_text(json.dumps(saved))
+            for override in (None, '', 'unrestricted', 'invalid'):
+                with self.subTest(saved_mode=mode, override=override):
+                    self.log.unlink(missing_ok=True)
+                    env = self.env | {'SETUP_TEST_FAIL': 'query'}
+                    if override is not None:
+                        env['CLAUDE_CONTAINER_NETWORK'] = override
+                    result = subprocess.run([str(command), '--version'], cwd=self.workspace,
+                                            env=env, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(result.stdout, '')
+                    if override == '':
+                        self.assertIn('setup required:', result.stderr)
+                        self.assertFalse(self.calls())
+                    elif override == 'invalid':
+                        self.assertIn('must be offline, provider, or unrestricted', result.stderr)
+                        self.assertFalse(self.calls())
+                    else:
+                        # Deliberately fail the first engine query: reaching it
+                        # proves admission without faking restricted readiness.
+                        self.assertIn('cannot query Podman', result.stderr)
+                        self.assertEqual(len(self.calls()), 1)
+                        self.assertEqual(self.calls()[0]['args'][0], 'info')
+                        endpoint = self.calls()[0]['endpoint']
+                        self.assertEqual(bool(endpoint), mode != 'unrestricted')
+                    self.assertFalse((self.base / 'state').exists())
+                    self.assertFalse((self.home / '.claude').exists())
 
     def test_managed_launcher_rejects_future_worktree_and_state_conflicts(self):
         root, release = self.release()

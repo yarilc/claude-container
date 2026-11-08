@@ -37,8 +37,8 @@ bash -n claude-container.sh              # Validate Bash syntax
 git diff --check                         # Detect whitespace errors
 ```
 
-Host Podman is always required and its launch engine must verify as Linux and
-rootless. Unrestricted local use requires no API socket with delegation off; explicit same-host
+Configured launches require host Podman and its launch engine must verify as
+Linux and rootless. Unrestricted local use requires no API socket with delegation off; explicit same-host
 Unix `CONTAINER_HOST` use verifies that launch service regardless of delegation.
 Reject named connections and TCP/SSH contexts. Delegation requires the exact value
 `CLAUDE_CONTAINER_PODMAN=1`. Select its endpoint by explicit
@@ -47,7 +47,15 @@ Reject named connections and TCP/SSH contexts. Delegation requires the exact val
 before image operations, requiring rootless `true` and an absolute reported host
 socket path; bind the latter when the wrapper sees a remapped socket.
 
-Network mode defaults to offline. Restricted sessions must use the static ABI-3
+Setup is the mandatory first step for new users. Ordinary launches require a
+nonempty `CLAUDE_CONTAINER_NETWORK`, explicitly set by the operator or supplied
+by the validated managed launcher. Unset/empty modes must stop with setup
+guidance before runtime checks, engine queries or state creation; explicit empty
+overrides must not restore saved defaults. Help, setup and standalone fixed
+qualification retain their dedicated checks. Qualification alone keeps its
+offline default and never admits a supplied application command. Maintenance
+consent does not select a runtime mode. Offline cannot reach the Claude API.
+Restricted sessions must use the static ABI-3
 Landlock/additive-seccomp bootstrap before any application code. Keep fail-closed
 per-session checks; never restore the superseded IP-only path.
 Restricted modes require a verified

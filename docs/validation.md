@@ -1,5 +1,73 @@
 # Validation record
 
+## Missing-setup admission (N20): 2026-11-08
+
+Change: `openspec/changes/archive/2026-11-08-clarify-missing-setup-startup/`. Measured on WSL2
+`6.6.87.2-microsoft-standard-WSL2` x86_64, usable Landlock ABI 3, rootless Podman
+server 4.9.3 with Netavark, cgroups v2/systemd and standard OCI seccomp.
+SELinux/AppArmor were disabled. Host Python was 3.11.2; OpenSpec CLI was 1.16.0.
+Runtime tests used the existing same-host Unix service and disposable native
+volumes with protected ancestors. No real credentials, authenticated/model
+requests or user-service activation were used.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests -p test_wrapper.py -v` | Passed: 62 tests, 176.186 s; synthetic state and executable temporary storage |
+| `bash tests/run-runtime.sh --setup` | Passed: 54 tests, 16.615 s; setup unittest suite on disposable protected native storage |
+| `bash tests/run-runtime.sh --qualification` | Passed: 13 tests, 119.379 s; report contracts and actual installed offline/provider enforcement |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests, 176.374 s; protected provider/offline/unrestricted installation, managed launch and failed-update preservation |
+| `bash -n claude-container.sh` / `git diff --check` | Passed |
+| `openspec validate clarify-missing-setup-startup --strict` | Passed; existing main-spec long-requirement warnings remain separate |
+| Real authentication and systemd user-service activation | Unavailable; not exercised or required by this change |
+
+Admission coverage includes unset/empty mode, interactive and redirected input,
+shell/build/worktree composition, maintenance-only requests, unavailable tools,
+unrelated invalid controls and misleading workspace configuration. These cases
+return status 1 with setup guidance before engine calls or state creation.
+The suggested command works from another workspace and through symlinks whose
+names contain spaces and shell metacharacters without executing those characters.
+Explicit invalid modes retain their existing diagnostic. Managed saved modes,
+nonempty overrides and explicit empty overrides are tested through the actual
+wrapper; adapter stand-in checks separately retain argv/stdin/cwd/status behavior.
+Help, setup and fixed qualification keep their own dispatch and argument checks.
+
+Installed acceptance confirms missing/stale/unsafe reports still block ordinary
+restricted launch, fixed probes cannot run supplied applications, cancellation
+cleans owned resources and concurrent gates publish complete reports. Setup
+acceptance exercises a new terminal without exported wrapper settings, provider
+rerun, offline migration, CA trust, unrestricted shell use and failed proxy/smoke
+candidates preserving the previous activation and reports. All listed full suites
+passed in this run; no runtime control or deadline was relaxed.
+
+Measured input identities:
+
+- Wrapper SHA-256: `ab3ee7a2e8a9381f3e68901d11ffe032b3648c2b27509bf8fb6514d143b5b9c4`.
+- Runtime image: `a96af83c8276d42d029a501ecfc6f886c446055ed5157a934cfeac486d9b0ef9`.
+- Qualification provider proxy: `16604a740686c469ede6695bda2c3dc6ded5f9203979b5060acc383dcb0ef12f`.
+- Guard toolchain: `0b69ba43c894c4599fcfc0fa7b5e3c150ec26fcf7a2690e3c83708688ff9402c`.
+
+Setup acceptance builds and removes its own proxy candidates from the checked-out
+source. These results apply to this implementation and disposable installations;
+they do not activate an operator installation or add a release-measured report.
+Existing restricted installations must deploy the protected wrapper through setup
+or manual installation and regenerate matching qualification. The existing
+last-working-release rollback procedure remains applicable.
+
+
+### Specification synchronization and archive: 2026-11-08
+
+All 10 tracked tasks and all planning artifacts were complete before archiving.
+The `container-launcher`, `container-setup` and `network-egress` deltas were
+synchronized into their main specs: three existing requirements updated and two
+launcher requirements added. Title/Purpose sections and every unrelated
+requirement were preserved. Post-sync comparison confirmed that every delta was
+fully applied before moving the change, including its `.openspec.yaml`, to the
+archive path above. Change strict validation, main-spec validation (9/9) and
+whitespace checks passed. Main-spec validation retains long-requirement warnings,
+including the updated managed-preference requirement; these warnings do not
+invalidate ordinary validation. The runtime implementation is unchanged from
+the acceptance runs recorded above.
+
 ## Provider idle channel regression: 2026-11-08
 
 Change: `openspec/changes/archive/2026-11-08-fix-provider-idle-disconnect/`. Measured on WSL2

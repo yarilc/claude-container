@@ -126,7 +126,7 @@ Setup SHALL inspect or prepare the runtime image and the additional components r
 - **AND** it does not substitute a different policy, toolchain or network mode
 
 ### Requirement: Persistent non-secret managed launch preferences
-Setup SHALL save versioned non-secret preferences and provide a managed launcher usable from another workspace without repeated exports. Preferences and launcher code SHALL remain outside application-writable mounts and be validated before use. The launcher SHALL preserve arguments, stdin, terminal handling and current-directory semantics. Direct wrapper invocation SHALL retain its existing environment-based behavior.
+Setup SHALL save versioned non-secret preferences and provide a managed launcher usable from another workspace without repeated exports. Preferences and launcher code SHALL remain outside application-writable mounts and be validated before use. The launcher SHALL preserve arguments, stdin, terminal handling and current-directory semantics. Direct wrapper invocation SHALL support explicit environment-based runtime modes; an unset or empty effective network mode SHALL receive missing-setup guidance instead of implicit offline launch.
 
 #### Scenario: New terminal and workspace
 - **WHEN** the user invokes the managed launcher in a new terminal from a separate workspace
@@ -151,6 +151,21 @@ Setup SHALL save versioned non-secret preferences and provide a managed launcher
 - **WHEN** an old managed dispatcher cannot identify its actual invocation path to the installed helper
 - **THEN** normal launch fails with setup guidance while help and setup remain available
 - **AND** setup atomically upgrades the recognized dispatcher without overwriting unrelated command files
+
+#### Scenario: Saved mode supplies launch configuration
+- **WHEN** a validated managed launcher supplies saved offline, provider or unrestricted mode and there is no network environment override
+- **THEN** the ordinary missing-setup check accepts the effective mode
+- **AND** existing mode-specific readiness and qualification checks still determine whether an application can start
+
+#### Scenario: Empty network override is not replaced
+- **WHEN** an operator explicitly sets `CLAUDE_CONTAINER_NETWORK` to an empty value for an otherwise valid managed launch
+- **THEN** the empty value overrides the saved mode and the wrapper returns the missing-setup diagnostic
+- **AND** it does not silently restore the saved mode or select offline or unrestricted networking
+
+#### Scenario: Explicit direct operator workflow
+- **WHEN** an operator invokes the wrapper directly with a valid nonempty network mode and its required configuration
+- **THEN** it proceeds through existing runtime checks without requiring managed preferences
+- **AND** mode selection alone does not authorize maintenance, delegation or restricted qualification
 
 ### Requirement: Credential-preserving authentication assistance
 Setup SHALL support reusing selected shared account state or offering an explicit fresh login in isolated state. It SHALL NOT copy credentials, collect or persist API keys/tokens in setup preferences, or require an API key for account use. Authentication SHALL use the chosen installed sandbox and preserve its selected network and CA policies.

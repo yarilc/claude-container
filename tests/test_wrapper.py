@@ -1,5 +1,6 @@
 """Behavior checks for the wrapper without an engine or Claude credentials."""
 import json
+import itertools
 import os
 from pathlib import Path
 import socket
@@ -222,6 +223,88 @@ class WrapperTests(unittest.TestCase):
         self.assertIn('beyond the workspace', result.stdout)
         self.assertFalse(self.calls())
         self.assertFalse(self.state.exists())
+
+    def test_missing_network_mode_requires_setup_without_side_effects(self):
+        for mode in (None, ''):
+            with self.subTest(mode=mode):
+                env = self.env.copy()
+                env.pop('CLAUDE_CONTAINER_NETWORK')
+                if mode is not None:
+                    env['CLAUDE_CONTAINER_NETWORK'] = mode
+                result = subprocess.run(['/bin/bash', str(WRAPPER)], cwd=self.project,
+                                        env=env, input='input payload', text=True,
+                                        capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('setup required: run bash ', result.stderr)
+                self.assertIn('--container-setup', result.stderr)
+                self.assertEqual(result.stdout, '')
+                self.assertFalse(self.calls())
+                self.assertFalse(self.state.exists())
+                self.assertFalse(Path(env['HOME']).exists())
+
+    def test_missing_mode_precedes_options_prerequisites_and_other_configuration(self):
+        (self.project / 'setup.json').write_text('{"network":"unrestricted"}')
+        (self.project / 'qualification').mkdir()
+        (self.project / 'qualification/report.json').write_text('{"checks":"passed"}')
+        options = ('--container-shell', '--container-build', '--container-git-worktree')
+        for enabled in itertools.product((False, True), repeat=3):
+            for missing_tools in (False, True):
+                for mode in (None, ''):
+                    with self.subTest(enabled=enabled, missing_tools=missing_tools, mode=mode):
+                        env = self.env | {'CLAUDE_YOLO': 'invalid',
+                            'CLAUDE_CONTAINER_TRUST_HOST_CA': 'invalid',
+                            'CLAUDE_CONTAINER_PODMAN': '1', 'CONTAINER_HOST': 'invalid',
+                            'CLAUDE_CONTAINER_NETWORK_POLICY': '/invalid/policy',
+                            'CLAUDE_CONFIG_DIR': '/conflicting/config'}
+                        env.pop('CLAUDE_CONTAINER_NETWORK')
+                        if mode is not None:
+                            env['CLAUDE_CONTAINER_NETWORK'] = mode
+                        if missing_tools:
+                            env['PATH'] = ''
+                        args = [option for option, use in zip(options, enabled) if use]
+                        result = subprocess.run(['/bin/bash', str(WRAPPER), *args, '-p', ''],
+                                                cwd=self.project, env=env, input='payload',
+                                                text=True, capture_output=True, timeout=5)
+                        self.assertEqual(result.returncode, 1, result.stderr)
+                        self.assertIn('setup required:', result.stderr)
+                        self.assertEqual(result.stdout, '')
+                        self.assertFalse(self.calls())
+                        self.assertFalse(self.state.exists())
+                        self.assertFalse(Path(env['HOME']).exists())
+        for mode in ('invalid', ' ', '\t'):
+            with self.subTest(invalid_mode=repr(mode)):
+                result = self.run_wrapper(CLAUDE_CONTAINER_NETWORK=mode)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('must be offline, provider, or unrestricted', result.stderr)
+                self.assertNotIn('setup required:', result.stderr)
+                self.assertFalse(self.calls())
+
+    def test_setup_diagnostic_quotes_invoked_symlink_and_runs_from_other_workspace(self):
+        link = self.base / 'wrapper with spaces $(touch injected) `touch injected-too`.sh'
+        link.symlink_to(WRAPPER)
+        env = self.env.copy()
+        env.pop('CLAUDE_CONTAINER_NETWORK')
+        for wrapper in (str(link), os.path.relpath(link, self.project), str(WRAPPER)):
+            with self.subTest(wrapper=wrapper):
+                result = subprocess.run(['/bin/bash', wrapper], cwd=self.project,
+                                        env=env, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 1)
+                command = result.stderr.split('setup required: run ', 1)[1].split(
+                    '; use the managed launcher afterward', 1)[0]
+                # Execute the suggested command with help taking precedence over
+                # setup: this verifies shell quoting without starting a setup.
+                help_result = subprocess.run(['/bin/bash', '-c', command + ' --container-help'],
+                                             cwd=self.project, env=env, capture_output=True,
+                                             text=True, timeout=5)
+                self.assertEqual(help_result.returncode, 0, help_result.stderr)
+                self.assertIn('Container options:', help_result.stdout)
+                if wrapper != str(WRAPPER):
+                    self.assertIn('wrapper', command)
+                    self.assertNotIn(str(WRAPPER), command)
+                self.assertFalse((self.project / 'injected').exists())
+                self.assertFalse((self.project / 'injected-too').exists())
+                self.assertFalse(self.calls())
+                self.assertFalse(self.state.exists())
 
     def test_network_preflight_rejections_precede_image_operations(self):
         for values in (

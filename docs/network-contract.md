@@ -24,9 +24,19 @@ API check.
 
 | Mode | Agent access | Socket delegation |
 | --- | --- | --- |
-| `offline` (unset/empty default) | Own loopback, pipes and fixed-peer socket pairs only | Rejected |
+| unset/empty effective mode | Ordinary launch stops with setup guidance | No session |
+| `offline` | Own loopback, pipes and fixed-peer socket pairs only | Rejected |
 | `provider` | Loopback/pipes/pairs and preconnected exact-destination proxy | Rejected |
 | `unrestricted` (explicit only) | Ordinary runtime networking | Exact opt-in allowed |
+
+New users must first run `bash ./claude-container.sh --container-setup`, then
+use its managed launcher, which supplies validated saved preferences. Explicit
+operator modes remain supported for manual installations and maintenance.
+Missing/empty ordinary mode stops before runtime checks, engine queries and state
+creation; a managed empty override is preserved and refused. No working-directory
+configuration is discovered. Offline sessions cannot reach the Claude API.
+Standalone qualification retains its offline default and fixed protected controls;
+it cannot launch an arbitrary command. Maintenance consent never selects a mode.
 
 Unknown modes fail before image operations. Restricted setup errors never retry
 with unrestricted networking. Operator configuration selects the outer policy;

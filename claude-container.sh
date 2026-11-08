@@ -34,7 +34,8 @@ Container options:
 All other arguments are passed to Claude Code unchanged.
 
 Environment:
-  CLAUDE_CONTAINER_NETWORK offline (default), provider, or explicit unrestricted
+  CLAUDE_CONTAINER_NETWORK offline, provider, or unrestricted; required explicitly
+                           or supplied by the managed launcher
   CLAUDE_CONTAINER_NETWORK_PROFILE protected provider policy profile name
   CLAUDE_CONTAINER_NETWORK_POLICY absolute operator policy JSON path
   CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR private native directory at its host path
@@ -54,7 +55,18 @@ Environment:
                                   /etc/ssl/certs/ca-certificates.crt and
                                   /etc/pki/tls/certs/ca-bundle.crt)
 
-Launch requires a verified Linux rootless engine, locally or via an explicit
+New users must first run: bash ./claude-container.sh --container-setup
+Then use the managed launch command printed by setup from your workspace.
+An ordinary launch with unset/empty CLAUDE_CONTAINER_NETWORK stops with setup
+guidance before runtime checks or state creation. Explicit operator workflows
+remain available, for example:
+  CLAUDE_CONTAINER_NETWORK=unrestricted bash ./claude-container.sh --container-shell
+  CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 bash ./claude-container.sh --container-build
+Offline sessions cannot reach the Claude API. Before c777b73, ordinary networking
+needed no runtime mode; later versions defaulted to offline. Missing-mode launch
+now requires setup guidance instead. Restricted failures never retry unrestricted.
+
+Configured launch requires a verified Linux rootless engine, locally or via an explicit
 same-host Unix CONTAINER_HOST with an absolute socket pathname beyond /.
 Named connections and TCP/SSH are unsupported.
 Delegation endpoint: explicit socket override, Unix CONTAINER_HOST, then
@@ -147,6 +159,13 @@ for arg in "$@"; do
     esac
 done
 
+if [[ -z "${CLAUDE_CONTAINER_NETWORK:-}" ]]; then
+    setup_wrapper=${BASH_SOURCE[0]}
+    [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
+    printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
+    die "setup required: run $setup_command; use the managed launcher afterward or explicitly set CLAUDE_CONTAINER_NETWORK for an operator workflow"
+fi
+
 boolean() {
     case "${2,,}" in
         1|true|yes) printf 1 ;;
@@ -158,7 +177,7 @@ yolo=$(boolean CLAUDE_YOLO "${CLAUDE_YOLO:-}")
 podman_access=0
 [[ "${CLAUDE_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
 trust_host_ca=$(boolean CLAUDE_CONTAINER_TRUST_HOST_CA "${CLAUDE_CONTAINER_TRUST_HOST_CA:-}")
-network_mode=${CLAUDE_CONTAINER_NETWORK:-offline}
+network_mode=$CLAUDE_CONTAINER_NETWORK
 case "$network_mode" in
     offline|provider|unrestricted) ;;
     *) die 'CLAUDE_CONTAINER_NETWORK must be offline, provider, or unrestricted' ;;

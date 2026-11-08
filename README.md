@@ -7,8 +7,8 @@ through the host socket without running a nested daemon.
 
 ## Enable rootless Podman on the host
 
-For a guided installation, run this from a reviewed checkout on the Linux/WSL
-host as the non-root user who will run the sandbox:
+Setup is the mandatory first step for new users. Run this from a reviewed
+checkout on the Linux/WSL host as the non-root user who will run the sandbox:
 
 ```bash
 bash ./claude-container.sh --container-setup
@@ -22,6 +22,14 @@ account authentication, shared Claude state and
 disabled optional authority. No API key is needed for Claude account use. Setup
 does not install Podman or any other host package. The following manual steps
 remain available for prerequisite preparation and troubleshooting.
+
+After setup, use the managed launch command it prints from your project
+directory. It supplies the saved runtime mode. An ordinary direct invocation
+with `CLAUDE_CONTAINER_NETWORK` unset or empty exits with setup guidance before
+checking runtime prerequisites, contacting Podman or creating application state.
+Setup never starts automatically. Operators can still select a mode explicitly
+for manually prepared installations and maintenance; restricted modes retain
+all protected-path, guard and qualification checks.
 
 See the [guided setup reference](docs/setup.md) for saved preferences, image
 preparation, reruns/rollback and separate sandbox/authentication readiness.
@@ -196,16 +204,27 @@ sockets and is superseded. See [bootstrap build/tests](network/README.md) and
 execution is checked separately with a controlled synthetic Messages API; it
 does not establish real provider authentication or model behavior.
 
-**Migration:** direct wrapper invocation without managed setup preferences
-defaults to `offline`; first-run guided setup proposes `provider` with account
-authentication and saves the selected mode. Use explicit `unrestricted`
-for the previous broad-network behavior. A required image build now also needs
+**Migration:** versions before `c777b73` used ordinary networking without the
+runtime-mode interface. The enforced-network change introduced an unset/empty
+`offline` default. Ordinary launches now refuse an unset or empty effective mode
+with setup guidance. First-run setup proposes `provider` with account
+authentication and saves the selected mode for its managed launcher. Operators
+can explicitly choose `offline` for prepared restricted sessions or `unrestricted`
+for broad networking. Offline sessions cannot reach the Claude API.
+A required image build also needs
 exact `CLAUDE_CONTAINER_MAINTENANCE=1`; runtime mode never grants maintenance
 authority. An absent image no longer triggers an implicitly authorized build.
 
+For example, explicit operator maintenance uses both controls:
+
+```bash
+CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 bash ./claude-container.sh --container-build
+```
+
 | `CLAUDE_CONTAINER_NETWORK` | Behavior |
 | --- | --- |
-| unset, empty, or `offline` | `--network=none`; own loopback services only |
+| unset or empty | Ordinary launch stops with setup guidance |
+| `offline` | `--network=none`; own loopback services only |
 | `provider` | Same isolation plus an external CONNECT proxy with initial TLS SNI binding |
 | `unrestricted` | Explicit ordinary runtime networking; socket delegation is eligible |
 

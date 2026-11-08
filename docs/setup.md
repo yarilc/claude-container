@@ -4,7 +4,8 @@ The durable contract is [container-setup](../openspec/specs/container-setup/spec
 The [archived change](../openspec/changes/archive/2026-11-07-add-interactive-container-setup/)
 retains the design, completed tasks and delta specifications.
 
-Run `bash ./claude-container.sh --container-setup` from a reviewed checkout,
+Setup is the mandatory first step for new users. Run
+`bash ./claude-container.sh --container-setup` from a reviewed checkout,
 as the non-root Linux/WSL user who will use the sandbox. Podman and its rootless
 dependencies must already be installed. Host Python 3, Bash and GNU coreutils
 are also required. Setup needs terminal stdin/stdout; redirected answers and
@@ -22,8 +23,28 @@ with account authentication, shared state,
 ordinary Claude approvals, current workspace only, delegation off and CA trust off.
 Accept defaults with Enter; invalid choices are requested again. Existing saved
 choices are offered for review on rerun, including a previously selected offline
-mode. Direct wrapper invocation without managed preferences still defaults to
-offline; the managed launcher applies the network choice saved by setup.
+mode. The managed launcher applies the saved network choice. Ordinary direct
+invocation with `CLAUDE_CONTAINER_NETWORK` unset or empty stops with setup
+guidance before runtime prerequisite checks, engine queries or state creation.
+Setup is never started automatically. An explicit empty network override on a
+managed invocation also receives this refusal; remove the override to use the
+saved choice. Offline mode cannot reach the Claude API.
+
+Operators can still invoke a manually prepared wrapper with explicit `offline`,
+`provider` or `unrestricted` mode. All existing prerequisites, protected paths,
+qualification and authority checks apply. Image maintenance additionally
+requires exact `CLAUDE_CONTAINER_MAINTENANCE=1`; that consent alone does not select
+a mode. Help and standalone setup/qualification retain their own dispatch checks.
+Standalone `--container-qualify` keeps its offline default when no mode is set
+and can run only fixed controls, never a supplied application command.
+
+Before `c777b73`, ordinary networking needed no runtime-mode selection. The
+enforced-network change introduced an unset/empty offline default; ordinary
+missing-mode launches now stop with setup guidance instead. Existing managed
+launchers supply a saved mode. Install the updated protected wrapper through
+setup, or update and requalify a manual restricted installation: changing the
+wrapper invalidates its old qualification identity. Existing activation and
+last-working-release rollback remain unchanged.
 
 Provider mode authorizes CONNECT hostname/address and requires matching SNI in
 the initial TLS ClientHello before forwarding client bytes. It preserves
