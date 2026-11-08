@@ -12,8 +12,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-NETWORK = Path(__file__).resolve().parents[1] / 'network'
-sys.path.insert(0, str(NETWORK))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sandbox_profile import (GUARD, HOST, NARROW_PROFILE, NETWORK, POLICY_FILE, PROFILE, RULES,
+                             WIDE_METHOD, WIDE_PROFILE, test_setting)
 import policy
 import proxy
 import mux
@@ -21,13 +22,14 @@ import mux
 
 class PolicyTests(unittest.TestCase):
     def setUp(self):
-        self.value = json.loads((NETWORK / 'policies/default.json').read_text())
+        self.value = json.loads(POLICY_FILE.read_text())
 
     def test_profiles_and_normalization(self):
-        policy.validate(self.value)
-        self.assertEqual(policy.hostname('API.Anthropic.COM.'), 'api.anthropic.com')
-        self.assertEqual(len(policy.selected(self.value, 'anthropic-api')['destinations']), 1)
-        self.assertEqual(len(policy.selected(self.value, 'anthropic-account')['destinations']), 4)
+        policy.validate(self.value, RULES)
+        self.assertEqual(policy.hostname(HOST.upper() + '.'), HOST)
+        self.assertEqual(len(policy.selected(self.value, NARROW_PROFILE)['destinations']), 1)
+        self.assertEqual(len(policy.selected(self.value, WIDE_PROFILE)['destinations']),
+                         len(PROFILE.auth[WIDE_METHOD]['hosts']))
         with self.assertRaises(policy.PolicyError):
             policy.selected(self.value, 'missing')
 
@@ -35,34 +37,47 @@ class PolicyTests(unittest.TestCase):
         for mutate in (
             lambda v: v.update(unknown=True),
             lambda v: v.update(schema_version=True),
-            lambda v: v['profiles']['anthropic-api'].update(unknown=True),
-            lambda v: v['profiles']['anthropic-api'].update(disable_optional_traffic=False),
-            lambda v: v['profiles']['anthropic-api']['destinations'].clear(),
-            lambda v: v['profiles']['anthropic-api']['destinations'].append({'host': 'API.ANTHROPIC.COM.', 'port': 443}),
-            lambda v: v['profiles']['anthropic-api']['destinations'][0].update(port=80),
-            lambda v: v['profiles']['anthropic-api']['destinations'][0].update(host='*.anthropic.com'),
-            lambda v: v['profiles']['anthropic-api']['destinations'][0].update(host='api.anthropic.com.evil.test'),
-            lambda v: v['profiles']['anthropic-api']['destinations'][0].update(port=True),
+            lambda v: v['profiles'][NARROW_PROFILE].update(unknown=True),
+            lambda v: v['profiles'][NARROW_PROFILE].update(disable_optional_traffic=False),
+            lambda v: v['profiles'][NARROW_PROFILE]['destinations'].clear(),
+            lambda v: v['profiles'][NARROW_PROFILE]['destinations'].append({'host': HOST.upper() + '.', 'port': 443}),
+            lambda v: v['profiles'][NARROW_PROFILE]['destinations'][0].update(port=80),
+            lambda v: v['profiles'][NARROW_PROFILE]['destinations'][0].update(host='*.' + HOST.split('.', 1)[1]),
+            lambda v: v['profiles'][NARROW_PROFILE]['destinations'][0].update(host=HOST + '.evil.test'),
+            lambda v: v['profiles'][NARROW_PROFILE]['destinations'][0].update(port=True),
+            lambda v: v['profiles'][NARROW_PROFILE]['destinations'].append({'host': 'extra.test', 'port': 443}),
+            lambda v: v['profiles'][NARROW_PROFILE].update(authentication=WIDE_METHOD),
+            lambda v: v['profiles'][NARROW_PROFILE].update(authentication='unknown-method'),
+            lambda v: v['profiles'].update(extension={'authentication': WIDE_METHOD, 'disable_optional_traffic': True,
+                                                      'destinations': [{'host': HOST, 'port': 443}]}),
         ):
             value = copy.deepcopy(self.value)
             mutate(value)
             with self.subTest(value=value), self.assertRaises(policy.PolicyError):
-                policy.validate(value)
+                policy.validate(value, RULES)
+
+    def test_proxy_side_validation_is_structural(self):
+        # The proxy image has no profile; host-side rules are applied before snapshots.
+        value = copy.deepcopy(self.value)
+        value['profiles'][NARROW_PROFILE]['destinations'].append({'host': 'extra.test', 'port': 443})
+        policy.validate(copy.deepcopy(value))
+        with self.assertRaises(policy.PolicyError):
+            policy.validate(value, RULES)
 
     def test_authority_grammar_and_no_credentials(self):
-        self.assertEqual(proxy.authority(b'CONNECT API.ANTHROPIC.COM.:443 HTTP/1.1\r\nHost: api.anthropic.com\r\n\r\n'),
-                         ('api.anthropic.com', 443))
-        for target in ('user:secret@api.anthropic.com:443', 'api.anthropic.com:0443',
-                       'api.anthropic.com:0', 'api.anthropic.com:65536',
-                       '127.0.0.1:443', '[::1]:443', 'api%2eanthropic.com:443',
-                       'api.anthropic.com..:443', '*.anthropic.com:443',
-                       'api.anthropic.com:443/path?token=secret', 'api.anthropic.com:443\x00'):
+        self.assertEqual(proxy.authority(f'CONNECT {HOST.upper()}.:443 HTTP/1.1\r\nHost: {HOST}\r\n\r\n'.encode()),
+                         (HOST, 443))
+        for target in (f'user:secret@{HOST}:443', f'{HOST}:0443',
+                       f'{HOST}:0', f'{HOST}:65536',
+                       '127.0.0.1:443', '[::1]:443', HOST.replace('.', '%2e', 1) + ':443',
+                       f'{HOST}..:443', '*.' + HOST.split('.', 1)[1] + ':443',
+                       f'{HOST}:443/path?token=secret', f'{HOST}:443\x00'):
             with self.subTest(target=target), self.assertRaises(proxy.Rejected) as caught:
                 proxy.authority(f'CONNECT {target} HTTP/1.1\r\n\r\n'.encode())
             self.assertEqual(caught.exception.host, '')
-        for request in (b'GET https://api.anthropic.com HTTP/1.1\r\n\r\n',
-                        b'CONNECT api.anthropic.com:443 HTTP/1.1\r\nContent-Length: 5\r\n\r\n',
-                        b'CONNECT api.anthropic.com:443 HTTP/1.1\r\nProxy-Authorization: secret\r\n\r\n'):
+        for request in (f'GET https://{HOST} HTTP/1.1\r\n\r\n'.encode(),
+                        f'CONNECT {HOST}:443 HTTP/1.1\r\nContent-Length: 5\r\n\r\n'.encode(),
+                        f'CONNECT {HOST}:443 HTTP/1.1\r\nProxy-Authorization: secret\r\n\r\n'.encode()):
             with self.assertRaises(proxy.Rejected):
                 proxy.authority(request)
 
@@ -98,7 +113,7 @@ class PolicyTests(unittest.TestCase):
         profile = {'authentication': 'custom', 'disable_optional_traffic': True,
                    'destinations': [{'host': 'local.test', 'port': 8443, 'addresses': ['127.0.0.1']}]}
         self.value['profiles']['local-provider'] = profile
-        policy.validate(self.value)
+        policy.validate(self.value, RULES)
         local = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, '', ('127.0.0.1', 8443))
         with patch('socket.getaddrinfo', return_value=[local]):
             self.assertEqual(proxy.resolve('local.test', 8443, ['127.0.0.1'])[0][-1], local[-1])
@@ -112,7 +127,7 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(policy.overlaps(parent, Path('/workspace-other/policy.json')))
 
     def test_trusted_paths_and_immutable_snapshot(self):
-        native = os.environ.get('CLAUDE_TEST_STATE_ROOT', str(Path.home()))
+        native = test_setting('TEST_STATE_ROOT', str(Path.home()))
         if any(p.stat().st_mode & 0o022 for p in (Path(native), *Path(native).parents)):
             self.skipTest('native protected ancestors required; run tests/run-runtime.sh --network-policy')
         with tempfile.TemporaryDirectory(prefix='policy-test-', dir=native) as directory:
@@ -121,6 +136,9 @@ class PolicyTests(unittest.TestCase):
             (install / 'network').mkdir(parents=True)
             for source in list(NETWORK.glob('*.py')) + [NETWORK / 'resolv.conf']:
                 shutil.copyfile(source, install / 'network' / source.name)
+            (install / 'agent/policies').mkdir(parents=True)
+            shutil.copyfile(NETWORK.parent / 'agent/profile.json', install / 'agent/profile.json')
+            shutil.copyfile(POLICY_FILE, install / 'agent/policies/default.json')
             import hashlib, struct
             binary_dir = install / 'network/bin'
             binary_dir.mkdir()
@@ -130,11 +148,11 @@ class PolicyTests(unittest.TestCase):
             struct.pack_into('<H', elf, 18, 62)
             struct.pack_into('<Q', elf, 32, 64)
             struct.pack_into('<HH', elf, 54, 56, 0)
-            guard = binary_dir / 'claude-egress-guard'
+            guard = binary_dir / GUARD
             guard.write_bytes(elf)
             guard.chmod(0o500)
-            (binary_dir / 'claude-egress-guard.sha256').write_text(hashlib.sha256(elf).hexdigest() + '  claude-egress-guard\n')
-            (install / 'claude-container.sh').write_text('protected fixture')
+            (binary_dir / (GUARD + '.sha256')).write_text(hashlib.sha256(elf).hexdigest() + '  ' + GUARD + '\n')
+            (install / PROFILE.wrapper).write_text('protected fixture')
             policy_file = install / 'policy.json'
             policy_file.write_text(json.dumps(self.value))
             workspace = root / 'workspace'
@@ -145,7 +163,7 @@ class PolicyTests(unittest.TestCase):
             session.mkdir(mode=0o700)
             command = [sys.executable, '-I', str(install / 'network/control.py'), 'snapshot',
                        '--installation', str(install), '--writable', str(workspace),
-                       '--policy', str(policy_file), '--profile', 'anthropic-api',
+                       '--policy', str(policy_file), '--profile', NARROW_PROFILE,
                        '--proxy-image', 'sha256:' + 'a' * 64,
                        '--runtime', str(runtime), '--session', str(session)]
             result = subprocess.run(command, capture_output=True, text=True)
@@ -255,11 +273,11 @@ class AsyncProxyTests(unittest.IsolatedAsyncioTestCase):
 
 class TLSManifestTests(unittest.TestCase):
     def test_required_enforcement_identity(self):
-        manifest = {'policy': 'fixture-policy', 'profile': 'anthropic-api', 'session': 'fixture',
+        manifest = {'policy': 'fixture-policy', 'profile': NARROW_PROFILE, 'session': 'fixture',
                     'protocol': 1, 'revision': 'abi3-seccomp-mux-v1', 'required_abi': 3,
                     'filter': 'native-x86_64-v1', 'sha256': 'a' * 64,
                     'tls_enforcement': 'tls-clienthello-sni-v1'}
-        proxy.validate_manifest(manifest, 'fixture-policy', 'anthropic-api', 'fixture')
+        proxy.validate_manifest(manifest, 'fixture-policy', NARROW_PROFILE, 'fixture')
         for value in (None, '', 'old', True):
             changed = manifest.copy()
             if value is None:
@@ -267,4 +285,4 @@ class TLSManifestTests(unittest.TestCase):
             else:
                 changed['tls_enforcement'] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
-                proxy.validate_manifest(changed, 'fixture-policy', 'anthropic-api', 'fixture')
+                proxy.validate_manifest(changed, 'fixture-policy', NARROW_PROFILE, 'fixture')

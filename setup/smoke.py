@@ -5,13 +5,14 @@ import subprocess
 import sys
 
 
-def main(mode, trust_ca):
-    assert os.environ['HOME'] == '/claude-home'
-    assert os.access(os.environ['CLAUDE_CONFIG_DIR'], os.W_OK)
-    subprocess.run(['claude', '--version'], check=True, stdout=subprocess.DEVNULL, timeout=15)
+def main(mode, trust_ca, home, config_env, command):
+    # Agent values are supplied by host setup from the protected profile.
+    assert os.environ['HOME'] == home
+    assert os.access(os.environ[config_env], os.W_OK)
+    subprocess.run([command, '--version'], check=True, stdout=subprocess.DEVNULL, timeout=15)
     for name in ('SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
         if trust_ca:
-            assert os.environ[name] == '/claude-home/ca/bundle.pem'
+            assert os.environ[name] == home + '/ca/bundle.pem'
             assert os.path.isfile(os.environ[name]) and not os.access(os.environ[name], os.W_OK)
         else:
             assert name not in os.environ
@@ -44,8 +45,8 @@ def main(mode, trust_ca):
             proxy.sendall(b'CONNECT setup-denied.invalid:443 HTTP/1.1\r\nHost: setup-denied.invalid:443\r\n\r\n')
             response = proxy.recv(1024)
             assert response.startswith(b'HTTP/1.1 502'), 'proxy deny-path check failed'
-    print('CLAUDE_SANDBOX_SETUP_SMOKE_OK')
+    print('SANDBOX_SETUP_SMOKE_OK')
 
 
 if __name__ == '__main__':
-    main(sys.argv[1], sys.argv[2] == '1')
+    main(sys.argv[1], sys.argv[2] == '1', *sys.argv[3:6])

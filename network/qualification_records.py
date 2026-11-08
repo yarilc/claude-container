@@ -9,18 +9,26 @@ from datetime import datetime, timezone
 
 from policy import PolicyError, canonical, load, selected, trusted_path, unique_object
 from proxy_hardening import MEMORY_LIMIT, PIDS_LIMIT
+import agent_profile
 
 REVISION = 'local-enforcement-v1'
 CHECKS = ('ip4', 'ip6', 'dns-udp', 'unix-existing-late', 'pairs-files-descendants',
           'alternate-syscalls', 'both-state-modes', 'container-hardening')
 PROVIDER_CHECKS = ('proxy-policy', 'proxy-budgets', 'tls-match', 'tls-mismatch-zero-bytes', 'proxy-loss')
-CODE = ('claude-container.sh', 'network/control.py', 'network/platform_check.py',
-        'network/policy.py', 'network/proxy_hardening.py', 'network/qualify.py',
-        'network/qualification_records.py', 'network/qualification_runtime.py',
-        'network/qualification_probe.py', 'network/qualification_peer.py',
-        'network/qualification_proxy.py', 'network/relay.py', 'network/mux.py',
-        'network/resolv.conf', 'network/bin/claude-egress-guard',
-        'network/bin/claude-egress-guard.sha256')
+GUARD = 'sandbox-egress-guard'
+# Shared code plus the agent profile and provider policy. The wrapper name comes
+# from the profile, so ``code_files`` binds the profile that selected it.
+SHARED_CODE = ('network/control.py', 'network/platform_check.py', 'network/agent_profile.py',
+               'network/policy.py', 'network/proxy_hardening.py', 'network/qualify.py',
+               'network/qualification_records.py', 'network/qualification_runtime.py',
+               'network/qualification_probe.py', 'network/qualification_peer.py',
+               'network/qualification_proxy.py', 'network/relay.py', 'network/mux.py',
+               'network/resolv.conf', 'network/bin/' + GUARD, 'network/bin/' + GUARD + '.sha256',
+               agent_profile.PROFILE, agent_profile.POLICY)
+
+
+def code_files(profile):
+    return (profile.wrapper, *SHARED_CODE)
 
 
 def digest(data):
@@ -58,6 +66,7 @@ def status(root, identity, writable):
 
 def fingerprint(root, env, run, platform, token):
     root = trusted_path(root, [], directory=True)
+    profile = agent_profile.load(root / agent_profile.PROFILE, writable=[])
     host = decode(run(['podman', 'info', '--format', '{{json .Host}}']).encode())
     engine = run(['podman', 'info', '--format', '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}'])
     endpoint = env.get('CONTAINER_HOST', '')
@@ -81,25 +90,25 @@ def fingerprint(root, env, run, platform, token):
     socket = run(['podman', 'info', '--format', '{{.Host.RemoteSocket.Path}}'])
     if not socket.startswith('/') or '\n' in socket or '\r' in socket:
         raise PolicyError('unverifiable host socket identity')
-    abi_output = run([str(root / 'network/bin/claude-egress-guard'), '--probe'])
+    abi_output = run([str(root / 'network/bin' / GUARD), '--probe'])
     match = re.fullmatch(r'Landlock ABI (\d+); required >= 3; query-only, enforcement unverified', abi_output)
     if not match:
         raise PolicyError('unverifiable guard ABI probe')
     value['abi'] = platform.validate_abi(int(match[1]))
     runtime = run(['podman', 'image', 'inspect', '--format', '{{.Id}}',
-                   env.get('CLAUDE_CONTAINER_IMAGE') or 'localhost/claude-code:latest'])
+                   env.get(profile.env('IMAGE')) or profile.image('agent', 'latest')])
     if not re.fullmatch(r'(?:sha256:)?[a-f0-9]{64}', runtime):
         raise PolicyError('unverifiable runtime image identity')
-    profile = env.get('CLAUDE_CONTAINER_NETWORK_PROFILE', '')
-    mode = env.get('CLAUDE_CONTAINER_NETWORK') or 'offline'
+    selected_profile = env.get(profile.env('NETWORK_PROFILE'), '')
+    mode = env.get(profile.env('NETWORK')) or 'offline'
     if mode not in ('offline', 'provider'):
         raise PolicyError('qualification requires offline or provider mode')
     policy_id, proxy = '', ''
     if mode == 'provider':
-        policy = load(trusted_path(env.get('CLAUDE_CONTAINER_NETWORK_POLICY', ''), []))
-        selected(policy, profile)
+        policy = load(trusted_path(env.get(profile.env('NETWORK_POLICY'), ''), []), profile.policy_rules())
+        selected(policy, selected_profile)
         policy_id = digest(canonical(policy))
-        proxy = run(['podman', 'image', 'inspect', '--format', '{{.Id}}', env.get('CLAUDE_CONTAINER_EGRESS_IMAGE', '')])
+        proxy = run(['podman', 'image', 'inspect', '--format', '{{.Id}}', env.get(profile.env('EGRESS_IMAGE'), '')])
         if not re.fullmatch(r'(?:sha256:)?[a-f0-9]{64}', proxy):
             raise PolicyError('unverifiable proxy image identity')
     # Read the server's profile at its real host path, including when the client
@@ -108,8 +117,8 @@ def fingerprint(root, env, run, platform, token):
     if not isinstance(profile_path, str) or not profile_path.startswith('/') or ':' in profile_path:
         raise PolicyError('unverifiable standard seccomp profile')
     ca_path = ''
-    if env.get('CLAUDE_CONTAINER_TRUST_HOST_CA', '').lower() in ('1', 'true', 'yes'):
-        ca_path = env.get('CLAUDE_CONTAINER_CA_BUNDLE', '')
+    if env.get(profile.env('TRUST_HOST_CA'), '').lower() in ('1', 'true', 'yes'):
+        ca_path = env.get(profile.env('CA_BUNDLE'), '')
         if not ca_path:
             ca_path = next((path for path in ('/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt')
                             if Path(path).is_file()), '')
@@ -132,7 +141,7 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
         raise PolicyError('unverifiable server Netavark path')
     engine_configuration['networkBackendInfo'] = backend_info
     raw = run(['podman', 'run', '--rm', '--pull=never', '--network=none', '--read-only',
-        '--label', 'io.claude-container.qualification=' + token,
+        '--label', profile.label('qualification') + '=' + token,
         '--cap-drop=all', '--security-opt=no-new-privileges', '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
         '--volume', profile_path + ':/qualification-seccomp:ro', *ca_mount,
         '--mount', 'type=bind,src=' + candidate + ',dst=/qualification-netavark,ro=true',
@@ -144,11 +153,11 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
             (ca_path and not re.fullmatch(r'[a-f0-9]{64}', security.get('ca', ''))) or
             (not ca_path and security.get('ca') != '')):
         raise PolicyError('unverifiable security identity')
-    code = {name: digest(trusted_path(root / name, []).read_bytes()) for name in CODE}
+    code = {name: digest(trusted_path(root / name, []).read_bytes()) for name in code_files(profile)}
     identity = dict(revision=REVISION, platform=value, engine_configuration=engine_configuration,
                     endpoint=endpoint, host_socket=socket,
                     security=security, code=code, runtime=runtime, proxy=proxy,
-                    mode=mode, profile=profile if mode == 'provider' else '', policy=policy_id,
+                    mode=mode, profile=selected_profile if mode == 'provider' else '', policy=policy_id,
                     hardening=dict(capabilities=[], no_new_privs=True, pids=PIDS_LIMIT, memory=MEMORY_LIMIT))
     # Active LSM policy identity cannot generally be read by an unprivileged
     # operator. Rerun the gate each launch instead of caching unverifiable state.

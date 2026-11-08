@@ -134,7 +134,7 @@ elif args[0] == 'start':
 
 class WrapperTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='claude-wrapper-', dir=os.environ.get('CLAUDE_TEST_TMPDIR'))
+        self.tmp = tempfile.TemporaryDirectory(prefix='claude-wrapper-', dir=os.environ.get('SANDBOX_TEST_TMPDIR'))
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.bin = self.base / 'bin'
@@ -416,12 +416,15 @@ class WrapperTests(unittest.TestCase):
         self.wrapper = install / 'claude-container.sh'
         shutil.copyfile(WRAPPER, self.wrapper)
         self.wrapper.chmod(0o700)
-        guard = install / 'network/bin/claude-egress-guard'
+        guard = install / 'network/bin/sandbox-egress-guard'
         guard.write_text('#!/bin/sh\nexit 0\n')
         guard.chmod(0o700)
-        (guard.parent / 'claude-egress-guard.sha256').write_text('c' * 64 + '  claude-egress-guard\n')
+        (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
         shutil.copyfile(ROOT / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
         shutil.copyfile(ROOT / 'network/platform_check.py', install / 'network/platform_check.py')
+        for name in ('network/agent_profile.py', 'network/policy.py', 'agent/profile.json'):
+            (install / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, install / name)
         (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
         (install / 'network/control.py').write_text('''import pathlib,socket,sys
 args=sys.argv[1:]
@@ -1009,8 +1012,15 @@ if args[0]=='snapshot':
         self.assertEqual(next(c for c in self.calls() if c[0] == '--remote')[2], f'unix://{self.socket_path}')
 
     def test_socket_fallback_and_invalid_sources(self):
+        default = f'/run/user/{os.getuid()}/podman/podman.sock'
         result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', CLAUDE_CONTAINER_PODMAN_SOCKET='')
-        self.assertIn(f'/run/user/{os.getuid()}/podman/podman.sock', result.stderr)
+        if Path(default).exists():
+            # A real user service exists on this host; the fake engine answers for it,
+            # so verify the selected fallback endpoint instead of a missing-socket error.
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(next(c for c in self.calls() if c[0] == '--remote')[2], 'unix://' + default)
+        else:
+            self.assertIn(default, result.stderr)
         for source in ('relative', str(self.base / 'missing'), str(WRAPPER)):
             with self.subTest(source=source):
                 self.log.unlink(missing_ok=True)

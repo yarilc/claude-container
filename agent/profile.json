@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "name": "claude-container",
+  "display_name": "Claude",
+  "wrapper": "claude-container.sh",
+  "env_prefix": "CLAUDE_CONTAINER",
+  "label_namespace": "io.claude-container",
+  "identifiers": ["claude", "anthropic"],
+  "images": {
+    "agent": "localhost/claude-code",
+    "proxy": "localhost/claude-egress",
+    "toolchain": "localhost/claude-guard-toolchain"
+  },
+  "install": {
+    "state_name": "claude-egress"
+  },
+  "native": {
+    "home": "/claude-home",
+    "command": "claude",
+    "config_dir_env": "CLAUDE_CONFIG_DIR",
+    "approval_bypass_env": "CLAUDE_YOLO",
+    "config_home": ".claude",
+    "shared_dirs": [".config/openspec"]
+  },
+  "auth": {
+    "account": {
+      "description": "reuses Claude account login",
+      "policy_profile": "anthropic-account",
+      "hosts": ["api.anthropic.com", "claude.ai", "claude.com", "platform.claude.com"],
+      "login_args": ["auth", "login", "--claudeai"]
+    },
+    "api": {
+      "description": "uses an API key supplied at launch",
+      "policy_profile": "anthropic-api",
+      "hosts": ["api.anthropic.com"],
+      "credential_env": "ANTHROPIC_API_KEY"
+    }
+  }
+}

@@ -16,10 +16,14 @@ import io
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'network'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sandbox_profile import AGENT_IMAGE, POLICY_FILE, PROFILE, ROOT, WIDE_PROFILE, env as name, test_setting
+import agent_profile
 import qualification_records as records
 import qualify
+
+QUALIFICATION_LABEL = PROFILE.label('qualification')
+WORK_GLOB = '.' + PROFILE.name + '-qualification-*'
 
 
 class QualificationContracts(unittest.TestCase):
@@ -100,6 +104,32 @@ time.sleep(60)
             self.assertLess(time.monotonic() - started, 5)
             self.assertIsNone(gate.process)
 
+    def test_code_identity_binds_wrapper_profile_and_policy(self):
+        files = records.code_files(PROFILE)
+        for path in (PROFILE.wrapper, agent_profile.PROFILE, agent_profile.POLICY,
+                     'network/agent_profile.py', 'network/bin/sandbox-egress-guard'):
+            self.assertIn(path, files)
+        identity = self.identity()
+        report = dict(schema=1, identity=identity, fingerprint=records.digest(records.canonical(identity)),
+                      checks={check: 'passed' for check in records.expected_checks(True)},
+                      reusable=True, measured_at='2026-11-08T00:00:00+00:00')
+        changed = copy.deepcopy(identity)
+        changed['code'][agent_profile.PROFILE] = 'f' * 64
+        with self.assertRaises(ValueError):
+            records.validate_report(report, changed)
+
+    def test_changed_protected_profile_stops_the_gate(self):
+        other = agent_profile.validate(json.loads((ROOT / agent_profile.PROFILE).read_text()) | {'display_name': 'Changed'})
+        with tempfile.TemporaryDirectory() as temporary, patch.object(qualify,'ROOT',Path(temporary)), \
+                patch.object(qualify,'trusted_path',side_effect=lambda path,*a,**k:Path(path)), \
+                patch.object(qualify.agent_profile,'load',return_value=other), \
+                patch.object(qualify,'Gate') as gate, \
+                patch.object(sys,'argv',['qualify.py','qualify']), \
+                patch.dict(os.environ,{'CONTAINER_HOST':'unix:///some/socket',name('NETWORK'):'offline'},clear=True):
+            with self.assertRaisesRegex(qualify.GateError,'profile changed'):
+                qualify.main()
+            gate.assert_not_called()
+
     def test_unknown_policy_requalifies_and_changed_inputs_cannot_publish(self):
         identity=self.identity()
         for changed in (False, True):
@@ -107,13 +137,14 @@ time.sleep(60)
             snapshots=[(identity,False),(identity | {'runtime':'changed'} if changed else identity,False)]
             with tempfile.TemporaryDirectory() as temporary, patch.object(qualify,'ROOT',Path(temporary)), \
                     patch.object(qualify,'trusted_path',side_effect=lambda path,*a,**k:Path(path)), \
-                    patch.object(qualify,'Gate',return_value=gate), patch.object(qualify.records,'CODE',()), \
+                    patch.object(qualify,'Gate',return_value=gate), patch.object(qualify.records,'code_files',return_value=()), \
+                    patch.object(qualify.agent_profile,'load',return_value=qualify.PROFILE), \
                     patch.object(qualify.records,'fingerprint',side_effect=snapshots), \
                     patch.object(qualify.records,'read',return_value={'reusable':False}), \
                     patch.object(qualify.records,'publish') as publish, \
                     patch.object(qualify.records,'status',return_value='locally-qualified'), \
                     patch.object(sys,'argv',['qualify.py','check']), \
-                    patch.dict(os.environ,{'CONTAINER_HOST':'unix:///some/socket','CLAUDE_CONTAINER_NETWORK':'offline'},clear=True):
+                    patch.dict(os.environ,{'CONTAINER_HOST':'unix:///some/socket',name('NETWORK'):'offline'},clear=True):
                 if changed:
                     with self.assertRaisesRegex(qualify.GateError,'changed'):
                         qualify.main()
@@ -131,11 +162,12 @@ time.sleep(60)
         gate.qualify.side_effect=qualify.GateError('positive control unavailable')
         with tempfile.TemporaryDirectory() as temporary, patch.object(qualify,'ROOT',Path(temporary)), \
                 patch.object(qualify,'trusted_path',side_effect=lambda path,*a,**k:Path(path)), \
-                patch.object(qualify,'Gate',return_value=gate), patch.object(qualify.records,'CODE',()), \
+                patch.object(qualify,'Gate',return_value=gate), patch.object(qualify.records,'code_files',return_value=()), \
+                    patch.object(qualify.agent_profile,'load',return_value=qualify.PROFILE), \
                 patch.object(qualify.records,'fingerprint',return_value=(self.identity(),True)), \
                 patch.object(qualify.records,'publish') as publish, \
                 patch.object(sys,'argv',['qualify.py','qualify']), \
-                patch.dict(os.environ,{'CONTAINER_HOST':'unix:///some/socket','CLAUDE_CONTAINER_NETWORK':'offline'},clear=True):
+                patch.dict(os.environ,{'CONTAINER_HOST':'unix:///some/socket',name('NETWORK'):'offline'},clear=True):
             with self.assertRaisesRegex(qualify.GateError,'unavailable'):
                 qualify.main()
             publish.assert_not_called()
@@ -147,17 +179,17 @@ time.sleep(60)
             publish.assert_not_called()
 
 
-@unittest.skipUnless(os.environ.get('CLAUDE_RUNTIME_TESTS') == '1', 'requires disposable native rootless harness')
+@unittest.skipUnless(test_setting('RUNTIME_TESTS') == '1', 'requires disposable native rootless harness')
 class QualificationRuntime(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.guard = tempfile.TemporaryDirectory(prefix='qualification-guard-', dir=os.environ['CLAUDE_TEST_STATE_ROOT'])
+        cls.guard = tempfile.TemporaryDirectory(prefix='qualification-guard-', dir=test_setting('TEST_STATE_ROOT'))
         cls.addClassCleanup(cls.guard.cleanup)
         result = subprocess.run(['bash', str(ROOT/'network/build-guard.sh'), cls.guard.name],
-            env=os.environ | {'CLAUDE_CONTAINER_MAINTENANCE':'1'}, capture_output=True, text=True, timeout=60)
+            env=os.environ | {name('MAINTENANCE'):'1'}, capture_output=True, text=True, timeout=60)
         if result.returncode:
             raise RuntimeError(result.stderr)
-        tag = 'localhost/claude-qualification-test:' + uuid.uuid4().hex
+        tag = PROFILE.image('proxy', 'qualification-test-' + uuid.uuid4().hex)
         cls.addClassCleanup(subprocess.run, ['podman', 'rmi', '--force', tag],
                             capture_output=True, timeout=30)
         result = subprocess.run(['podman', 'build', '--pull=never', '--tag', tag,
@@ -169,12 +201,15 @@ class QualificationRuntime(unittest.TestCase):
             '--format', '{{.Id}}', tag], text=True).strip()
 
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory(prefix='qualification-', dir=os.environ['CLAUDE_TEST_STATE_ROOT'])
+        self.directory = tempfile.TemporaryDirectory(prefix='qualification-', dir=test_setting('TEST_STATE_ROOT'))
         self.addCleanup(self.directory.cleanup)
         self.base = Path(self.directory.name)
         self.install = self.base/'installed'; self.install.mkdir(mode=0o700)
         (self.install/'network').mkdir(mode=0o700)
-        shutil.copyfile(ROOT/'claude-container.sh', self.install/'claude-container.sh')
+        shutil.copyfile(ROOT/PROFILE.wrapper, self.install/PROFILE.wrapper)
+        (self.install/'agent/policies').mkdir(mode=0o700, parents=True)
+        shutil.copyfile(ROOT/agent_profile.PROFILE, self.install/agent_profile.PROFILE)
+        shutil.copyfile(POLICY_FILE, self.install/agent_profile.POLICY)
         for source in (ROOT/'network').glob('*.py'):
             shutil.copyfile(source, self.install/'network'/source.name)
         shutil.copyfile(ROOT/'network/resolv.conf', self.install/'network/resolv.conf')
@@ -183,13 +218,13 @@ class QualificationRuntime(unittest.TestCase):
         self.home=self.base/'home'; self.home.mkdir(mode=0o700)
         self.runtime=self.base/'egress'; self.runtime.mkdir(mode=0o700)
         self.env=dict(PATH=os.environ['PATH'], HOME=str(self.home),
-            CONTAINER_HOST=os.environ['CONTAINER_HOST'], CLAUDE_CONTAINER_NETWORK='offline',
-            CLAUDE_CONTAINER_STATE_DIR=str(self.base/'state'),
-            CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR=str(self.runtime),
-            CLAUDE_CONTAINER_IMAGE=os.environ.get('CLAUDE_CONTAINER_IMAGE','localhost/claude-code:latest'))
+            CONTAINER_HOST=os.environ['CONTAINER_HOST'])
+        self.env.update({name('NETWORK'): 'offline', name('STATE_DIR'): str(self.base/'state'),
+            name('NETWORK_RUNTIME_DIR'): str(self.runtime),
+            name('IMAGE'): os.environ.get(name('IMAGE'), AGENT_IMAGE)})
 
     def command(self, *args, input=None, timeout=325):
-        return subprocess.run(['bash', str(self.install/'claude-container.sh'), *args],
+        return subprocess.run(['bash', str(self.install/PROFILE.wrapper), *args],
             cwd=self.project, env=self.env, input=input, capture_output=True, text=True, timeout=timeout)
 
     def test_installed_offline_qualification_missing_stale_and_unsafe_reports(self):
@@ -199,7 +234,7 @@ class QualificationRuntime(unittest.TestCase):
         self.assertFalse((self.project/'agent-started').exists())
         result=self.command('--container-qualify')
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertIn('CLAUDE_QUALIFICATION_OK',result.stdout)
+        self.assertIn('SANDBOX_QUALIFICATION_OK',result.stdout)
         paths=list((self.install/'qualification').glob('*.json'))
         self.assertEqual(len(paths),1)
         report=json.loads(paths[0].read_text())
@@ -223,9 +258,9 @@ class QualificationRuntime(unittest.TestCase):
 
     def test_installed_provider_qualification_and_fixed_probe_cannot_run_application(self):
         image=self.proxy_image
-        policy=self.install/'policy.json'; shutil.copyfile(ROOT/'network/policies/default.json',policy)
-        self.env.update(CLAUDE_CONTAINER_NETWORK='provider',CLAUDE_CONTAINER_NETWORK_PROFILE='anthropic-account',
-            CLAUDE_CONTAINER_NETWORK_POLICY=str(policy),CLAUDE_CONTAINER_EGRESS_IMAGE=image)
+        policy=self.install/'policy.json'; shutil.copyfile(POLICY_FILE,policy)
+        self.env.update({name('NETWORK'):'provider',name('NETWORK_PROFILE'):WIDE_PROFILE,
+            name('NETWORK_POLICY'):str(policy),name('EGRESS_IMAGE'):image})
         result=self.command('--container-qualify')
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         report=json.loads(next((self.install/'qualification').glob('*.json')).read_text())
@@ -239,10 +274,10 @@ class QualificationRuntime(unittest.TestCase):
         data=dict(schema=1,token='a'*32,workspace=str(self.project),addresses=['127.0.0.1','::1'],provider=True,tls=False)
         path=self.install/'bad-input.json'
         path.write_text(json.dumps(data | {'command':'touch agent-started'}))
-        self.env['CLAUDE_CONTAINER_QUALIFICATION_INPUT']=str(path)
+        self.env[name('QUALIFICATION_INPUT')]=str(path)
         self.assertNotEqual(self.command('--container-qualify-probe').returncode,0)
         path=self.project/'writable-input.json'; path.write_text(json.dumps(data))
-        self.env['CLAUDE_CONTAINER_QUALIFICATION_INPUT']=str(path)
+        self.env[name('QUALIFICATION_INPUT')]=str(path)
         self.assertNotEqual(self.command('--container-qualify-probe').returncode,0)
         self.assertFalse((self.project/'agent-started').exists())
 
@@ -266,7 +301,7 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
         script.chmod(0o700)
         env=self.env | dict(PATH=str(directory)+':'+self.env['PATH'], QUALIFY_ENGINE=engine,
                            QUALIFY_MARKER=str(marker),QUALIFY_COUNTER=str(counter))
-        process=subprocess.Popen(['bash',str(self.install/'claude-container.sh'),'--container-shell'],
+        process=subprocess.Popen(['bash',str(self.install/PROFILE.wrapper),'--container-shell'],
             env=env,cwd=self.project,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         try:
             deadline=time.monotonic()+20
@@ -286,13 +321,13 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
                 process.kill(); process.communicate()
 
     def test_cancelled_gate_has_no_report_and_cleans_only_its_resources(self):
-        process=subprocess.Popen(['bash',str(self.install/'claude-container.sh'),'--container-qualify'],
+        process=subprocess.Popen(['bash',str(self.install/PROFILE.wrapper),'--container-qualify'],
             cwd=self.project,env=self.env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         try:
             deadline=time.monotonic()+30
             configs=[]
             while not configs and process.poll() is None and time.monotonic()<deadline:
-                configs=list(self.base.glob('.claude-qualification-*/shared/input.json'))
+                configs=list(self.base.glob(WORK_GLOB+'/shared/input.json'))
                 time.sleep(.02)
             self.assertTrue(configs, 'gate did not reach owned fixture setup')
             token=json.loads(configs[0].read_text())['token']
@@ -301,18 +336,18 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
             self.assertNotEqual(process.returncode,0,stdout+stderr)
             self.assertEqual(list((self.install/'qualification').glob('*.json')),[])
             result=subprocess.check_output(['podman','ps','--all','--filter',
-                'label=io.claude-container.qualification='+token,'--format','{{.ID}}'],text=True).strip()
+                'label='+QUALIFICATION_LABEL+'='+token,'--format','{{.ID}}'],text=True).strip()
             self.assertEqual(result,'')
-            self.assertEqual(list(self.base.glob('.claude-qualification-*')),[])
+            self.assertEqual(list(self.base.glob(WORK_GLOB+'')),[])
         finally:
             if process.poll() is None:
                 process.kill(); process.communicate()
 
     def test_cancelled_tls_gate_is_bounded_and_cleans_owned_resources(self):
         image=self.proxy_image
-        policy=self.install/'policy.json'; shutil.copyfile(ROOT/'network/policies/default.json',policy)
-        self.env.update(CLAUDE_CONTAINER_NETWORK='provider',CLAUDE_CONTAINER_NETWORK_PROFILE='anthropic-account',
-            CLAUDE_CONTAINER_NETWORK_POLICY=str(policy),CLAUDE_CONTAINER_EGRESS_IMAGE=image)
+        policy=self.install/'policy.json'; shutil.copyfile(POLICY_FILE,policy)
+        self.env.update({name('NETWORK'):'provider',name('NETWORK_PROFILE'):WIDE_PROFILE,
+            name('NETWORK_POLICY'):str(policy),name('EGRESS_IMAGE'):image})
         # Instrument only this disposable installed fixture to hold the TLS
         # subprocess open after actual matching/mismatching handshake checks.
         probe=self.install/'network/qualification_probe.py'
@@ -321,12 +356,12 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
             "    Path('/workspace/cancel-tls-ready').touch()\n    __import__('time').sleep(60)\n"
             "    print('qualification-proxy-loss-ready', flush=True)")
         probe.write_text(source)
-        process=subprocess.Popen(['bash',str(self.install/'claude-container.sh'),'--container-qualify'],
+        process=subprocess.Popen(['bash',str(self.install/PROFILE.wrapper),'--container-qualify'],
             cwd=self.project,env=self.env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         try:
             deadline=time.monotonic()+100; markers=[]
             while not markers and process.poll() is None and time.monotonic()<deadline:
-                markers=list(self.base.glob('.claude-qualification-*/tls/project/cancel-tls-ready'))
+                markers=list(self.base.glob(WORK_GLOB+'/tls/project/cancel-tls-ready'))
                 time.sleep(.02)
             self.assertTrue(markers,'gate did not reach controlled TLS stage')
             config=markers[0].parents[1]/'input.json'
@@ -337,15 +372,15 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
             self.assertLess(time.monotonic()-started,15)
             self.assertEqual(list((self.install/'qualification').glob('*.json')),[])
             owned=subprocess.check_output(['podman','ps','--all','--filter',
-                'label=io.claude-container.qualification='+token,'--format','{{.ID}}'],text=True).strip()
+                'label='+QUALIFICATION_LABEL+'='+token,'--format','{{.ID}}'],text=True).strip()
             self.assertEqual(owned,'')
-            self.assertEqual(list(self.base.glob('.claude-qualification-*')),[])
+            self.assertEqual(list(self.base.glob(WORK_GLOB+'')),[])
         finally:
             if process.poll() is None:
                 process.kill(); process.communicate()
 
     def test_concurrent_gates_publish_complete_atomic_reports(self):
-        children=[subprocess.Popen(['bash',str(self.install/'claude-container.sh'),'--container-qualify'],
+        children=[subprocess.Popen(['bash',str(self.install/PROFILE.wrapper),'--container-qualify'],
             cwd=self.project,env=self.env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
             for _ in range(2)]
         try:
@@ -356,7 +391,7 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
             self.assertEqual(len(reports),1)
             value=json.loads(reports[0].read_text())
             records.validate_report(value,value['identity'])
-            self.assertEqual(list(self.base.glob('.claude-qualification-*')),[])
+            self.assertEqual(list(self.base.glob(WORK_GLOB+'')),[])
         finally:
             for child in children:
                 if child.poll() is None:

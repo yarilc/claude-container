@@ -196,7 +196,7 @@ os.link('/workspace/b/file', '/workspace/a/link')
 assert Path('/workspace/a/link').read_text() == 'persistent'
 for command in (['node', '-e', "const r=require('child_process').spawnSync('/bin/sh',['-c','printf child-ok']);process.stdout.write(r.stdout);process.exit(r.status??1)"],
                 ['python3', '-c', "import subprocess; print(subprocess.check_output(['/bin/sh','-c','printf child-ok']).decode())"],
-                ['claude', '--version']):
+                [config['agent'], '--version']):
     result = subprocess.run(command, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, (command[0], result.stderr)
 git_root = '/workspace/git-project'
@@ -206,7 +206,7 @@ for args in (['add', 'file'], ['-c', 'user.name=Synthetic', '-c', 'user.email=sy
              ['worktree', 'add', '-qb', 'fixture-branch', '/workspace/linked-worktree']):
     subprocess.run(['git', '-C', git_root, *args], check=True, capture_output=True)
 assert Path('/workspace/linked-worktree/file').read_text() == 'synthetic git state'
-assert os.environ['XDG_RUNTIME_DIR'] == '/tmp/claude-runtime'
+assert os.environ['XDG_RUNTIME_DIR'] == '/tmp/sandbox-runtime'
 assert libc.prctl(39, 0, 0, 0, 0) == 1
 print(json.dumps({'native_guard': 'passed', 'kernel': os.uname().release,
                   'pairs': ['stream', 'seqpacket'], 'new_unix_sockets': 'denied', 'connected_pair_autobind': 'allowed'}))

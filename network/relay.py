@@ -84,7 +84,7 @@ if __name__ == '__main__':
             os._exit(78)
     channel_socket.close()
     os.close(ready_write)
-    # Bound pre-exec readiness and never execute Claude if handshake/bind failed.
+    # Bound pre-exec readiness and never execute the application if handshake/bind failed.
     import select
     available, _, _ = select.select([ready_read], [], [], 15)
     success = bool(available) and os.read(ready_read, 1) == b'1'

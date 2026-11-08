@@ -6,13 +6,20 @@ is replaced by mandatory protected-asset, platform and in-container enforcement
 checks plus the credential-free installation gate. An ABI number or mock pass alone
 does not establish support.
 
+Shared files in `network/` and `setup/` contain no agent identifiers. Agent-specific
+names (wrapper, variables, images, labels, native home/command and provider
+host requirements) come from the protected `agent/profile.json`; provider
+policies live in `agent/policies/`. In-container paths are neutral:
+`/opt/sandbox-egress`, `/run/sandbox-egress`, `/tmp/sandbox-runtime` and the
+`sandbox-egress-guard` binary.
+
 The guard accepts only:
 
 ```text
-claude-egress-guard --version
-claude-egress-guard --probe
-claude-egress-guard --offline -- /absolute/program [args...]
-claude-egress-guard --provider -- /absolute/program [args...]
+sandbox-egress-guard --version
+sandbox-egress-guard --probe
+sandbox-egress-guard --offline -- /absolute/program [args...]
+sandbox-egress-guard --provider -- /absolute/program [args...]
 ```
 
 `--probe` queries Landlock ABI >= 3 only; it does not attest enforcement.
@@ -75,7 +82,7 @@ Existing connected pairs may bind/autobind private pathname or abstract names;
 they must remain fixed to their original peer and cannot listen or publish into
 host binds. This narrow naming allowance was approved after the real WSL probe.
 Pipes, pairs and own loopback remain supported. Keep HOME/configuration unchanged;
-XDG_RUNTIME_DIR becomes private /tmp/claude-runtime for ordinary runtime files.
+XDG_RUNTIME_DIR becomes private /tmp/sandbox-runtime for ordinary runtime files.
 Host-agent, named-cache and external supervisor workflows remain incompatible.
 
 The launcher still must validate immutable guard hash/ownership, effective binds,
@@ -153,10 +160,10 @@ maintenance outside runtime egress enforcement. It installs no host packages and
 needs no credentials or delegated agent socket.
 
 ```bash
-podman build --pull=never --tag localhost/claude-guard-toolchain:development \
-    --file network/guard-build.Containerfile network
-toolchain=$(podman image inspect --format '{{.Id}}' localhost/claude-guard-toolchain:development)
-CLAUDE_GUARD_TOOLCHAIN="$toolchain" bash tests/run-runtime.sh --guard
+tag=$(python3 -I network/agent_profile.py image toolchain development)
+podman build --pull=never --tag "$tag" --file network/guard-build.Containerfile network
+toolchain=$(podman image inspect --format '{{.Id}}' "$tag")
+SANDBOX_GUARD_TOOLCHAIN="$toolchain" bash tests/run-runtime.sh --guard
 ```
 
 The test runner resolves a prepared toolchain to its immutable image ID before
@@ -180,11 +187,13 @@ Record executable SHA-256 and guard revision separately from policy revision.
 No compiled binary is committed or installed outside disposable test storage by the tests.
 
 Create a private native `network/bin` directory inside the protected installation,
-then run `CLAUDE_CONTAINER_MAINTENANCE=1 bash network/build-guard.sh /absolute/installed/network/bin`.
+then run `<PREFIX>_MAINTENANCE=1 bash network/build-guard.sh /absolute/installed/network/bin`, where
+`<PREFIX>` is the profile's `env_prefix` (`python3 -I network/agent_profile.py env MAINTENANCE`
+prints the exact name).
 The script uses the prepared immutable toolchain without network, atomically
 installs the static executable and writes its SHA-256 manifest. Startup validates
 trusted ownership/ancestors, digest, executable mode and static x86_64 ELF layout.
-Builds remain operator maintenance; no compiler or socket is delegated to Claude.
+Builds remain operator maintenance; no compiler or socket is delegated to the agent.
 
 ## Component tests and enforcement evidence
 
@@ -201,14 +210,14 @@ configuration, repeat builds are byte-identical, injected loader hooks cannot ru
 before rejection, and setup failures never execute a sentinel. Real rootless tests
 on the target WSL ABI-3 kernel cover new-socket denial, compat/x32 and async syscall
 denial, pair retargeting/explicit sends/naming/FD transfer, ordinary file REFER,
-Node/Python subprocesses, Claude --version and the sole provider preconnection.
-These are component results, not complete IP/IPC/lifecycle or authenticated Claude
+Node/Python subprocesses, the agent's `--version` and the sole provider preconnection.
+These are component results, not complete IP/IPC/lifecycle or authenticated agent
 acceptance. See docs/validation.md and tasks 1.6–1.8 and 4–7.
 
 ## Multiplex data protocol v1
 
 The only outside channel is the bootstrap's connected AF_UNIX stream FD 3. Both
-peers send and verify `CLAUDE-EGRESS\x00\x01` within 10 seconds. This is an
+peers send and verify `SANDBOX-EGRESS\x00\x01` within 10 seconds. This is an
 identity/version check inside the operator-protected session transport, not a
 replacement for launcher policy/session readiness verification. A proxy accepts
 one channel for its lifetime. Lost channels require a new session.
@@ -294,7 +303,7 @@ Run `python3 -m unittest discover -s tests -p test_mux.py -v` or
 concurrency checks. The real `--guard` suite also runs 80 sequential controlled
 TLS requests, concurrent streaming, WebSocket and certificate/destination-denial
 checks through the production static guard and confined relay. These are
-credential-free transport tests, not authenticated Claude compatibility.
+credential-free transport tests, not authenticated agent compatibility.
 
 ## Initial TLS ClientHello inspection
 
@@ -317,7 +326,7 @@ fixed reason code, never raw SNI or handshake data. Tests:
 `python3 -m unittest discover -s tests -p test_tls_client_hello.py -v`.
 
 This parser verifies the initial plaintext ClientHello name. It cannot establish
-exclusive Anthropic application identity, inspect encrypted HTTP Host/authority,
+exclusive provider application identity, inspect encrypted HTTP Host/authority,
 prevent shared-service routing or provider forwarding, or prevent data transfer
 to allowed services. Certificate verification remains the client's responsibility
 and stays end-to-end. The deployment acceptance status is recorded separately in

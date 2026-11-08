@@ -181,7 +181,7 @@ local qualification report. Use the protected installed wrapper path in place of
 # Restricted API session with an operator-installed policy.
 CLAUDE_CONTAINER_NETWORK=provider \
 CLAUDE_CONTAINER_NETWORK_PROFILE=anthropic-api \
-CLAUDE_CONTAINER_NETWORK_POLICY=/opt/claude-container/network/policies/default.json \
+CLAUDE_CONTAINER_NETWORK_POLICY="$HOME/.local/lib/claude-container/current/agent/policies/default.json" \
 CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR="$HOME/.local/state/claude-egress" \
 CLAUDE_CONTAINER_EGRESS_IMAGE="$egress_image" \
 ./claude-container.sh
@@ -203,17 +203,25 @@ install launcher/helpers/policies outside every writable workspace/state tree.
 
 ## Five-wrapper parity checklist
 
-The upstream TODO identifies five wrappers but this checkout supplies only
-Claude. The other four identities/repositories have not been supplied here.
-Variable prefixes may differ; behavior and migration semantics must agree.
+The five wrappers are Claude (this repository), Codex, Antigravity, OpenCode
+and Pi. Ports copy `network/`, `setup/` and the shared tests unchanged. Each
+wrapper keeps the following per-agent items:
+- its own `agent/profile.json` (variable prefix, images, labels, native home,
+  command, configuration variable, authentication methods and their required
+  hosts);
+- its own provider policies in `agent/policies/`;
+- its wrapper and agent image.
+
+`tests/test_alignment.py` fails if an agent identifier enters the shared files.
+Variable prefixes differ; behavior and migration semantics must agree.
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
 | Claude (this repository) | WSL ABI-3/additive-filter contract specified here | Mandatory bootstrap and multiplexed proxy integrated | See versioned guard, IP/IPC and wrapper evidence | Account login/reuse/refresh passed; real-key API optional/unavailable |
-| Sibling 1 (identity not supplied) | Pending | Not assessed | Not assessed | Not assessed |
-| Sibling 2 (identity not supplied) | Pending | Not assessed | Not assessed | Not assessed |
-| Sibling 3 (identity not supplied) | Pending | Not assessed | Not assessed | Not assessed |
-| Sibling 4 (identity not supplied) | Pending | Not assessed | Not assessed | Not assessed |
+| Codex | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
+| Antigravity | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
+| OpenCode | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
+| Pi | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
 
 For each wrapper, record mode/default parity, operator policy authority, separate
 maintenance permission, authentication/feature inventories, delegation rejection,

@@ -1,5 +1,137 @@
 # Validation record
 
+## Agent profile extraction: 2026-11-08
+
+Change: `openspec/changes/extract-agent-profile/`. This record covers only the
+checks that ran inside a restricted Claude sandbox session. That session denies
+`AF_UNIX`, has no usable Podman service or compiler, and has no native directory
+with protected ancestors (`/tmp` and the home are mode 1777, the checkout is on a
+0777 Windows mount). Runtime, guard build, wrapper and setup suites were
+therefore not run here. They remain required acceptance and are listed below.
+No credentials, model requests or engine operations were used.
+
+### Executed here
+
+| Command | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests -p test_agent_profile.py` | Passed: 8 tests, 1 skipped (protected-path positive case needs native protected storage) |
+| `python3 -m unittest discover -s tests -p test_alignment.py` | Passed: 7 tests (literal scan, injected-literal detection, wrapper/profile consistency) |
+| `python3 -m unittest discover -s tests -p test_network_policy.py` | Passed: 14 tests, 1 skipped (protected snapshot) |
+| `python3 -m unittest discover -s tests -p test_qualification.py` | Passed: 15 tests, 7 skipped (runtime) |
+| `test_mux.py`, `test_tls_client_hello.py`, `test_tls_proxy.py`, `test_platform.py` | Passed: 26, 7, 5, 4 tests |
+| `test_guard.py`, `test_network_feasibility.py` | Skipped (runtime only); import-level checks passed |
+| Effective policy comparison, HEAD `network/policy.py` + `network/policies/default.json` against the new loader with profile rules | Identical canonical profiles and revision `anthropic-2026-11-06-v1 02b7baf6…fbca` |
+
+`test_setup.py` and `test_wrapper.py` cannot start in this session: setup
+temporary state requires protected ancestors, and wrapper fixtures require
+`AF_UNIX`. As a diagnostic only, `test_setup.py` was also run with `/tmp`'s
+group/other write bits hidden from in-process `os.stat`. Its error set matched
+HEAD exactly (29 environment errors in both, all from subprocesses on
+`noexec`/unprotected storage). This found and fixed four test-edit regressions.
+The new rollback test passed under the same diagnostic. This is not acceptance
+evidence.
+
+### Simulated port
+
+`network/`, `setup/` and the 22 shared test files were copied unchanged to a
+scratch tree, with a dummy profile and policy:
+- `dummy-container`, prefix `DUMMY_CONTAINER`, images `localhost/dummy-*`;
+- authentication methods `login` and `key`, with hosts under
+  `exampleprovider.test`.
+
+`diff -rq` against this checkout's `network/` reported no differences. In the
+scratch tree these passed without edits:
+- `test_alignment.SharedComponentAlignment`;
+- `test_agent_profile`, `test_network_policy`;
+- `test_qualification.QualificationContracts`;
+- `test_mux`, `test_tls_client_hello`, `test_tls_proxy`, `test_platform`.
+
+### Host acceptance: 2026-11-08
+
+Run by the operator on the WSL2 host (`6.6.87.2-microsoft-standard-WSL2`, rootless
+Podman with the existing same-host user service), native storage, no credentials
+or model requests beyond the local synthetic Messages fixture.
+
+| Command | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests -p test_setup.py -v` | Passed: 57 tests, including the new profile installation, rollback and workspace-decoy tests |
+| `SANDBOX_TEST_TMPDIR=<native> python3 -m unittest discover -s tests -p test_wrapper.py -v` | Initial run: 61 passed, 1 failed (`test_socket_fallback_and_invalid_sources`) |
+| Same, `-k test_socket_fallback` after the test fix | Passed |
+| `podman build --pull=never --tag localhost/claude-guard-toolchain:development …` | Cached, toolchain ID `0b69ba43c894c4599fcfc0fa7b5e3c150ec26fcf7a2690e3c83708688ff9402c` (unchanged) |
+| `SANDBOX_GUARD_TOOLCHAIN=<id> bash tests/run-runtime.sh --guard` | Passed: 18 tests, 1 skipped (305-second idle check, separate `--guard-idle`). Production `sandbox-egress-guard` SHA-256 `0c647dfea75667a46a8cd4cc4dfea4ee3d10363752ea7ce5957162bacd6d7ec9` |
+| `… ./claude-container.sh --container-build --version` | Runtime image `4cf5ae97d03e3d1d6a92c7d9dc36fa3d5389dfd68b8529eae6ee75e630dc67a1`, `COPY … /opt/sandbox-egress/`; Claude Code 2.1.316 |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 14 tests, including the protected snapshot case |
+| `bash tests/run-runtime.sh --network` | Passed: 19 tests in 736 s, including the real Claude tool through the guard, relay and proxy. 64 slow inspections and 64 verified TLS connections stayed within `pids.max=128` and `memory.max=268435456`. Pids and memory exhaustion were enforced and failed closed |
+| `bash tests/run-runtime.sh --qualification` | Passed: 15 tests (installed offline/provider gates, stale/unsafe reports, cancellation, concurrency) |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+
+The initial wrapper failure was environmental and unrelated to this change. With
+`XDG_RUNTIME_DIR` unset, the wrapper falls back to
+`/run/user/<uid>/podman/podman.sock`, which exists on this host. The test
+asserted that the socket was missing. The test now checks the selected fallback
+endpoint when that socket exists, and the missing-socket diagnostic otherwise.
+`claude-container.sh` socket selection is unchanged.
+
+Every TLS run reported policy identity `anthropic-2026-11-06-v1 45f6456484…e1f5`
+and `tls-clienthello-sni-v1`. The controlled-test policy identity differs from
+the default policy's because those fixtures add a controlled profile.
+
+A second `--guard` run reproduced the same guard SHA-256 `0c647dfe…7ec9` and
+passed 18 tests, with the idle check still skipped. Running `./claude-container.sh`
+from the checkout with no mode set refused before any engine call, with the
+`--container-setup` guidance. This confirms missing-setup admission only. It does
+not test a stale protected installation.
+
+### Managed setup rerun: 2026-11-08
+
+The operator reran `claude-container.sh --container-setup` against the existing
+managed installation `~/.local/lib/claude-container`. Choices: provider/account,
+shared state, YOLO enabled, endpoint default. Images were refreshed and the guard
+was recompiled.
+
+- Built and tagged:
+  - runtime `8f1182709a773704974ab23a914d0df75ced9754a791e61dd6a0c157253558af`
+    (`COPY … /opt/sandbox-egress/`);
+  - toolchain `0b69ba43…402c` (unchanged);
+  - proxy `c56cb591c3086db9f06188ee3644c8d57925db7d01c95580a6f73f23e32c4fea`
+    (`/opt/sandbox-egress/proxy.py`).
+- The packaged guard reported `sandbox-egress-guard abi3-seccomp-mux-v1`.
+- Setup printed `Sandbox qualification: locally-qualified` and `Sandbox: ready`,
+  then activated the release.
+- The profile drove the prompts. They showed the same text as before the change:
+  - "account reuses Claude account login; api uses an API key supplied at launch";
+  - `protected profile: anthropic-account`;
+  - `auth login --claudeai`.
+- A provider launch from a separate workspace through the managed launcher
+  reported:
+  - policy `anthropic-2026-11-06-v1 02b7baf6…fbca`, unchanged from before the
+    change;
+  - guard `0c647dfe…7ec9`;
+  - `sandbox-egress-guard: enforced revision=abi3-seccomp-mux-v1 abi=3`.
+
+  It ran a full Claude session, the one that recorded these results. Inside it,
+  `/run/sandbox-egress` and `/tmp/sandbox-runtime` exist and `/run/claude-egress`
+  does not. On exit the session reported the expected sanitized
+  `transport-closed` diagnostic.
+
+These items were not exercised manually on this installation:
+- refusal of the old qualification before the rerun;
+- an offline launch;
+- an interrupted update.
+
+Automated runtime evidence above covers them on protected installations: the
+stale and changed-code report refusal and both modes in `--qualification` and
+`--network`, and owned recovery and rollback in `--setup-runtime` and
+`test_setup.py`.
+
+### Idle acceptance
+
+`bash tests/run-runtime.sh --guard-idle` passed:
+`test_guarded_multiplex_idle_resume` ran in 353.5 s through the production guard,
+relay and proxy. It used `tls-clienthello-sni-v1` and controlled policy
+`anthropic-2026-11-06-v1 45f6456484…e1f5`. All acceptance items for this change
+are recorded.
+
 ## Multiplex stream-failure isolation (N23): 2026-11-08
 
 Change: `openspec/changes/archive/2026-11-08-isolate-mux-stream-failures/`. Measured on WSL2
@@ -1166,7 +1298,7 @@ git diff --check
 openspec validate align-container-sandboxing --strict
 ```
 
-If `/tmp` is `noexec`, set `CLAUDE_TEST_TMPDIR` to a private native Linux directory
+If `/tmp` is `noexec`, set `SANDBOX_TEST_TMPDIR` to a private native Linux directory
 that allows execution. The suite deliberately rejects privacy checks performed
 on filesystems that report all directories as 0777.
 
@@ -1184,16 +1316,16 @@ bash tests/run-runtime.sh --wrapper
 ```
 
 The runner creates a disposable native Linux volume, supplies it through
-`CLAUDE_TEST_STATE_ROOT` at its real host path, and removes that volume on exit.
+`SANDBOX_TEST_STATE_ROOT` at its real host path, and removes that volume on exit.
 It requires an already built image and active rootless API service. For direct
 execution on a host with Python, use:
 
 ```bash
-CLAUDE_RUNTIME_TESTS=1 python3 -m unittest discover -s tests -p test_runtime.py -v
+SANDBOX_RUNTIME_TESTS=1 python3 -m unittest discover -s tests -p test_runtime.py -v
 ```
 
 Direct host execution uses native temporary state. With a Unix service client
-inside a container, use the runner or explicitly provide `CLAUDE_TEST_STATE_ROOT`
+inside a container, use the runner or explicitly provide `SANDBOX_TEST_STATE_ROOT`
 backed by private native storage at the same absolute host path. `/tmp` inside
 an arbitrary client container is not automatically a valid bind source on the
 host. Record actual engine/kernel/architecture, image CLI/OpenSpec versions,
@@ -1258,7 +1390,7 @@ without an explicit reviewed policy revision.
 ```bash
 # Common prepared provider environment (installation and egress_image from README).
 export CLAUDE_CONTAINER_NETWORK=provider
-export CLAUDE_CONTAINER_NETWORK_POLICY="$installation/network/policies/default.json"
+export CLAUDE_CONTAINER_NETWORK_POLICY="$installation/agent/policies/default.json"
 export CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR="$HOME/.local/state/claude-egress"
 export CLAUDE_CONTAINER_EGRESS_IMAGE="$egress_image"
 

@@ -58,7 +58,16 @@ if __name__ == '__main__':
         else:
             raise ValueError('invalid operation')
     except (OSError, ValueError, KeyError, TypeError, IndexError):
-        print('claude-container: proxy hardening unavailable or invalid; require effective '
+        prefix = 'sandbox-egress: '
+        if '__file__' in globals():
+            # Host-side verification names the wrapper; the in-proxy probe has no profile.
+            try:
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from agent_profile import message_prefix
+                prefix = message_prefix(prefix)
+            except ImportError:
+                pass
+        print(prefix + 'proxy hardening unavailable or invalid; require effective '
               'cgroup v2 pids=128/memory=256MiB, zero capabilities, no-new-privileges '
               'and standard seccomp; inspect rootless controller delegation and the proxy image', file=sys.stderr)
         sys.exit(1)

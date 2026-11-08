@@ -2,7 +2,7 @@
 import asyncio
 import struct
 
-MAGIC = b'CLAUDE-EGRESS\x00\x01'
+MAGIC = b'SANDBOX-EGRESS\x00\x01'
 HEADER = struct.Struct('!BII')
 OPEN, OPEN_OK, OPEN_ERR, DATA, HALF_CLOSE, CLOSE, WINDOW_UPDATE = range(1, 8)
 MAX_STREAMS = 64

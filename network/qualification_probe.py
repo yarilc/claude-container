@@ -10,7 +10,7 @@ import sys
 import time
 
 
-config = json.loads(Path('/opt/claude-egress/qualification.json').read_text())
+config = json.loads(Path('/opt/sandbox-egress/qualification.json').read_text())
 
 
 def external(allowed):
@@ -62,8 +62,8 @@ for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 
 external(False)
 
 # Broad syscall/IPC assertions use the production binary and contain no mocks.
-exec(compile(Path('/opt/claude-egress/qualification_runtime.py').read_text(),
-             '/opt/claude-egress/qualification_runtime.py', 'exec'))
+exec(compile(Path('/opt/sandbox-egress/qualification_runtime.py').read_text(),
+             '/opt/sandbox-egress/qualification_runtime.py', 'exec'))
 Path('/workspace/guard-ready').touch()
 deadline = time.monotonic() + 10
 while not Path('/workspace/late.sock').exists():
@@ -99,7 +99,7 @@ if config['tls']:
         assert b'200' in response
         return raw
 
-    trust = ssl.create_default_context(cafile='/opt/claude-egress/qualification-cert.pem')
+    trust = ssl.create_default_context(cafile='/opt/sandbox-egress/qualification-cert.pem')
     with trust.wrap_socket(tunnel(), server_hostname='qualification.invalid') as secure:
         secure.sendall(b'GET / HTTP/1.1\r\nHost: qualification.invalid\r\nConnection: close\r\n\r\n')
         response = http.client.HTTPResponse(secure); response.begin()

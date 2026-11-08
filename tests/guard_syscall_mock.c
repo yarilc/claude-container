@@ -25,22 +25,22 @@ int __real_fstatvfs(int fd, struct statvfs *result);
 
 static int matches(const char *value)
 {
-    const char *fault = getenv("CLAUDE_GUARD_TEST_FAULT");
+    const char *fault = getenv("SANDBOX_GUARD_TEST_FAULT");
     return fault && strcmp(fault, value) == 0;
 }
 
 static const char *translated(const char *path, char *buffer, size_t size)
 {
-    const char *root = getenv("CLAUDE_GUARD_TEST_ROOT");
+    const char *root = getenv("SANDBOX_GUARD_TEST_ROOT");
     if (root && !strcmp(path, "/proc/self/mountinfo")) {
         snprintf(buffer, size, "%s/mountinfo", root);
         return buffer;
     }
     if (root && (!strcmp(path, "/") || !strcmp(path, "/tmp") ||
                  !strcmp(path, "/run") || !strcmp(path, "/var/tmp") ||
-                 !strcmp(path, "/tmp/claude-runtime") ||
-                 !strcmp(path, "/run/claude-egress") ||
-                 !strcmp(path, "/run/claude-egress/proxy.sock"))) {
+                 !strcmp(path, "/tmp/sandbox-runtime") ||
+                 !strcmp(path, "/run/sandbox-egress") ||
+                 !strcmp(path, "/run/sandbox-egress/proxy.sock"))) {
         int length = snprintf(buffer, size, "%s%s", root, path);
         if (length < 0 || (size_t)length >= size)
             _exit(90);
@@ -124,7 +124,7 @@ long __wrap_syscall(long number, ...)
         size_t size = va_arg(args, size_t);
         unsigned long flags = va_arg(args, unsigned long);
         if (!attributes && !size && flags == GUARD_CREATE_RULESET_VERSION) {
-            const char *abi = getenv("CLAUDE_GUARD_TEST_ABI");
+            const char *abi = getenv("SANDBOX_GUARD_TEST_ABI");
             if (matches("query")) {
                 errno = ENOSYS;
             } else {

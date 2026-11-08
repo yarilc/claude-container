@@ -14,18 +14,26 @@ import uuid
 import importlib.util
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import (IMAGE_ID, MANIFEST, SetupError, absolute, defaults, endpoint_url, installation_directory,
+try:
+    import common  # noqa: F401  (validates the checkout's agent profile first)
+except ValueError as error:
+    print('sandbox-egress: setup incomplete: ' + str(error), file=sys.stderr)
+    sys.exit(1)
+from common import (IMAGE_ID, MANIFEST, PROFILE, SetupError, absolute, defaults, endpoint_url, installation_directory,
                     load, overlap, prepare_state, private, protect_mounts, runtime_environment,
                     save, source_identity, trusted, validate, writable_mounts)
 
 
 SOURCE = Path(__file__).resolve().parents[1]
-platform_spec = importlib.util.spec_from_file_location('claude_platform', SOURCE / 'network/platform_check.py')
+platform_spec = importlib.util.spec_from_file_location('sandbox_platform', SOURCE / 'network/platform_check.py')
 platform_rules = importlib.util.module_from_spec(platform_spec)
 platform_spec.loader.exec_module(platform_rules)
-RUNTIME_IMAGE = 'localhost/claude-code:latest'
-TOOLCHAIN_IMAGE = 'localhost/claude-guard-toolchain:development'
-PROXY_IMAGE = 'localhost/claude-egress:local'
+RUNTIME_IMAGE = PROFILE.image('agent', 'latest')
+TOOLCHAIN_IMAGE = PROFILE.image('toolchain', 'development')
+PROXY_IMAGE = PROFILE.image('proxy', 'local')
+PREFIX = PROFILE.message_prefix
+NAME = PROFILE.display_name
+GUARD = 'sandbox-egress-guard'
 
 
 def ask(label, default='', choices=None):
@@ -62,10 +70,10 @@ def current_release(root):
 
 
 def questionnaire():
-    print('Claude sandbox setup — no host packages will be installed. Ctrl+C cancels.')
+    print(NAME + ' sandbox setup — no host packages will be installed. Ctrl+C cancels.')
     print('Podman must already be installed. Setup uses host Python 3 and GNU coreutils.')
-    ambient = sorted(k for k in os.environ if k.startswith('CLAUDE_CONTAINER_') or k in
-                     ('CLAUDE_CONFIG_DIR', 'CLAUDE_YOLO', 'CONTAINER_HOST', 'CONTAINER_CONNECTION'))
+    ambient = sorted(k for k in os.environ if k.startswith(PROFILE.env_prefix + '_') or k in
+                     (PROFILE.config_dir_env, PROFILE.approval_bypass_env, 'CONTAINER_HOST', 'CONTAINER_CONNECTION'))
     if ambient:
         print('Existing environment controls (values are not recorded): ' + ', '.join(ambient))
         print('Review choices below; setup checks use these choices. Explicit environment overrides apply on later launches.')
@@ -79,19 +87,22 @@ def questionnaire():
     print('offline: no external network; provider: approved CONNECT hosts with initial TLS SNI binding; unrestricted: ordinary network access.')
     print('Provider mode rejects ECH/GREASE and unverifiable TLS names; encrypted Host/shared-service routing is not filtered.')
     value['network'] = ask('Network mode', value['network'], ('offline', 'provider', 'unrestricted'))
+    default_auth = next(iter(PROFILE.auth))
     value['auth'] = 'none'
     if value['network'] != 'offline':
-        print('account reuses Claude account login; api uses an API key supplied at launch. No secret is requested here.')
-        value['auth'] = ask('Authentication method', previous['auth'] if previous['auth'] != 'none' else 'account', ('account', 'api'))
-    print('shared exposes your selected host Claude credentials and shared OpenSpec configuration. isolated starts a fresh private home; nothing is copied.')
+        print('; '.join(method + ' ' + item['description'] for method, item in PROFILE.auth.items())
+              + '. No secret is requested here.')
+        value['auth'] = ask('Authentication method', previous['auth'] if previous['auth'] != 'none' else default_auth, tuple(PROFILE.auth))
+    print('shared exposes your selected host ' + NAME + ' credentials and shared ' + ', '.join(PROFILE.shared_dirs or ('no other'))
+          + ' configuration. isolated starts a fresh private home; nothing is copied.')
     state = ask('State mode', 'isolated' if value['state_dir'] else 'shared', ('shared', 'isolated'))
     value['state_dir'] = value['config_dir'] = ''
     if state == 'isolated':
-        value['state_dir'] = path_question('Private isolated state directory', previous['state_dir'] or str(Path.home() / '.local/share/claude-container/home'))
-        if os.environ.get('CLAUDE_CONFIG_DIR') and not yes('A nonempty CLAUDE_CONFIG_DIR conflicts with isolation. Continue with isolated setup choices (unset it before normal launch)?'):
-            raise SetupError('Choose shared state or unset CLAUDE_CONFIG_DIR and rerun setup.')
+        value['state_dir'] = path_question('Private isolated state directory', previous['state_dir'] or str(Path.home() / '.local/share' / PROFILE.name / 'home'))
+        if os.environ.get(PROFILE.config_dir_env) and not yes('A nonempty ' + PROFILE.config_dir_env + ' conflicts with isolation. Continue with isolated setup choices (unset it before normal launch)?'):
+            raise SetupError('Choose shared state or unset ' + PROFILE.config_dir_env + ' and rerun setup.')
     else:
-        selected = path_question('Shared Claude configuration directory', previous['config_dir'] or str(Path.home() / '.claude'))
+        selected = path_question('Shared ' + NAME + ' configuration directory', previous['config_dir'] or str(Path.home() / PROFILE.config_home))
         value['config_dir'] = selected
     print('Podman delegation gives the application host container/mount authority beyond this workspace.')
     value['podman'] = yes('Delegate the host Podman API to the application?', value['podman'])
@@ -103,11 +114,11 @@ def questionnaire():
         else:
             value['network'] = ask('Network mode', value['network'], ('offline', 'provider', 'unrestricted'))
             if value['network'] != 'offline' and value['auth'] == 'none':
-                value['auth'] = ask('Authentication method', 'account', ('account', 'api'))
+                value['auth'] = ask('Authentication method', default_auth, tuple(PROFILE.auth))
     if value['network'] == 'offline':
         value['auth'] = 'none'
-    print('Permission bypass skips Claude approvals; it does not change network enforcement or grant Podman.')
-    value['yolo'] = yes('Enable Claude permission bypass (YOLO)?', value['yolo'])
+    print('Permission bypass skips ' + NAME + ' approvals; it does not change network enforcement or grant Podman.')
+    value['yolo'] = yes('Enable ' + NAME + ' permission bypass (YOLO)?', value['yolo'])
     print('Worktree mode mounts the entire current directory parent read/write, including sibling projects.')
     value['worktree'] = yes('Use parent-directory worktree scope by default?', value['worktree'])
     print('Host CA trust mounts only one read-only CA bundle and changes TLS trust.')
@@ -137,11 +148,11 @@ def questionnaire():
     return value, old
 
 
-def run(command, env, *, capture=False, input=None, timeout=20):
+def run(command, env, *, capture=False, input=None, timeout=20, terminal=False):
     command = list(map(str, command))
     # Login retains its controlling terminal. Other operator commands receive
     # their own process group, so cancellation cannot kill the setup itself.
-    grouped = 'login' not in command
+    grouped = not terminal
     process = None
     try:
         process = subprocess.Popen(command, env=env, start_new_session=grouped,
@@ -163,7 +174,7 @@ def run(command, env, *, capture=False, input=None, timeout=20):
     if process.returncode:
         if capture and '--container-qualify' in command and stderr:
             for line in stderr.decode(errors='replace').splitlines():
-                if line.startswith('claude-container: status='):
+                if line.startswith(PREFIX + 'status='):
                     print(''.join(char for char in line[:2048] if char.isprintable()), file=sys.stderr)
         raise SetupError(f'Setup command failed (exit {process.returncode}): {command[0]} {command[1] if len(command) > 1 else ""}; check prerequisites and retry.')
     return stdout.decode('utf-8') if capture else ''
@@ -205,7 +216,7 @@ def stop_child(process, grouped):
         try:
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            print('claude-container: setup child cleanup could not be confirmed.', file=sys.stderr)
+            print(PREFIX + 'setup child cleanup could not be confirmed.', file=sys.stderr)
 
 
 def record(command, env):
@@ -219,7 +230,7 @@ def record(command, env):
 def host_env(value):
     env = os.environ.copy()
     env.pop('CONTAINER_CONNECTION', None)
-    env.pop('CLAUDE_CONTAINER_MAINTENANCE', None)
+    env.pop(PROFILE.env('MAINTENANCE'), None)
     endpoint = endpoint_url(value['endpoint'])
     if endpoint:
         env['CONTAINER_HOST'] = endpoint
@@ -373,11 +384,11 @@ def copy_inputs(release):
 def dispatcher(root, *, legacy=False):
     # Only a shell-quoted, validated installation path is interpolated as code.
     return ('#!/usr/bin/env bash\nset -Eeuo pipefail\n'
-            '# Managed by claude-container setup.\n'
+            '# Managed by ' + PROFILE.name + ' setup.\n'
             'installation=' + shlex.quote(str(root)) + '\n'
             'for arg in "$@"; do\n'
             '    if [[ "$arg" == --container-help ]]; then\n'
-            '        exec /bin/bash "$installation/current/claude-container.sh" --container-help\n'
+            '        exec /bin/bash "$installation/current/' + PROFILE.wrapper + '" --container-help\n'
             '    fi\n'
             'done\n'
             'exec python3 -I "$installation/current/setup/launch.py" '
@@ -421,8 +432,8 @@ def activate(root, release, command):
     old = os.readlink(root / 'current') if (root / 'current').is_symlink() else None
     token = uuid.uuid4().hex
     pointer = root / ('.current.' + token)
-    command_temp = command.parent / ('.claude-container.' + token)
-    command_backup = command.parent / ('.claude-container.previous.' + token)
+    command_temp = command.parent / ('.' + PROFILE.name + '.' + token)
+    command_backup = command.parent / ('.' + PROFILE.name + '.previous.' + token)
     changed = False
     published = False
     upgrade = command.exists() and command.read_text() == dispatcher(root, legacy=True)
@@ -479,8 +490,8 @@ def activate(root, release, command):
 
 
 def prepare_artifacts(value, previous, release, env, images, refresh, changes):
-    maintenance = env | {'CLAUDE_CONTAINER_MAINTENANCE': '1'}
-    candidate_tag = 'localhost/claude-code:setup-' + release.name
+    maintenance = env | {PROFILE.env('MAINTENANCE'): '1'}
+    candidate_tag = PROFILE.image('agent', 'setup-' + release.name)
     runtime = '' if refresh else images['runtime']
     if runtime:
         run(['podman', 'tag', runtime, candidate_tag], maintenance)
@@ -499,26 +510,26 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
     if can_reuse_guard:
         old = Path(images['guard_release'])
         run(['python3', '-I', old / 'network/control.py', 'preflight', '--installation', old], env)
-        for name in ('claude-egress-guard', 'claude-egress-guard.sha256'):
+        for name in (GUARD, GUARD + '.sha256'):
             shutil.copyfile(old / 'network/bin' / name, release / 'network/bin' / name)
-        (release / 'network/bin/claude-egress-guard').chmod(0o500)
+        (release / 'network/bin' / GUARD).chmod(0o500)
     else:
         toolchain = '' if refresh else images['toolchain']
         if not toolchain:
-            changes.append('Toolchain build requested: localhost/claude-guard-toolchain:setup-' + release.name)
+            changes.append('Toolchain build requested: ' + PROFILE.image('toolchain', 'setup-' + release.name))
             toolchain = build_image(release, 'network/guard-build.Containerfile',
-                                    'localhost/claude-guard-toolchain:setup-' + release.name, maintenance)
+                                    PROFILE.image('toolchain', 'setup-' + release.name), maintenance)
         value['toolchain_image'] = toolchain
         run(['bash', release / 'network/build-guard.sh', release / 'network/bin'],
-            maintenance | {'CLAUDE_GUARD_TOOLCHAIN': toolchain,
-                           'CLAUDE_GUARD_SETUP_CIDFILE': str(release / 'network/bin' / ('.setup-guard.' + uuid.uuid4().hex))}, timeout=None)
+            maintenance | {'SANDBOX_GUARD_TOOLCHAIN': toolchain,
+                           'SANDBOX_GUARD_SETUP_CIDFILE': str(release / 'network/bin' / ('.setup-guard.' + uuid.uuid4().hex))}, timeout=None)
     value['guard_sources_sha256'] = identity
     if value['network'] == 'provider':
         proxy = '' if refresh else images['proxy']
         if not proxy:
-            changes.append('Proxy build requested: localhost/claude-egress:setup-' + release.name)
+            changes.append('Proxy build requested: ' + PROFILE.image('proxy', 'setup-' + release.name))
             proxy = build_image(release, 'network/Containerfile',
-                                'localhost/claude-egress:setup-' + release.name, maintenance)
+                                PROFILE.image('proxy', 'setup-' + release.name), maintenance)
         value['proxy_image'] = proxy
     else:
         value['proxy_image'] = ''
@@ -528,50 +539,59 @@ def smoke(value, release):
     env = runtime_environment(value, release, overrides=False)
     protect_mounts(value, env)
     if value['network'] != 'unrestricted':
-        output = run(['bash', str(release / 'claude-container.sh'), '--container-qualify'],
+        output = run(['bash', str(release / PROFILE.wrapper), '--container-qualify'],
                      env, capture=True, timeout=360)
-        if output.splitlines().count('CLAUDE_QUALIFICATION_OK') != 1:
+        if output.splitlines().count('SANDBOX_QUALIFICATION_OK') != 1:
             raise SetupError('Installed sandbox qualification did not confirm readiness.')
         statuses=[line.split('=',1)[1] for line in output.splitlines()
-                  if line.startswith('CLAUDE_QUALIFICATION_STATUS=')]
+                  if line.startswith('SANDBOX_QUALIFICATION_STATUS=')]
         if len(statuses)!=1 or statuses[0] not in ('locally-qualified','release-measured'):
             raise SetupError('Installed sandbox qualification status is invalid.')
         print('Sandbox qualification: ' + statuses[0])
         if statuses[0]=='locally-qualified':
             print('This installation passed local enforcement checks; its combination is not release-measured. SELinux/AppArmor compatibility is not guaranteed.')
     script = (release / 'setup/smoke.py').read_text()
-    program = ('set -Eeuo pipefail\npython3 - ' + value['network'] + (' 1' if value['trust_ca'] else ' 0')
-               + " <<'CLAUDE_SETUP_SMOKE'\n" + script + '\nCLAUDE_SETUP_SMOKE\n')
-    args = ['bash', str(release / 'claude-container.sh'), '--container-shell']
+    smoke_args = [value['network'], '1' if value['trust_ca'] else '0', PROFILE.home,
+                  PROFILE.config_dir_env, PROFILE.command]
+    program = ('set -Eeuo pipefail\npython3 - ' + ' '.join(map(shlex.quote, smoke_args))
+               + " <<'SANDBOX_SETUP_SMOKE'\n" + script + '\nSANDBOX_SETUP_SMOKE\n')
+    args = ['bash', str(release / PROFILE.wrapper), '--container-shell']
     if value['worktree']:
         args.append('--container-git-worktree')
     output = run(args, env, capture=True, input=program, timeout=90)
-    if output.splitlines().count('CLAUDE_SANDBOX_SETUP_SMOKE_OK') != 1:
+    if output.splitlines().count('SANDBOX_SETUP_SMOKE_OK') != 1:
         raise SetupError('Installed sandbox smoke check did not confirm readiness.')
 
 
 def authenticate(value, release):
     status = 'not applicable' if value['network'] == 'offline' else 'pending'
+    if value['network'] == 'offline':
+        return status
     command = shlex.quote(value['command'])
-    if value['network'] != 'offline' and value['auth'] == 'account':
+    method = value['auth']
+    item = PROFILE.auth[method]
+    if 'login_args' in item:
+        login = item['login_args']
         print('Existing shared account credentials may already be usable. Login is optional and runs inside the selected sandbox.')
-        if yes('Run Claude account login now?'):
+        if yes('Run ' + NAME + ' ' + method + ' login now?'):
             try:
                 # Inherit the terminal directly. Do not capture/log login output.
-                args = ['bash', release / 'claude-container.sh']
+                args = ['bash', release / PROFILE.wrapper]
                 if value['worktree']:
                     args.append('--container-git-worktree')
-                run([*args, 'auth', 'login', '--claudeai'],
-                    runtime_environment(value, release, overrides=False), timeout=None)
-                status = 'verified (Claude account login succeeded; no model request tested)'
+                run([*args, *login], runtime_environment(value, release, overrides=False), timeout=None, terminal=True)
+                status = 'verified (' + NAME + ' ' + method + ' login succeeded; no model request tested)'
             except (SetupError, KeyboardInterrupt):
                 print('Login did not complete; the installed sandbox is still ready.')
         if status == 'pending':
-            print('Next authentication action: ' + command + ' auth login --claudeai (or reuse your selected existing account state).')
-    elif value['network'] != 'offline' and value['auth'] == 'api':
-        print('Authentication pending. Supply ANTHROPIC_API_KEY using the existing runtime environment mechanism; no key is stored by setup.')
+            print('Next authentication action: ' + command + ' ' + ' '.join(map(shlex.quote, login))
+                  + ' (or reuse your selected existing account state).')
+    if 'credential_env' in item:
+        print('Authentication pending. Supply ' + item['credential_env']
+              + ' using the existing runtime environment mechanism; no key is stored by setup.')
         if value['network'] == 'unrestricted':
-            print('The current direct API-key forwarding mechanism is provider mode; select provider/api for environment-key forwarding, or configure Claude credentials explicitly.')
+            print('The current direct API-key forwarding mechanism is provider mode; select provider/' + method
+                  + ' for environment-key forwarding, or configure ' + NAME + ' credentials explicitly.')
     return status
 
 
@@ -609,7 +629,7 @@ def main():
         if previous and Path(previous['command']).resolve() != Path(value['command']).resolve():
             print('  retire previous managed command after successful activation: ' + previous['command'])
         if value['network'] == 'provider':
-            print('  protected profile: anthropic-' + value['auth'])
+            print('  protected profile: ' + PROFILE.policy_profile(value['auth']))
             print('  private egress runtime: ' + value['runtime_dir'])
         for name in ('runtime', 'toolchain', 'proxy'):
             if name in images:
@@ -677,5 +697,5 @@ if __name__ == '__main__':
         print('\nSetup interrupted. Any last activated installation is preserved.', file=sys.stderr)
         sys.exit(130)
     except (SetupError, OSError, ValueError) as error:
-        print('claude-container: setup incomplete: ' + str(error), file=sys.stderr)
+        print(PREFIX + 'setup incomplete: ' + str(error), file=sys.stderr)
         sys.exit(1)

@@ -16,8 +16,8 @@
 #include "guard_landlock.h"
 
 #define GUARD_REVISION "abi3-seccomp-mux-v1"
-#define GUARD_PROXY_PATH "/run/claude-egress/proxy.sock"
-#define GUARD_RUNTIME_PATH "/tmp/claude-runtime"
+#define GUARD_PROXY_PATH "/run/sandbox-egress/proxy.sock"
+#define GUARD_RUNTIME_PATH "/tmp/sandbox-runtime"
 
 /* The bootstrap has no interpreter, NSS lookup, locale initialization, dynamic
  * loading, runtime policy hooks or environment-selected enforcement settings. */
@@ -26,7 +26,7 @@ static void fail(const char *stage)
     int saved_errno = errno;
     char message[256];
     int size = snprintf(message, sizeof(message),
-                        "claude-egress-guard: %s failed (errno=%d); restricted startup stopped\n",
+                        "sandbox-egress-guard: %s failed (errno=%d); restricted startup stopped\n",
                         stage, saved_errno);
     if (size > 0 && (size_t)size < sizeof(message)) {
         const char *cursor = message;
@@ -96,7 +96,7 @@ static long query_abi(void)
     if (abi < GUARD_REQUIRED_ABI) {
         char message[160];
         int size = snprintf(message, sizeof(message),
-                            "claude-egress-guard: Landlock ABI %ld is unsupported; require ABI >= %d\n",
+                            "sandbox-egress-guard: Landlock ABI %ld is unsupported; require ABI >= %d\n",
                             abi, GUARD_REQUIRED_ABI);
         if (size > 0 && (size_t)size < sizeof(message)) {
             ssize_t written = write(STDERR_FILENO, message, (size_t)size);
@@ -158,7 +158,7 @@ static void add_path(int ruleset_fd, const char *path, uint64_t access,
  * connect. The operator-owned transport directory is immutable to the agent. */
 static int connect_proxy(void)
 {
-    int directory = open("/run/claude-egress", O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    int directory = open("/run/sandbox-egress", O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (directory < 0)
         fail("proxy directory open");
     struct stat parent, before, after;
@@ -227,7 +227,7 @@ static void verify_mount_layout(int provider)
         if (strncmp(target, "/tmp/", 5) && strncmp(target, "/run/", 5) &&
             strncmp(target, "/var/tmp/", 9))
             continue;
-        if (provider && !strcmp(target, "/run/claude-egress"))
+        if (provider && !strcmp(target, "/run/sandbox-egress"))
             continue; /* connect_proxy separately verifies owner/mode/read-only. */
         if (!strcmp(target, "/run/.containerenv")) {
             struct stat info;
@@ -268,14 +268,14 @@ static void prepare_runtime(void)
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        puts("claude-egress-guard " GUARD_REVISION " required-abi=3 uapi=linux-v6.6 seccomp=native-x86_64 mux=1");
+        puts("sandbox-egress-guard " GUARD_REVISION " required-abi=3 uapi=linux-v6.6 seccomp=native-x86_64 mux=1");
         return 0;
     }
     int probe = argc == 2 && strcmp(argv[1], "--probe") == 0;
     int provider = argc >= 4 && strcmp(argv[1], "--provider") == 0;
     if (!probe && (argc < 4 || (!provider && strcmp(argv[1], "--offline") != 0) ||
                    strcmp(argv[2], "--") != 0 || argv[3][0] != '/')) {
-        fputs("Usage: claude-egress-guard --version | --probe | (--offline|--provider) -- /absolute/program [args...]\n", stderr);
+        fputs("Usage: sandbox-egress-guard --version | --probe | (--offline|--provider) -- /absolute/program [args...]\n", stderr);
         return 64;
     }
     prepare_descriptors();
@@ -316,7 +316,7 @@ int main(int argc, char **argv)
     install_socket_filter();
     if (setenv("XDG_RUNTIME_DIR", GUARD_RUNTIME_PATH, 1) < 0)
         fail("private runtime environment");
-    fprintf(stderr, "claude-egress-guard: enforced revision=%s abi=%ld\n", GUARD_REVISION, abi);
+    fprintf(stderr, "sandbox-egress-guard: enforced revision=%s abi=%ld\n", GUARD_REVISION, abi);
     execv(argv[3], &argv[3]);
     fail("application exec");
 }

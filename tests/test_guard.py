@@ -12,20 +12,21 @@ import sys
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
-ENABLED = os.environ.get('CLAUDE_GUARD_TESTS') == '1'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sandbox_profile import AGENT_IMAGE, PROFILE, ROOT, env as profile_env
+ENABLED = os.environ.get('SANDBOX_GUARD_TESTS') == '1'
 
 
 @unittest.skipUnless(ENABLED, 'run tests/run-runtime.sh --guard with a prepared toolchain')
 class GuardTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.storage = tempfile.TemporaryDirectory(prefix='guard-component-', dir=os.environ.get('CLAUDE_TEST_STATE_ROOT'))
+        cls.storage = tempfile.TemporaryDirectory(prefix='guard-component-', dir=os.environ.get('SANDBOX_TEST_STATE_ROOT'))
         cls.addClassCleanup(cls.storage.cleanup)
         cls.base = Path(cls.storage.name)
-        cls.binary = cls.base / 'claude-egress-guard'
+        cls.binary = cls.base / 'sandbox-egress-guard'
         cls.mock = cls.base / 'guard-component-mock'
-        cls.toolchain = os.environ['CLAUDE_GUARD_TOOLCHAIN']
+        cls.toolchain = os.environ['SANDBOX_GUARD_TOOLCHAIN']
         if not re.fullmatch(r'(sha256:)?[a-f0-9]{64}', cls.toolchain):
             raise RuntimeError('test toolchain must be an immutable prepared image ID')
         cls.compile(cls.binary)
@@ -50,18 +51,18 @@ class GuardTests(unittest.TestCase):
     def setUp(self):
         self.fixture = Path(tempfile.mkdtemp(prefix='case-', dir=self.base))
         self.addCleanup(shutil.rmtree, self.fixture)
-        for name in ('tmp', 'run', 'var/tmp', 'run/claude-egress'):
+        for name in ('tmp', 'run', 'var/tmp', 'run/sandbox-egress'):
             (self.fixture / name).mkdir(parents=True, exist_ok=True)
         (self.fixture / 'mountinfo').write_text('1 0 0:1 / /tmp rw - tmpfs tmpfs rw\n2 0 0:2 / /run rw - tmpfs tmpfs rw\n3 0 0:3 / /var/tmp rw - tmpfs tmpfs rw\n')
         self.marker = self.fixture / 'agent-started'
-        self.env = os.environ | {'CLAUDE_GUARD_TEST_ROOT': str(self.fixture),
-                                'CLAUDE_GUARD_TEST_MODE': 'offline',
-                                'CLAUDE_GUARD_TEST_ABI': '3', 'CLAUDE_GUARD_TEST_FAULT': ''}
+        self.env = os.environ | {'SANDBOX_GUARD_TEST_ROOT': str(self.fixture),
+                                'SANDBOX_GUARD_TEST_MODE': 'offline',
+                                'SANDBOX_GUARD_TEST_ABI': '3', 'SANDBOX_GUARD_TEST_FAULT': ''}
 
     def run_guard(self, *command, production=False, mode='offline', **environment):
         binary = self.binary if production else self.mock
         return subprocess.run([str(binary), '--' + mode, '--', *command],
-                              env=self.env | {'CLAUDE_GUARD_TEST_MODE': mode} | environment,
+                              env=self.env | {'SANDBOX_GUARD_TEST_MODE': mode} | environment,
                               input='synthetic stdin', capture_output=True, text=True, timeout=10)
 
     def sentinel(self):
@@ -74,7 +75,7 @@ class GuardTests(unittest.TestCase):
         phentsize, phnum = struct.unpack_from('<HH', data, 54)
         types = {struct.unpack_from('<I', data, phoff + i * phentsize)[0] for i in range(phnum)}
         self.assertTrue(types.isdisjoint({2, 3}), 'dynamic or interpreter program header')
-        self.assertNotIn(b'CLAUDE_GUARD_TEST_', data)
+        self.assertNotIn(b'SANDBOX_GUARD_TEST_', data)
         repeated = self.base / 'guard-repeat'
         self.compile(repeated)
         self.assertEqual(hashlib.sha256(data).digest(), hashlib.sha256(repeated.read_bytes()).digest())
@@ -96,17 +97,17 @@ class GuardTests(unittest.TestCase):
 
     def test_old_abi_and_setup_errors_never_execute_program(self):
         for values, stage in (
-            ({'CLAUDE_GUARD_TEST_ABI': '1'}, 'ABI 1 is unsupported'),
-            ({'CLAUDE_GUARD_TEST_ABI': '2'}, 'ABI 2 is unsupported'),
-            ({'CLAUDE_GUARD_TEST_FAULT': 'query'}, 'ABI query'),
-            ({'CLAUDE_GUARD_TEST_FAULT': 'descriptors'}, 'descriptor cleanup'),
-            ({'CLAUDE_GUARD_TEST_FAULT': 'filesystem'}, 'private runtime directory validation'),
-            ({'CLAUDE_GUARD_TEST_FAULT': 'oci-profile'}, 'existing OCI seccomp validation'),
-            ({'CLAUDE_GUARD_TEST_FAULT': 'privileges'}, 'no_new_privs'),
-            ({'CLAUDE_GUARD_TEST_FAULT': 'create'}, 'ruleset creation'),
-            ({'CLAUDE_GUARD_TEST_FAULT': 'rule'}, 'path rule installation'),
-            ({'CLAUDE_GUARD_TEST_FAULT': 'restrict'}, 'Landlock enforcement'),
-            ({'CLAUDE_GUARD_TEST_FAULT': 'filter'}, 'seccomp filter installation'),
+            ({'SANDBOX_GUARD_TEST_ABI': '1'}, 'ABI 1 is unsupported'),
+            ({'SANDBOX_GUARD_TEST_ABI': '2'}, 'ABI 2 is unsupported'),
+            ({'SANDBOX_GUARD_TEST_FAULT': 'query'}, 'ABI query'),
+            ({'SANDBOX_GUARD_TEST_FAULT': 'descriptors'}, 'descriptor cleanup'),
+            ({'SANDBOX_GUARD_TEST_FAULT': 'filesystem'}, 'private runtime directory validation'),
+            ({'SANDBOX_GUARD_TEST_FAULT': 'oci-profile'}, 'existing OCI seccomp validation'),
+            ({'SANDBOX_GUARD_TEST_FAULT': 'privileges'}, 'no_new_privs'),
+            ({'SANDBOX_GUARD_TEST_FAULT': 'create'}, 'ruleset creation'),
+            ({'SANDBOX_GUARD_TEST_FAULT': 'rule'}, 'path rule installation'),
+            ({'SANDBOX_GUARD_TEST_FAULT': 'restrict'}, 'Landlock enforcement'),
+            ({'SANDBOX_GUARD_TEST_FAULT': 'filter'}, 'seccomp filter installation'),
         ):
             with self.subTest(values=values):
                 result = self.run_guard(*self.sentinel(), **values)
@@ -118,11 +119,11 @@ class GuardTests(unittest.TestCase):
         command = [sys.executable, '-c', 'import os,sys,json; print(json.dumps([sys.argv[1:],sys.stdin.read(),os.environ["XDG_RUNTIME_DIR"]])); sys.exit(37)', 'space value', '']
         result = self.run_guard(*command, XDG_RUNTIME_DIR='/unsafe/state')
         self.assertEqual(result.returncode, 37, result.stderr)
-        self.assertEqual(json.loads(result.stdout), [['space value', ''], 'synthetic stdin', '/tmp/claude-runtime'])
+        self.assertEqual(json.loads(result.stdout), [['space value', ''], 'synthetic stdin', '/tmp/sandbox-runtime'])
         self.assertIn('COMPONENT MOCK', result.stderr)
 
     def test_provider_requires_exact_private_socket_on_readonly_mount(self):
-        endpoint = self.fixture / 'run/claude-egress/proxy.sock'
+        endpoint = self.fixture / 'run/sandbox-egress/proxy.sock'
         listener = socket.socket(socket.AF_UNIX)
         self.addCleanup(listener.close)
         directory_fd = os.open(endpoint.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -141,7 +142,7 @@ class GuardTests(unittest.TestCase):
         for permission, fault, stage in ((0o777, '', 'proxy identity/read-only mount validation'),
                                          (0o700, 'writable-proxy', 'proxy identity/read-only mount validation')):
             endpoint.chmod(permission)
-            result = self.run_guard(*self.sentinel(), mode='provider', CLAUDE_GUARD_TEST_FAULT=fault)
+            result = self.run_guard(*self.sentinel(), mode='provider', SANDBOX_GUARD_TEST_FAULT=fault)
             self.assertEqual(result.returncode, 78, result.stderr)
             self.assertIn(stage, result.stderr)
             self.assertFalse(self.marker.exists())
@@ -170,7 +171,7 @@ class GuardTests(unittest.TestCase):
         self.assertIn('standard I/O validation', result.stderr)
 
     def test_runtime_symlink_and_unsafe_mode_are_rejected(self):
-        runtime = self.fixture / 'tmp/claude-runtime'
+        runtime = self.fixture / 'tmp/sandbox-runtime'
         runtime.symlink_to(self.fixture / 'run', target_is_directory=True)
         result = self.run_guard('/bin/true')
         self.assertEqual(result.returncode, 78)
@@ -182,7 +183,7 @@ class GuardTests(unittest.TestCase):
         self.assertIn('runtime directory validation', result.stderr)
 
     def production_container(self, script, mode='offline', extra=(), program=None, timeout=60):
-        image = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
+        image = os.environ.get(profile_env('IMAGE'), AGENT_IMAGE)
         command = ['podman', 'run', '--rm', '--interactive', '--network=none',
                    '--pid=private', '--ipc=private', '--read-only',
                    '--cap-drop=all', '--security-opt=no-new-privileges',
@@ -208,7 +209,8 @@ class GuardTests(unittest.TestCase):
             os.close(directory)
         listener.listen(4)
         (self.fixture / 'alias.sock').symlink_to('external.sock')
-        result = self.production_container((ROOT / 'tests/guard_runtime_fixture.py').read_text())
+        fixture = 'AGENT = ' + repr(PROFILE.command) + '\n' + (ROOT / 'tests/guard_runtime_fixture.py').read_text()
+        result = self.production_container(fixture)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)['native_guard'], 'passed')
         print('real guarded runtime: ' + result.stdout.strip(), flush=True)
@@ -233,7 +235,7 @@ class GuardTests(unittest.TestCase):
             os.close(directory)
         (self.fixture / 'alias.sock').symlink_to('stream.sock')
         os.link(self.fixture / 'stream.sock', self.fixture / 'hardlink.sock')
-        image = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
+        image = os.environ.get(profile_env('IMAGE'), AGENT_IMAGE)
         # Unguarded network=none positive control reaches every synthetic type.
         control = "import socket;\nfor path,kind in [('stream.sock',1),('dgram.sock',2),('seq.sock',5)]:\n s=socket.socket(socket.AF_UNIX,kind); s.connect('/workspace/'+path); s.send(b'unguarded-control'); s.close()\nsocket.socket(40,socket.SOCK_STREAM).close()"
         result = subprocess.run(['podman', 'run', '--rm', '--network=none',
@@ -292,7 +294,7 @@ class GuardTests(unittest.TestCase):
 
     def test_real_provider_preconnect_and_descriptor_contract(self):
         import threading
-        endpoint = self.fixture / 'run/claude-egress/proxy.sock'
+        endpoint = self.fixture / 'run/sandbox-egress/proxy.sock'
         endpoint.parent.chmod(0o700)
         listener = socket.socket(socket.AF_UNIX)
         self.addCleanup(listener.close)
@@ -315,7 +317,7 @@ class GuardTests(unittest.TestCase):
         worker.start()
         script = "import os,socket; s=socket.socket(fileno=3); s.setblocking(True); s.sendall(b'approved-channel'); assert s.recv(32)==b'policy-channel-only'; print('provider-channel-ok')"
         result = self.production_container(script, mode='provider', extra=(
-            '--volume', f'{endpoint.parent}:/run/claude-egress:ro'))
+            '--volume', f'{endpoint.parent}:/run/sandbox-egress:ro'))
         worker.join(12)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(received, [b'approved-channel'])
@@ -329,7 +331,7 @@ class GuardTests(unittest.TestCase):
     def test_guarded_multiplex_control_pressure_preserves_tls(self):
         self.guarded_multiplex(fault='pressure')
 
-    @unittest.skipUnless(os.environ.get('CLAUDE_IDLE_TESTS') == '1',
+    @unittest.skipUnless(os.environ.get('SANDBOX_IDLE_TESTS') == '1',
                          'run tests/run-runtime.sh --guard-idle for the 305-second idle check')
     def test_guarded_multiplex_idle_resume(self):
         self.guarded_multiplex(idle=True)
@@ -340,7 +342,7 @@ class GuardTests(unittest.TestCase):
         harness = NetworkRuntime('test_provider_uses_real_proxy_and_cleans_resources')
         harness.guard_output = type('Output', (), {'name': str(self.base)})()
         # setUp expects packaged assets; provide the component's real digest.
-        (self.base / 'claude-egress-guard.sha256').write_text(hashlib.sha256(self.binary.read_bytes()).hexdigest() + '  claude-egress-guard\n')
+        (self.base / 'sandbox-egress-guard.sha256').write_text(hashlib.sha256(self.binary.read_bytes()).hexdigest() + '  sandbox-egress-guard\n')
         harness.setUp()
         self.addCleanup(harness.doCleanups)
         context, environment = harness.provider_fixture()
@@ -369,7 +371,7 @@ class GuardTests(unittest.TestCase):
                               '--volume', f'{logs}:/logs:rw',
                               '--env', 'EGRESS_PROFILE=controlled-test',
                               '--env', 'EGRESS_SESSION=guarded-synthetic',
-                              environment['CLAUDE_CONTAINER_EGRESS_IMAGE'])
+                              environment[profile_env('EGRESS_IMAGE')])
         self.addCleanup(harness.podman, 'rm', '--force', '--time', '0', '--ignore', name)
         harness.podman('start', name)
         deadline = time.monotonic() + 10
@@ -389,13 +391,13 @@ class GuardTests(unittest.TestCase):
         if idle:
             script += '\n' + (ROOT / 'tests/idle_mux_fixture.py').read_text()
         (self.fixture / 'client.py').write_text(script)
-        extra = ['--volume', f'{selected_transport}:/run/claude-egress:ro',
-                 '--volume', f'{ROOT / "network/relay.py"}:/opt/claude-egress/relay.py:ro',
-                 '--volume', f'{ROOT / "network/mux.py"}:/opt/claude-egress/mux.py:ro',
+        extra = ['--volume', f'{selected_transport}:/run/sandbox-egress:ro',
+                 '--volume', f'{ROOT / "network/relay.py"}:/opt/sandbox-egress/relay.py:ro',
+                 '--volume', f'{ROOT / "network/mux.py"}:/opt/sandbox-egress/mux.py:ro',
                  '--env', 'HTTPS_PROXY=http://127.0.0.1:18080',
                  '--env', 'https_proxy=http://127.0.0.1:18080']
         result = self.production_container('', mode='provider', extra=extra, program=[
-            '/usr/bin/python3', '-I', '/opt/claude-egress/relay.py',
+            '/usr/bin/python3', '-I', '/opt/sandbox-egress/relay.py',
             '/usr/bin/python3', '-I', '/workspace/client.py'], timeout=420 if idle else 120 if fault else 60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr + harness.podman('logs', name))
         self.assertIn('guarded-mux-stream-failure-recovered' if fault else 'guarded-mux-tls-ok', result.stdout)
@@ -410,12 +412,12 @@ class GuardTests(unittest.TestCase):
         destination = self.fixture / 'packaged'
         destination.mkdir(mode=0o700)
         result = subprocess.run(['bash', str(ROOT / 'network/build-guard.sh'), str(destination)],
-            env=os.environ | {'CLAUDE_CONTAINER_MAINTENANCE': '1', 'CLAUDE_GUARD_TOOLCHAIN': self.toolchain},
+            env=os.environ | {profile_env('MAINTENANCE'): '1', 'SANDBOX_GUARD_TOOLCHAIN': self.toolchain},
             capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual((destination / 'claude-egress-guard').read_bytes(), self.binary.read_bytes())
-        self.assertEqual((destination / 'claude-egress-guard.sha256').read_text(),
-                         hashlib.sha256(self.binary.read_bytes()).hexdigest() + '  claude-egress-guard\n')
+        self.assertEqual((destination / 'sandbox-egress-guard').read_bytes(), self.binary.read_bytes())
+        self.assertEqual((destination / 'sandbox-egress-guard.sha256').read_text(),
+                         hashlib.sha256(self.binary.read_bytes()).hexdigest() + '  sandbox-egress-guard\n')
 
     def test_no_runtime_bypass_and_loader_environment_cannot_preempt_guard(self):
         # This launch has no private runtime tmpfs and must reject setup before
@@ -425,7 +427,7 @@ class GuardTests(unittest.TestCase):
         result = self.run_guard(*self.sentinel(), production=True, LD_PRELOAD=str(payload),
                                 LD_AUDIT=str(payload), BASH_ENV=str(payload), ENV=str(payload),
                                 PYTHONSTARTUP=str(payload), NODE_OPTIONS='--require=' + str(payload),
-                                CLAUDE_GUARD_TEST_ABI='999')
+                                SANDBOX_GUARD_TEST_ABI='999')
         self.assertEqual(result.returncode, 78)
         self.assertFalse(self.marker.exists())
         result = subprocess.run([str(self.binary), '--probe', '--', '/bin/true'], capture_output=True, text=True)

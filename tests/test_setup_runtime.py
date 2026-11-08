@@ -13,10 +13,10 @@ from test_setup import pty_run
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@unittest.skipUnless(os.environ.get('CLAUDE_RUNTIME_TESTS') == '1', 'requires real rootless WSL engine')
+@unittest.skipUnless(os.environ.get('SANDBOX_RUNTIME_TESTS') == '1', 'requires real rootless WSL engine')
 class SetupRuntime(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='setup-acceptance-', dir=os.environ['CLAUDE_TEST_STATE_ROOT'])
+        self.tmp = tempfile.TemporaryDirectory(prefix='setup-acceptance-', dir=os.environ['SANDBOX_TEST_STATE_ROOT'])
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.home = self.base / 'home'
@@ -115,7 +115,7 @@ class SetupRuntime(unittest.TestCase):
         first = json.loads((release / 'setup.json').read_text())
         self.tags.add(first['image'])
         self.assertEqual(first['network'], 'provider')
-        guard = (release / 'network/bin/claude-egress-guard').read_bytes()
+        guard = (release / 'network/bin/sandbox-egress-guard').read_bytes()
         # No exported wrapper/network settings in this fresh launch environment.
         result = subprocess.run([str(self.command), '--version'], cwd=self.workspace,
                                 env={'PATH': self.env['PATH'], 'HOME': self.env['HOME']},
@@ -149,7 +149,7 @@ class SetupRuntime(unittest.TestCase):
         self.assertEqual(code, 0, output)
         second = (self.root / 'current').resolve()
         self.assertNotEqual(release, second)
-        self.assertEqual((second / 'network/bin/claude-egress-guard').read_bytes(), guard)
+        self.assertEqual((second / 'network/bin/sandbox-egress-guard').read_bytes(), guard)
         self.assertNotIn('Packaged guard', output)
         self.assertTrue(release.exists())
         self.assertEqual(report.read_bytes(), original_report)
@@ -162,7 +162,7 @@ class SetupRuntime(unittest.TestCase):
         self.assertEqual(len(offline_reports), 1)
         offline_report = offline_reports[0].read_bytes()
         self.assertEqual(json.loads(offline_report)['identity']['mode'], 'offline')
-        self.assertEqual((active / 'network/bin/claude-egress-guard').read_bytes(), guard)
+        self.assertEqual((active / 'network/bin/sandbox-egress-guard').read_bytes(), guard)
         # A reviewed update with an intentionally failing smoke must not activate.
         source = self.base / 'failed-source'
         shutil.copytree(active, source)

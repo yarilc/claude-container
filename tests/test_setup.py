@@ -16,10 +16,22 @@ import time
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sandbox_profile import GUARD, PROFILE, ROOT, env as name, test_setting
 sys.path.insert(0, str(ROOT / 'setup'))
 import common
 import diagnostics
+
+WRAPPER = PROFILE.wrapper
+COMMAND = PROFILE.name
+CONFIG_HOME = PROFILE.config_home
+CONFIG_ENV = PROFILE.config_dir_env
+YOLO_ENV = PROFILE.approval_bypass_env
+MAINTENANCE = name('MAINTENANCE')
+LOGIN_METHOD = next(method for method, item in PROFILE.auth.items() if 'login_args' in item)
+KEY_METHOD = next(method for method, item in PROFILE.auth.items() if 'credential_env' in item)
+LOGIN_ARGS = PROFILE.auth[LOGIN_METHOD]['login_args']
+CREDENTIAL = PROFILE.auth[KEY_METHOD]['credential_env']
 
 spec = importlib.util.spec_from_file_location('sandbox_setup', ROOT / 'setup/setup.py')
 setup = importlib.util.module_from_spec(spec)
@@ -80,7 +92,7 @@ FAKE_PODMAN = r'''#!/usr/bin/env python3
 import json, os, sys
 args=sys.argv[1:]
 with open(os.environ['SETUP_TEST_LOG'], 'a') as output:
-    output.write(json.dumps({'args':args, 'maintenance':os.environ.get('CLAUDE_CONTAINER_MAINTENANCE'),
+    output.write(json.dumps({'args':args, 'maintenance':os.environ.get('@MAINTENANCE@'),
                             'endpoint':os.environ.get('CONTAINER_HOST')})+'\n')
 if os.environ.get('SETUP_TEST_FAIL') == 'query' and 'info' in args: sys.exit(125)
 if 'info' in args:
@@ -102,15 +114,15 @@ elif args[0]=='run' and '--cidfile' in args:
     sys.exit(17)
 elif args[0]=='rm': sys.exit(0)
 else: sys.exit(125)
-'''
+'''.replace('@MAINTENANCE@', MAINTENANCE)
 
 
 class SetupTests(unittest.TestCase):
     def setUp(self):
-        parent = os.environ.get('CLAUDE_TEST_TMPDIR') or os.environ.get('CLAUDE_TEST_STATE_ROOT')
+        parent = test_setting('TEST_TMPDIR') or test_setting('TEST_STATE_ROOT')
         if not parent:
             parent = '/home/node' if Path('/home/node').is_dir() else str(Path.home())
-        self.tmp = tempfile.TemporaryDirectory(prefix='claude-setup-', dir=parent)
+        self.tmp = tempfile.TemporaryDirectory(prefix='sandbox-setup-', dir=parent)
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.home = self.base / 'home'
@@ -126,8 +138,8 @@ class SetupTests(unittest.TestCase):
         fake.write_text(FAKE_PODMAN)
         fake.chmod(0o700)
         self.value = common.defaults(self.base / 'installed')
-        self.value.update(network='unrestricted', auth='account', endpoint='local',
-                          command=str(self.bin / 'claude-container'))
+        self.value.update(network='unrestricted', auth=LOGIN_METHOD, endpoint='local',
+                          command=str(self.bin / COMMAND))
 
     def calls(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
@@ -148,7 +160,7 @@ class SetupTests(unittest.TestCase):
         if value['network'] != 'offline':
             result += [('Authentication method', value['auth'])]
         result += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
-                   ('Delegate the host Podman API', 'no'), ('Enable Claude permission bypass', 'no'),
+                   ('Delegate the host Podman API', 'no'), ('Enable ' + PROFILE.display_name + ' permission bypass', 'no'),
                    ('Use parent-directory worktree scope', 'no'), ('Trust a host CA bundle', 'no'),
                    ('Managed launch command path', value['command']), ('Podman launch endpoint', value['endpoint'])]
         if value['network'] == 'provider':
@@ -158,12 +170,12 @@ class SetupTests(unittest.TestCase):
     def test_setup_entry_rejects_pipes_and_mixed_arguments_but_help_is_independent(self):
         for args in (['--container-setup'], ['--container-setup', '--version'],
                      ['--container-shell', '--container-setup']):
-            result = subprocess.run(['bash', str(ROOT / 'claude-container.sh'), *args],
+            result = subprocess.run(['bash', str(ROOT / WRAPPER), *args],
                                     env=self.env, capture_output=True, text=True, cwd=self.workspace)
             self.assertNotEqual(result.returncode, 0)
         for args in (['--container-setup', '--container-help'], ['--container-help', '--container-setup']):
-            result = subprocess.run(['bash', str(ROOT / 'claude-container.sh'), *args], env=self.env | {
-                'CLAUDE_CONTAINER_NETWORK': 'invalid'}, capture_output=True, text=True)
+            result = subprocess.run(['bash', str(ROOT / WRAPPER), *args], env=self.env | {
+                name('NETWORK'): 'invalid'}, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0)
             self.assertIn('--container-setup', result.stdout)
         self.assertFalse(self.calls())
@@ -181,10 +193,10 @@ class SetupTests(unittest.TestCase):
         for mode in (None, ''):
             env = self.env.copy()
             if mode is not None:
-                env['CLAUDE_CONTAINER_NETWORK'] = mode
+                env[name('NETWORK')] = mode
             for args, message in cases:
                 with self.subTest(mode=mode, args=args):
-                    result = subprocess.run(['/bin/bash', str(ROOT / 'claude-container.sh'), *args],
+                    result = subprocess.run(['/bin/bash', str(ROOT / WRAPPER), *args],
                                             cwd=self.workspace, env=env, text=True,
                                             capture_output=True, timeout=10)
                     self.assertNotEqual(result.returncode, 0)
@@ -192,13 +204,13 @@ class SetupTests(unittest.TestCase):
                     self.assertEqual(result.stdout, '')
                     if args != ['--container-qualify-probe']:
                         self.assertNotIn('setup required:', result.stderr)
-            result = subprocess.run(['/bin/bash', str(ROOT / 'claude-container.sh'),
+            result = subprocess.run(['/bin/bash', str(ROOT / WRAPPER),
                                      '--container-setup', '--container-qualify', '--container-help'],
-                                    cwd=self.workspace, env=env | {'CLAUDE_YOLO': 'invalid'},
+                                    cwd=self.workspace, env=env | {YOLO_ENV: 'invalid'},
                                     text=True, capture_output=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Container options:', result.stdout)
-            code, output = pty_run(['/bin/bash', str(ROOT / 'claude-container.sh')],
+            code, output = pty_run(['/bin/bash', str(ROOT / WRAPPER)],
                                    env, self.workspace, [])
             self.assertEqual(code, 1, output)
             self.assertIn('setup required:', output)
@@ -236,10 +248,10 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(stream.finish(), b'')
 
     def test_pty_questionnaire_before_invalid_provider_runtime_and_missing_image(self):
-        env = self.env | {'CLAUDE_CONTAINER_NETWORK': 'provider', 'SETUP_TEST_MISSING': '1',
+        env = self.env | {name('NETWORK'): 'provider', 'SETUP_TEST_MISSING': '1',
                           'SETUP_TEST_ENGINE': 'true linux false'}
         answers = self.answers() + [('Refresh prepared images', 'no'), ('Apply this installation', 'no')]
-        code, output = pty_run(['bash', str(ROOT / 'claude-container.sh'), '--container-setup'], env,
+        code, output = pty_run(['bash', str(ROOT / WRAPPER), '--container-setup'], env,
                                self.workspace, answers)
         self.assertEqual(code, 1, output)
         self.assertIn('prepare/build missing image', output)
@@ -252,16 +264,16 @@ class SetupTests(unittest.TestCase):
             # Provider/account defaults remain selected through input retries;
             # requesting delegation must not silently broaden the network mode.
             answers = iter([str(self.base / 'installed'), 'invalid', '', '', 'shared', '',
-                            'yes', '', 'no', 'no', 'no', str(self.bin / 'claude-container'), 'default', ''])
+                            'yes', '', 'no', 'no', 'no', str(self.bin / COMMAND), 'default', ''])
             with patch('builtins.input', side_effect=lambda prompt: next(answers)), patch('builtins.print'):
                 value, old = setup.questionnaire()
             self.assertIsNone(old)
             self.assertEqual(value['network'], 'provider')
             self.assertFalse(value['podman'])
-            self.assertEqual(value['auth'], 'account')
+            self.assertEqual(value['auth'], LOGIN_METHOD)
 
     def test_questionnaire_cancellation_has_no_mutation(self):
-        code, output = pty_run(['bash', str(ROOT / 'claude-container.sh'), '--container-setup'],
+        code, output = pty_run(['bash', str(ROOT / WRAPPER), '--container-setup'],
                                self.env, self.workspace, [('Protected native installation directory', None)])
         self.assertEqual(code, 130, output)
         self.assertFalse(self.calls())
@@ -374,14 +386,82 @@ class SetupTests(unittest.TestCase):
     def test_manifest_copies_complete_native_inputs_without_credentials(self):
         root, release = self.release()
         self.assertEqual(set(common.MANIFEST), {str(p.relative_to(release)) for p in release.rglob('*') if p.is_file()} - {'setup.json'})
-        self.assertFalse((release / '.claude').exists())
+        self.assertFalse((release / CONFIG_HOME).exists())
         self.assertFalse((release / '.git').exists())
         self.assertEqual((release / 'network/relay.py').stat().st_mode & 0o777, 0o644)
         self.assertEqual((release / 'network/tls_client_hello.py').read_bytes(), (ROOT / 'network/tls_client_hello.py').read_bytes())
-        self.assertEqual((release / 'claude-container.sh').stat().st_mode & 0o777, 0o700)
-        self.assertEqual((release / 'network/policies/default.json').stat().st_mode & 0o777, 0o600)
+        self.assertEqual((release / WRAPPER).stat().st_mode & 0o777, 0o700)
+        self.assertEqual((release / 'agent/policies/default.json').stat().st_mode & 0o777, 0o600)
         with patch.dict(os.environ, self.env, clear=True):
             common.protect_mounts(self.value, common.runtime_environment(self.value, release, overrides=False))
+
+    def test_profile_and_policy_are_installed_validated_and_bound_to_the_release(self):
+        root, release = self.release()
+        for item in ('agent/profile.json', 'agent/policies/default.json'):
+            self.assertEqual((release / item).read_bytes(), (ROOT / item).read_bytes())
+        self.assertEqual(common.agent_profile.load(release / 'agent/profile.json', writable=[]).value, PROFILE.value)
+        provider = self.value | {'network': 'provider', 'runtime_dir': str(self.base / 'egress')}
+        with patch.dict(os.environ, self.env, clear=True):
+            env = common.runtime_environment(provider, release, overrides=False)
+        self.assertEqual(env[name('NETWORK_POLICY')], str(release / 'agent/policies/default.json'))
+        self.assertEqual(env[name('NETWORK_PROFILE')], PROFILE.policy_profile(LOGIN_METHOD))
+        command = Path(self.value['command'])
+        setup.activate(root, release, command)
+        profile = release / 'agent/profile.json'
+        original = profile.read_bytes()
+        for damage in ('mode', 'content'):
+            with self.subTest(damage=damage):
+                self.log.unlink(missing_ok=True)
+                if damage == 'mode':
+                    profile.chmod(0o666)
+                else:
+                    profile.write_text('{"schema": 1}')
+                result = subprocess.run([str(command), '--version'], cwd=self.workspace, env=self.env,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, '')
+                self.assertRegex(result.stderr, 'invalid or unsafe managed configuration|invalid managed installation')
+                self.assertFalse(self.calls())
+                profile.chmod(0o644)
+                profile.write_bytes(original)
+
+    def test_rollback_keeps_the_profile_of_the_restored_release(self):
+        root, first = self.release()
+        command = Path(self.value['command'])
+        setup.activate(root, first, command)
+        _, second = self.release('second')
+        changed = json.loads((second / 'agent/profile.json').read_text()) | {'display_name': 'Changed'}
+        (second / 'agent/profile.json').write_text(json.dumps(changed))
+        real_replace = setup.os.replace
+        def interrupted(source, target):
+            if Path(target) == root / 'current':
+                raise KeyboardInterrupt
+            return real_replace(source, target)
+        with patch.object(setup.os, 'replace', side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                setup.activate(root, second, command)
+        active = setup.current_release(root)
+        self.assertEqual(active, first)
+        self.assertEqual((active / 'agent/profile.json').read_bytes(), (ROOT / 'agent/profile.json').read_bytes())
+        self.assertEqual((active / 'agent/policies/default.json').read_bytes(), (first / 'agent/policies/default.json').read_bytes())
+
+    def test_workspace_decoy_profile_is_ignored_by_the_managed_launcher(self):
+        root, release = self.release()
+        command = Path(self.value['command'])
+        setup.activate(root, release, command)
+        decoy = json.loads((ROOT / 'agent/profile.json').read_text()) | {'env_prefix': 'DECOY_CONTAINER'}
+        for base in (self.workspace, self.workspace / 'network'):
+            (base / 'agent/policies').mkdir(parents=True, exist_ok=True)
+            (base / 'agent/profile.json').write_text(json.dumps(decoy))
+        (self.workspace / 'network/agent_profile.py').write_text('raise SystemExit("decoy loader executed")\n')
+        (release / WRAPPER).write_text("""#!/bin/bash
+exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ if k.endswith("_NETWORK_POLICY"))))'
+""")
+        result = subprocess.run([str(command), '--version'], cwd=self.workspace, env=self.env,
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [name('NETWORK_POLICY')])
+        self.assertNotIn('decoy', result.stderr)
 
     def test_paths_reject_writable_ancestors_overlap_and_escaped_state(self):
         unsafe = self.base / 'unsafe'
@@ -391,9 +471,9 @@ class SetupTests(unittest.TestCase):
             common.trusted(unsafe / 'installation', missing=True)
         state = self.base / 'state'
         state.mkdir(mode=0o700)
-        (state / '.claude').symlink_to(self.base / 'outside')
+        (state / CONFIG_HOME).symlink_to(self.base / 'outside')
         with self.assertRaises(common.SetupError):
-            common.writable_mounts(self.env | {'CLAUDE_CONTAINER_STATE_DIR': str(state)})
+            common.writable_mounts(self.env | {name('STATE_DIR'): str(state)})
         with self.assertRaises(common.SetupError):
             common.private(self.workspace)
         self.assertEqual(self.workspace.stat().st_mode & 0o777, 0o755)
@@ -445,7 +525,7 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(root.stat().st_mode & 0o777, 0o700)
         release = root / 'releases/first'
         release.mkdir(parents=True)
-        command = self.base / 'new-bin/nested/claude-container'
+        command = self.base / ('new-bin/nested/' + COMMAND)
         setup.activate(root, release, command)
         self.assertTrue(command.is_file())
         self.assertEqual(command.parent.stat().st_mode & 0o777, 0o700)
@@ -453,7 +533,7 @@ class SetupTests(unittest.TestCase):
     def test_existing_protected_installation_root_does_not_require_private_mode(self):
         root = Path(self.value['installation'])
         root.mkdir(mode=0o755)
-        manual = root / 'claude-container.sh'
+        manual = root / WRAPPER
         manual.write_text('existing manual installation')
         with setup.installation_lock(root):
             self.assertEqual(root.stat().st_mode & 0o777, 0o755)
@@ -469,7 +549,7 @@ class SetupTests(unittest.TestCase):
     def test_path_guidance_has_executable_export_without_changing_profile(self):
         directory = self.base / 'command with spaces'
         with patch.dict(os.environ, self.env, clear=True), patch('builtins.print') as output:
-            setup.path_guidance(str(directory / 'claude-container'))
+            setup.path_guidance(str(directory / COMMAND))
         lines = [call.args[0] for call in output.call_args_list]
         export = next(line.strip() for line in lines if line.strip().startswith('export PATH='))
         result = subprocess.run(['bash', '-c', export + '\nprintf "%s" "$PATH"'], env=self.env,
@@ -479,12 +559,12 @@ class SetupTests(unittest.TestCase):
         self.assertIn('~/.bashrc', '\n'.join(lines))
         self.assertFalse((self.home / '.bashrc').exists())
         with patch.dict(os.environ, self.env | {'PATH': str(directory)}, clear=True), patch('builtins.print') as output:
-            setup.path_guidance(str(directory / 'claude-container'))
+            setup.path_guidance(str(directory / COMMAND))
             output.assert_not_called()
 
     def test_activation_preserves_flat_install_and_supports_atomic_rerun(self):
         root, first = self.release()
-        manual = root / 'claude-container.sh'
+        manual = root / WRAPPER
         manual.write_text('manual wrapper remains')
         command = Path(self.value['command'])
         setup.activate(root, first, command)
@@ -506,7 +586,7 @@ class SetupTests(unittest.TestCase):
         self.assertFalse((root / 'current').exists())
         self.assertFalse(command.exists())
         self.assertFalse(list(root.glob('.current.*')))
-        self.assertFalse(list(command.parent.glob('.claude-container.*')))
+        self.assertFalse(list(command.parent.glob('.' + COMMAND + '.*')))
 
     def test_unrelated_command_and_interrupted_update_leave_previous_release(self):
         root, first = self.release()
@@ -537,7 +617,7 @@ class SetupTests(unittest.TestCase):
 
     def test_recipe_acquisition_preserves_pins_and_build_failure(self):
         _, release = self.release()
-        env = self.env | {'CLAUDE_CONTAINER_MAINTENANCE': '1'}
+        env = self.env | {name('MAINTENANCE'): '1'}
         with patch.object(setup, 'image_identity', side_effect=['', 'sha256:' + 'b' * 64]):
             identity = setup.build_image(release, 'network/guard-build.Containerfile', 'localhost/test:unique', env)
         self.assertEqual(identity, 'sha256:' + 'b' * 64)
@@ -559,7 +639,7 @@ class SetupTests(unittest.TestCase):
             self.assertIn(':setup-', value['image'])
             self.assertEqual(value['image_id'], 'a' * 64)
             build.assert_not_called()
-            self.assertEqual(run.call_args.args[1]['CLAUDE_CONTAINER_MAINTENANCE'], '1')
+            self.assertEqual(run.call_args.args[1][name('MAINTENANCE')], '1')
             self.assertEqual(value['proxy_image'], '')
         # Compilation uses the existing packaging script and an immutable toolchain.
         second = release.parent / 'provider'
@@ -572,13 +652,13 @@ class SetupTests(unittest.TestCase):
                                     {'runtime': 'a' * 64, 'toolchain': 'b' * 64, 'proxy': 'c' * 64}, False, [])
             build.assert_not_called()
             compile_call = next(call for call in run.call_args_list if call.args[0][0] == 'bash')
-            self.assertEqual(compile_call.args[1]['CLAUDE_GUARD_TOOLCHAIN'], 'b' * 64)
-            self.assertEqual(compile_call.args[1]['CLAUDE_CONTAINER_MAINTENANCE'], '1')
+            self.assertEqual(compile_call.args[1]['SANDBOX_GUARD_TOOLCHAIN'], 'b' * 64)
+            self.assertEqual(compile_call.args[1][name('MAINTENANCE')], '1')
             self.assertEqual(value['proxy_image'], 'c' * 64)
             self.assertEqual(value['guard_sources_sha256'], common.source_identity(second))
         env = common.runtime_environment(value, second, overrides=False)
-        self.assertNotIn('CLAUDE_CONTAINER_MAINTENANCE', env)
-        self.assertNotIn('ANTHROPIC_API_KEY', env)
+        self.assertNotIn(name('MAINTENANCE'), env)
+        self.assertNotIn(CREDENTIAL, env)
         self.assertFalse('MAINTENANCE' in json.dumps(value))
 
     def test_fresh_and_refresh_builds_keep_previous_runtime_tag(self):
@@ -598,7 +678,7 @@ class SetupTests(unittest.TestCase):
     def test_guard_reuse_requires_preflight_and_matching_source_identity(self):
         root, old = self.release()
         (old / 'network/bin').mkdir(mode=0o700)
-        for name in ('claude-egress-guard', 'claude-egress-guard.sha256'):
+        for name in (GUARD, GUARD + '.sha256'):
             (old / 'network/bin' / name).write_text('fixture')
         candidate = root / 'releases/candidate'
         candidate.mkdir(mode=0o700)
@@ -609,7 +689,7 @@ class SetupTests(unittest.TestCase):
         with patch.object(setup, 'run', side_effect=[None, common.SetupError('digest mismatch')]):
             with self.assertRaisesRegex(common.SetupError, 'digest mismatch'):
                 setup.prepare_artifacts(value, previous, candidate, self.env, images, False, [])
-        self.assertFalse((candidate / 'network/bin/claude-egress-guard').exists())
+        self.assertFalse((candidate / ('network/bin/' + GUARD)).exists())
 
     def test_preferences_schema_secrets_duplicates_and_permissions_are_rejected(self):
         _, release = self.release()
@@ -632,32 +712,32 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(common.load(path), self.value)
 
     def test_runtime_defaults_respect_present_empty_overrides_and_dynamic_socket(self):
-        value = self.value | {'network': 'provider', 'auth': 'account', 'endpoint': 'default',
+        value = self.value | {'network': 'provider', 'auth': LOGIN_METHOD, 'endpoint': 'default',
                               'state_dir': str(self.base / 'state'), 'proxy_image': 'b' * 64}
         with patch.dict(os.environ, self.env | {'XDG_RUNTIME_DIR': '/new/session',
-                         'CLAUDE_CONTAINER_STATE_DIR': '', 'CLAUDE_YOLO': '',
-                         'CLAUDE_CONTAINER_MAINTENANCE': '1', 'ANTHROPIC_API_KEY': 'SYNTHETIC_SECRET'}, clear=True):
+                         name('STATE_DIR'): '', YOLO_ENV: '',
+                         name('MAINTENANCE'): '1', CREDENTIAL: 'SYNTHETIC_SECRET'}, clear=True):
             env = common.runtime_environment(value, self.base)
-            self.assertEqual(env['CLAUDE_CONTAINER_STATE_DIR'], '')
-            self.assertEqual(env['CLAUDE_YOLO'], '')
+            self.assertEqual(env[name('STATE_DIR')], '')
+            self.assertEqual(env[YOLO_ENV], '')
             self.assertEqual(env['CONTAINER_HOST'], 'unix:///new/session/podman/podman.sock')
-            self.assertEqual(env['CLAUDE_CONTAINER_NETWORK_PROFILE'], 'anthropic-account')
+            self.assertEqual(env[name('NETWORK_PROFILE')], PROFILE.policy_profile(LOGIN_METHOD))
             prepared = common.runtime_environment(value, self.base, overrides=False)
-            self.assertEqual(prepared['CLAUDE_CONTAINER_STATE_DIR'], value['state_dir'])
-            self.assertNotIn('CLAUDE_CONTAINER_MAINTENANCE', prepared)
-            self.assertNotIn('ANTHROPIC_API_KEY', prepared)
+            self.assertEqual(prepared[name('STATE_DIR')], value['state_dir'])
+            self.assertNotIn(name('MAINTENANCE'), prepared)
+            self.assertNotIn(CREDENTIAL, prepared)
 
     def test_managed_launcher_preserves_argv_input_cwd_status_and_explicit_build(self):
         root, release = self.release()
         command = Path(self.value['command'])
         setup.activate(root, release, command)
         # A transparent application stand-in; no engine or model is involved.
-        wrapper = release / 'claude-container.sh'
+        wrapper = release / WRAPPER
         wrapper.write_text('''#!/bin/bash
-exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdin":sys.stdin.read(),"cwd":os.getcwd(),"pid":os.getpid(),"network":os.environ.get("CLAUDE_CONTAINER_NETWORK"),"maintenance":os.environ.get("CLAUDE_CONTAINER_MAINTENANCE")})); sys.exit(int(os.environ.get("SETUP_APP_EXIT","0")))' "$@"
-''')
+exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdin":sys.stdin.read(),"cwd":os.getcwd(),"pid":os.getpid(),"network":os.environ.get("@NETWORK@"),"maintenance":os.environ.get("@MAINTENANCE@")})); sys.exit(int(os.environ.get("SETUP_APP_EXIT","0")))' "$@"
+'''.replace('@NETWORK@', name('NETWORK')).replace('@MAINTENANCE@', MAINTENANCE))
         args = ['--container-build', 'space value', '', '--version']
-        env = self.env | {'CLAUDE_CONTAINER_NETWORK': '', 'CLAUDE_CONTAINER_MAINTENANCE': '1', 'SETUP_APP_EXIT': '17'}
+        env = self.env | {name('NETWORK'): '', name('MAINTENANCE'): '1', 'SETUP_APP_EXIT': '17'}
         proc = subprocess.Popen([str(command), *args], cwd=self.workspace, env=env,
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         output, error = proc.communicate('payload\n', timeout=10)
@@ -675,7 +755,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         command = Path(self.value['command'])
         setup.activate(root, release, command)
         for mode in ('offline', 'provider', 'unrestricted'):
-            saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else 'account',
+            saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else LOGIN_METHOD,
                                  'endpoint': 'default' if mode != 'unrestricted' else 'local',
                                  'state_dir': str(self.base / 'state'),
                                  'runtime_dir': str(self.base / 'egress'),
@@ -686,7 +766,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
                     self.log.unlink(missing_ok=True)
                     env = self.env | {'SETUP_TEST_FAIL': 'query'}
                     if override is not None:
-                        env['CLAUDE_CONTAINER_NETWORK'] = override
+                        env[name('NETWORK')] = override
                     result = subprocess.run([str(command), '--version'], cwd=self.workspace,
                                             env=env, capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, 1, result.stderr)
@@ -706,15 +786,15 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
                         endpoint = self.calls()[0]['endpoint']
                         self.assertEqual(bool(endpoint), mode != 'unrestricted')
                     self.assertFalse((self.base / 'state').exists())
-                    self.assertFalse((self.home / '.claude').exists())
+                    self.assertFalse((self.home / CONFIG_HOME).exists())
 
     def test_managed_launcher_rejects_future_worktree_and_state_conflicts(self):
         root, release = self.release()
         command = Path(self.value['command'])
         setup.activate(root, release, command)
         for cwd, args, controls in ((self.base, [], {}), (self.workspace, ['--container-git-worktree'], {}),
-                                   (self.workspace, [], {'CLAUDE_CONTAINER_STATE_DIR': str(self.base),
-                                                        'CLAUDE_CONFIG_DIR': '/some/shared/config'})):
+                                   (self.workspace, [], {name('STATE_DIR'): str(self.base),
+                                                        CONFIG_ENV: '/some/shared/config'})):
             result = subprocess.run([str(command), *args], cwd=cwd, env=self.env | controls,
                                     capture_output=True, text=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
@@ -725,9 +805,9 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         root, first = self.release()
         old_command = Path(self.value['command'])
         setup.activate(root, first, old_command)
-        self.value['command'] = str(self.base / 'new-bin/claude-container')
+        self.value['command'] = str(self.base / ('new-bin/' + COMMAND))
         _, second = self.release('second')
-        (second / 'claude-container.sh').write_text('printf REACHED_WRAPPER')
+        (second / WRAPPER).write_text('printf REACHED_WRAPPER')
         command = Path(self.value['command'])
         setup.activate(root, second, command)
         self.assertFalse(old_command.exists())
@@ -737,11 +817,11 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         self.assertEqual(result.stdout, 'REACHED_WRAPPER')
         # A copied or aliased entry point must protect its own directory entry,
         # even though setup.json still points at the safe canonical command.
-        alias = self.workspace / 'claude-container'
+        alias = self.workspace / COMMAND
         alias.symlink_to(command)
         parent_alias = self.base / 'workspace-alias'
         parent_alias.symlink_to(self.workspace, target_is_directory=True)
-        for argv in ([str(alias)], ['./claude-container'], [str(parent_alias / alias.name)]):
+        for argv in ([str(alias)], ['./' + COMMAND], [str(parent_alias / alias.name)]):
             result = subprocess.run(argv, cwd=self.workspace, env=self.env,
                                     capture_output=True, text=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
@@ -764,7 +844,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('--container-setup', result.stderr)
         _, second = self.release('second')
-        (second / 'claude-container.sh').write_text('printf UPGRADED_WRAPPER')
+        (second / WRAPPER).write_text('printf UPGRADED_WRAPPER')
         setup.activate(root, second, command)
         self.assertEqual(command.read_text(), setup.dispatcher(root))
         result = subprocess.run([command.name, '--version'], cwd=self.workspace, env=self.env,
@@ -776,7 +856,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         root, release = self.release()
         command = Path(self.value['command'])
         setup.activate(root, release, command)
-        (release / 'claude-container.sh').write_text('printf REACHED_WRAPPER')
+        (release / WRAPPER).write_text('printf REACHED_WRAPPER')
         inner = self.workspace / command.name
         inner.symlink_to(command)
         outer = self.base / 'outer'
@@ -811,7 +891,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         for index, alias in enumerate((command.parent / 'sub/..' / command.name, parent_alias / command.name)):
             self.value['command'] = str(alias)
             _, release = self.release('alias-' + str(index))
-            (release / 'claude-container.sh').write_text('printf ALIAS_WRAPPER')
+            (release / WRAPPER).write_text('printf ALIAS_WRAPPER')
             setup.activate(root, release, alias)
             self.assertTrue(command.is_file())
             result = subprocess.run([str(alias)], cwd=self.workspace, env=self.env,
@@ -824,7 +904,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         os.link(command, linked)
         self.value['command'] = str(linked)
         _, release = self.release('hardlink')
-        (release / 'claude-container.sh').write_text('printf HARDLINK_WRAPPER')
+        (release / WRAPPER).write_text('printf HARDLINK_WRAPPER')
         setup.activate(root, release, linked)
         self.assertFalse(command.exists())
         self.assertTrue(linked.is_file())
@@ -837,7 +917,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         root, first = self.release()
         old_command = Path(self.value['command'])
         setup.activate(root, first, old_command)
-        self.value['command'] = str(self.base / 'new-bin/claude-container')
+        self.value['command'] = str(self.base / ('new-bin/' + COMMAND))
         _, second = self.release('second')
         command = Path(self.value['command'])
         real_unlink = Path.unlink
@@ -860,7 +940,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
                     self.assertEqual(command.read_text(), setup.dispatcher(root, legacy=True))
                 else:
                     self.assertFalse(command.exists())
-                self.assertFalse(list(command.parent.glob('.claude-container.*')))
+                self.assertFalse(list(command.parent.glob('.' + COMMAND + '.*')))
 
     def test_managed_help_bypasses_corrupt_json_python_and_podman(self):
         root, release = self.release()
@@ -882,11 +962,11 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         setup.activate(root, release, command)
         for mode in ('unrestricted', 'offline'):
             with self.subTest(mode=mode):
-                saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else 'account',
+                saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else LOGIN_METHOD,
                                       'endpoint': 'default' if mode == 'offline' else 'local'}
                 (release / 'setup.json').write_text(json.dumps(saved))
                 code, output = pty_run([str(command), '--container-setup'],
-                                       self.env | {'CLAUDE_CONTAINER_NETWORK': 'invalid'}, self.workspace,
+                                       self.env | {name('NETWORK'): 'invalid'}, self.workspace,
                                        [('Protected native installation directory', ''), ('Network mode', None)])
                 self.assertEqual(code, 130, output)
                 self.assertIn('Network mode [' + mode + ']', output)
@@ -899,7 +979,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         setup.activate(root, release, command)
         project = self.base / 'projects/project'
         project.mkdir(parents=True)
-        (release / 'claude-container.sh').write_text('''#!/bin/bash
+        (release / WRAPPER).write_text('''#!/bin/bash
 terminal=no
 if [[ -t 0 && -t 1 ]]; then terminal=yes; fi
 printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
@@ -912,12 +992,12 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         _, release = self.release()
         for trust in (False, True):
             value = self.value | {'trust_ca': trust}
-            with patch.dict(os.environ, self.env | {'CLAUDE_CONTAINER_MAINTENANCE': '1',
-                             'ANTHROPIC_API_KEY': 'SYNTHETIC_SECRET'}, clear=True), patch.object(setup, 'run', return_value='CLAUDE_SANDBOX_SETUP_SMOKE_OK\n') as run:
+            with patch.dict(os.environ, self.env | {name('MAINTENANCE'): '1',
+                             CREDENTIAL: 'SYNTHETIC_SECRET'}, clear=True), patch.object(setup, 'run', return_value='SANDBOX_SETUP_SMOKE_OK\n') as run:
                 setup.smoke(value, release)
                 self.assertEqual(run.call_args.args[0][-1], '--container-shell')
-                self.assertNotIn('CLAUDE_CONTAINER_MAINTENANCE', run.call_args.args[1])
-                self.assertNotIn('ANTHROPIC_API_KEY', run.call_args.args[1])
+                self.assertNotIn(name('MAINTENANCE'), run.call_args.args[1])
+                self.assertNotIn(CREDENTIAL, run.call_args.args[1])
                 self.assertIn('unrestricted ' + ('1' if trust else '0'), run.call_args.kwargs['input'])
         with patch.object(setup, 'run', return_value='version-only\n'):
             with self.assertRaisesRegex(common.SetupError, 'did not confirm readiness'):
@@ -929,19 +1009,19 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
     def test_restricted_smoke_requires_qualification_and_displays_its_status(self):
         _, release = self.release()
         value = self.value | {'network':'offline','auth':'none'}
-        passing='CLAUDE_QUALIFICATION_STATUS=locally-qualified\nCLAUDE_QUALIFICATION_OK\n'
-        with patch.dict(os.environ,self.env | {'ANTHROPIC_API_KEY':'SYNTHETIC_SECRET',
-                        'CLAUDE_CONTAINER_MAINTENANCE':'1'},clear=True), \
-                patch.object(setup,'run',side_effect=[passing,'CLAUDE_SANDBOX_SETUP_SMOKE_OK\n']) as run, \
+        passing='SANDBOX_QUALIFICATION_STATUS=locally-qualified\nSANDBOX_QUALIFICATION_OK\n'
+        with patch.dict(os.environ,self.env | {CREDENTIAL:'SYNTHETIC_SECRET',
+                        name('MAINTENANCE'):'1'},clear=True), \
+                patch.object(setup,'run',side_effect=[passing,'SANDBOX_SETUP_SMOKE_OK\n']) as run, \
                 patch('builtins.print') as output:
             setup.smoke(value,release)
             self.assertEqual(run.call_args_list[0].args[0][-1],'--container-qualify')
             self.assertEqual(run.call_args_list[1].args[0][-1],'--container-shell')
             for call in run.call_args_list:
-                self.assertNotIn('ANTHROPIC_API_KEY',call.args[1])
-                self.assertNotIn('CLAUDE_CONTAINER_MAINTENANCE',call.args[1])
+                self.assertNotIn(CREDENTIAL,call.args[1])
+                self.assertNotIn(name('MAINTENANCE'),call.args[1])
             self.assertTrue(any('not release-measured' in str(call) for call in output.call_args_list))
-        for result in ('version-only\n','CLAUDE_QUALIFICATION_OK\n'):
+        for result in ('version-only\n','SANDBOX_QUALIFICATION_OK\n'):
             with patch.object(setup,'run',return_value=result) as run, self.assertRaises(common.SetupError):
                 setup.smoke(value,release)
             self.assertEqual(run.call_count,1)
@@ -951,25 +1031,25 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         for failure in (None, common.SetupError('login failed'), KeyboardInterrupt()):
             with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'yes', return_value=True), patch.object(setup, 'run', side_effect=failure) as run, patch('builtins.print'):
                 status = setup.authenticate(self.value, release)
-                self.assertEqual(run.call_args.args[0][-3:], ['auth', 'login', '--claudeai'])
+                self.assertEqual(run.call_args.args[0][-len(LOGIN_ARGS):], LOGIN_ARGS)
                 self.assertNotIn('capture', run.call_args.kwargs)
-                self.assertNotIn('ANTHROPIC_API_KEY', run.call_args.args[1])
+                self.assertNotIn(CREDENTIAL, run.call_args.args[1])
                 self.assertIn('verified' if failure is None else 'pending', status)
-        for mode, auth, expected in (('offline', 'none', 'not applicable'), ('provider', 'api', 'pending'),
-                                     ('provider', 'account', 'pending')):
+        for mode, auth, expected in (('offline', 'none', 'not applicable'), ('provider', KEY_METHOD, 'pending'),
+                                     ('provider', LOGIN_METHOD, 'pending')):
             with patch.object(setup, 'yes', return_value=False), patch.object(setup, 'run') as run, patch('builtins.print'):
                 value = self.value | {'network': mode, 'auth': auth}
                 self.assertEqual(setup.authenticate(value, release), expected)
                 run.assert_not_called()
 
     def test_existing_shared_openspec_permissions_are_preserved(self):
-        claude = self.home / '.claude'
-        claude.mkdir(mode=0o700)
+        config = self.home / CONFIG_HOME
+        config.mkdir(mode=0o700)
         openspec = self.home / '.config/openspec'
         openspec.mkdir(mode=0o755, parents=True)
         common.prepare_state(self.env, create=True)
         self.assertEqual(openspec.stat().st_mode & 0o777, 0o755)
-        self.assertEqual(claude.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(config.stat().st_mode & 0o777, 0o700)
 
     def test_timeout_allows_owned_child_cleanup_without_killing_setup(self):
         marker = self.base / 'child-cleaned'
@@ -1047,7 +1127,7 @@ finally:
         root, release = self.release()
         command = Path(self.value['command'])
         setup.activate(root, release, command)
-        (release / 'claude-container.sh').write_text('''#!/bin/bash
+        (release / WRAPPER).write_text('''#!/bin/bash
 exec python3 -c 'import os,signal; print(os.getpid(),flush=True); signal.pause()'
 ''')
         proc = subprocess.Popen([str(command)], env=self.env, cwd=self.workspace,
@@ -1067,7 +1147,7 @@ exec python3 -c 'import os,signal; print(os.getpid(),flush=True); signal.pause()
         output = self.base / 'guard-output'
         output.mkdir(mode=0o700)
         cidfile = output / ('.setup-guard.' + 'f' * 32)
-        env = self.env | {'CLAUDE_CONTAINER_MAINTENANCE': '1', 'CLAUDE_GUARD_SETUP_CIDFILE': str(cidfile)}
+        env = self.env | {name('MAINTENANCE'): '1', 'SANDBOX_GUARD_SETUP_CIDFILE': str(cidfile)}
         result = subprocess.run(['bash', str(ROOT / 'network/build-guard.sh'), str(output)],
                                 env=env, capture_output=True, text=True, timeout=10)
         self.assertNotEqual(result.returncode, 0)

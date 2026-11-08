@@ -6,6 +6,13 @@ from pathlib import Path
 import re
 import stat
 from collections import deque
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'network'))
+import agent_profile  # noqa: E402
+
+# The checkout or release that contains this file selects its own profile.
+PROFILE = agent_profile.load()
 
 
 class SetupError(ValueError):
@@ -13,14 +20,13 @@ class SetupError(ValueError):
 
 
 MANIFEST = (
-    'claude-container.sh', 'Containerfile', '.containerignore',
+    PROFILE.wrapper, 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
     'setup/common.py', 'setup/setup.py', 'setup/launch.py', 'setup/smoke.py', 'setup/diagnostics.py',
     'network/Containerfile', 'network/.containerignore',
     'network/guard-build.Containerfile', 'network/build-guard.sh',
     'network/guard.c', 'network/guard_landlock.h', 'network/guard_seccomp.h',
-    'network/control.py', 'network/policy.py', 'network/proxy.py', 'network/proxy_hardening.py',
+    'network/control.py', 'network/policy.py', 'network/agent_profile.py', 'network/proxy.py', 'network/proxy_hardening.py',
     'network/tls_client_hello.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf',
-    'network/policies/default.json',
     'network/platform_check.py', 'network/qualify.py', 'network/qualification_records.py',
     'network/qualification_probe.py', 'network/qualification_runtime.py',
     'network/qualification_peer.py', 'network/qualification_proxy.py',
@@ -138,14 +144,14 @@ def validate(value):
             absolute(value[name])
     if not value['installation'] or not value['command']:
         raise SetupError('Installation and command paths are required.')
-    if value['network'] not in ('offline', 'provider', 'unrestricted') or value['auth'] not in ('none', 'account', 'api'):
+    if value['network'] not in ('offline', 'provider', 'unrestricted') or value['auth'] not in ('none', *PROFILE.auth):
         raise SetupError('Invalid network/authentication choice.')
     if value['network'] == 'provider' and value['auth'] == 'none':
         raise SetupError('Provider mode requires an authentication profile.')
     if value['network'] != 'unrestricted' and (value['podman'] or value['endpoint'] == 'local'):
         raise SetupError('Restricted modes require a Unix service and prohibit delegation.')
     if value['state_dir'] and value['config_dir']:
-        raise SetupError('Isolated state conflicts with a shared Claude configuration directory.')
+        raise SetupError('Isolated state conflicts with a shared ' + PROFILE.display_name + ' configuration directory.')
     endpoint_url(value['endpoint'])
     if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9./:_-]{0,254}', value['image']):
         raise SetupError('Invalid runtime image name.')
@@ -176,12 +182,12 @@ def save(path, value):
 
 def defaults(root=None):
     home = Path(os.environ['HOME'])
-    return dict(schema_version=1, installation=str(root or home / '.local/lib/claude-container'),
-                command=str(home / '.local/bin/claude-container'), network='provider', auth='account',
-                state_dir='', config_dir='', runtime_dir=str(home / '.local/state/claude-egress'),
+    return dict(schema_version=1, installation=str(root or home / '.local/lib' / PROFILE.name),
+                command=str(home / '.local/bin' / PROFILE.name), network='provider', auth=next(iter(PROFILE.auth)),
+                state_dir='', config_dir='', runtime_dir=str(home / '.local/state' / PROFILE.state_name),
                 endpoint='default', delegation_socket='', podman=False, yolo=False,
                 worktree=False, trust_ca=False, ca_bundle='',
-                image='localhost/claude-code:latest', image_id='', proxy_image='',
+                image=PROFILE.image('agent', 'latest'), image_id='', proxy_image='',
                 toolchain_image='', guard_sources_sha256='')
 
 
@@ -194,22 +200,23 @@ def source_identity(root):
 
 def runtime_environment(value, release, *, overrides=True):
     env = os.environ.copy()
+    name = PROFILE.env
     selected = {
-        'CLAUDE_CONTAINER_NETWORK': value['network'],
-        'CLAUDE_CONTAINER_STATE_DIR': value['state_dir'], 'CLAUDE_CONFIG_DIR': value['config_dir'],
-        'CLAUDE_CONTAINER_IMAGE': value['image'], 'CLAUDE_CONTAINER_PODMAN': '1' if value['podman'] else '0',
-        'CLAUDE_CONTAINER_PODMAN_SOCKET': value['delegation_socket'],
-        'CLAUDE_YOLO': '1' if value['yolo'] else '0',
-        'CLAUDE_CONTAINER_TRUST_HOST_CA': '1' if value['trust_ca'] else '0',
-        'CLAUDE_CONTAINER_CA_BUNDLE': value['ca_bundle'],
-        'CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR': value['runtime_dir'],
-        'CLAUDE_CONTAINER_NETWORK_PROFILE': 'anthropic-' + value['auth'] if value['auth'] != 'none' else '',
-        'CLAUDE_CONTAINER_NETWORK_POLICY': str(release / 'network/policies/default.json'),
-        'CLAUDE_CONTAINER_EGRESS_IMAGE': value['proxy_image'],
+        name('NETWORK'): value['network'],
+        name('STATE_DIR'): value['state_dir'], PROFILE.config_dir_env: value['config_dir'],
+        name('IMAGE'): value['image'], name('PODMAN'): '1' if value['podman'] else '0',
+        name('PODMAN_SOCKET'): value['delegation_socket'],
+        PROFILE.approval_bypass_env: '1' if value['yolo'] else '0',
+        name('TRUST_HOST_CA'): '1' if value['trust_ca'] else '0',
+        name('CA_BUNDLE'): value['ca_bundle'],
+        name('NETWORK_RUNTIME_DIR'): value['runtime_dir'],
+        name('NETWORK_PROFILE'): PROFILE.policy_profile(value['auth']) if value['auth'] != 'none' else '',
+        name('NETWORK_POLICY'): str(release / agent_profile.POLICY),
+        name('EGRESS_IMAGE'): value['proxy_image'],
         'CONTAINER_HOST': endpoint_url(value['endpoint']),
     }
     if not overrides:
-        for name in (*selected, 'CONTAINER_CONNECTION', 'CLAUDE_CONTAINER_MAINTENANCE', 'ANTHROPIC_API_KEY'):
+        for name in (*selected, 'CONTAINER_CONNECTION', PROFILE.env('MAINTENANCE'), *PROFILE.credential_envs):
             env.pop(name, None)
     for name, item in selected.items():
         if name not in env:
@@ -222,18 +229,19 @@ def writable_mounts(env, args=(), worktree=False):
     if worktree or '--container-git-worktree' in args:
         workspace = workspace.parent
     mounts = [workspace]
-    if env.get('CLAUDE_CONTAINER_STATE_DIR'):
-        if env.get('CLAUDE_CONFIG_DIR'):
-            raise SetupError('CLAUDE_CONTAINER_STATE_DIR conflicts with CLAUDE_CONFIG_DIR; unset the shared override.')
-        state = Path(env['CLAUDE_CONTAINER_STATE_DIR']).resolve()
-        for relative in ('.claude', '.config/openspec'):
+    state_name, config_name = PROFILE.env('STATE_DIR'), PROFILE.config_dir_env
+    if env.get(state_name):
+        if env.get(config_name):
+            raise SetupError(state_name + ' conflicts with ' + config_name + '; unset the shared override.')
+        state = Path(env[state_name]).resolve()
+        for relative in (PROFILE.config_home, *PROFILE.shared_dirs):
             child = (state / relative).resolve()
             if child != state and state not in child.parents:
                 raise SetupError('Isolated configuration escapes the selected state home.')
         mounts.append(state)
     else:
-        mounts += [Path(env.get('CLAUDE_CONFIG_DIR') or Path(env['HOME']) / '.claude').resolve(),
-                   (Path(env['HOME']) / '.config/openspec').resolve()]
+        mounts += [Path(env.get(config_name) or Path(env['HOME']) / PROFILE.config_home).resolve(),
+                   *((Path(env['HOME']) / shared).resolve() for shared in PROFILE.shared_dirs)]
     return mounts
 
 
@@ -283,8 +291,8 @@ def protect_mounts(value, env, args=(), *, launcher=None):
         if any(overlap(path, mount) or lexical == mount or mount in lexical.parents
                or lexical in mount.parents for mount in mounts):
             raise SetupError('Managed installation/command overlaps a writable workspace or state mount; relocate it or choose another workspace.')
-    if env.get('CLAUDE_CONTAINER_NETWORK', 'offline') == 'provider':
-        for name in ('CLAUDE_CONTAINER_NETWORK_POLICY', 'CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR'):
+    if env.get(PROFILE.env('NETWORK'), 'offline') == 'provider':
+        for name in (PROFILE.env('NETWORK_POLICY'), PROFILE.env('NETWORK_RUNTIME_DIR')):
             path = env.get(name, '')
             if not path or any(overlap(path, mount) for mount in mounts):
                 raise SetupError('Protected provider policy/runtime overlaps a writable mount or is missing.')
@@ -292,13 +300,14 @@ def protect_mounts(value, env, args=(), *, launcher=None):
 
 
 def prepare_state(env, *, create=False):
-    """Preserve the wrapper's private-Claude/shared-OpenSpec permission contract."""
+    """Preserve the wrapper's private-configuration/shared-directory permission contract."""
     paths = writable_mounts(env)[1:]
+    isolated = env.get(PROFILE.env('STATE_DIR'))
     for index, path in enumerate(paths):
-        if env.get('CLAUDE_CONTAINER_STATE_DIR') or index == 0:
+        if isolated or index == 0:
             private(path, create=create)
         else:
-            # Shared OpenSpec settings are writable state, not a credential home.
+            # Shared tool settings are writable state, not a credential home.
             trusted(path, missing=True)
             if create:
                 old = os.umask(0o077)
@@ -307,9 +316,9 @@ def prepare_state(env, *, create=False):
                 finally:
                     os.umask(old)
             if path.exists() and (not path.is_dir() or not os.access(path, os.R_OK | os.W_OK | os.X_OK)):
-                raise SetupError('Shared OpenSpec directory is inaccessible.')
-    if env.get('CLAUDE_CONTAINER_STATE_DIR'):
-        child = Path(env['CLAUDE_CONTAINER_STATE_DIR']) / '.claude'
+                raise SetupError('Shared configuration directory is inaccessible: ' + str(path))
+    if isolated:
+        child = Path(isolated) / PROFILE.config_home
         if child.exists():
             private(child)
     return paths

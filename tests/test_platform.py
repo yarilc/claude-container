@@ -4,7 +4,7 @@ import importlib.util
 from pathlib import Path
 import unittest
 
-spec = importlib.util.spec_from_file_location('claude_platform', Path(__file__).resolve().parents[1] / 'network/platform_check.py')
+spec = importlib.util.spec_from_file_location('sandbox_platform', Path(__file__).resolve().parents[1] / 'network/platform_check.py')
 platform = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(platform)
 

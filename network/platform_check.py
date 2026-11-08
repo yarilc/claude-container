@@ -1,6 +1,7 @@
 """Protected restricted-platform eligibility; eligibility alone is not qualification."""
 import argparse
 import json
+from pathlib import Path
 import re
 import sys
 import http.client
@@ -99,7 +100,14 @@ if __name__ == '__main__':
     try:
         main()
     except (ValueError, TypeError, KeyError, OSError, http.client.HTTPException):
-        print('claude-container: status=ineligible: ineligible restricted platform; require Linux x86_64, '
+        prefix = 'sandbox-egress: '
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from agent_profile import message_prefix
+            prefix = message_prefix(prefix)
+        except ImportError:
+            pass
+        print(prefix + 'status=ineligible: ineligible restricted platform; require Linux x86_64, '
               'rootless same-host Unix Netavark/Podman >= 4.9 and standard OCI seccomp. '
               'Enabled SELinux/AppArmor is permitted but compatibility is not guaranteed. '
               'Usable Landlock ABI >= 3 and local enforcement qualification are additionally required.', file=sys.stderr)

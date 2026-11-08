@@ -14,10 +14,10 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / 'claude-container.sh'
 IMAGE = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
-ENABLED = os.environ.get('CLAUDE_RUNTIME_TESTS') == '1'
+ENABLED = os.environ.get('SANDBOX_RUNTIME_TESTS') == '1'
 
 
-@unittest.skipUnless(ENABLED, 'set CLAUDE_RUNTIME_TESTS=1 to use a real rootless engine')
+@unittest.skipUnless(ENABLED, 'set SANDBOX_RUNTIME_TESTS=1 to use a real rootless engine')
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
         workspace_root = ROOT / '.test-state'
@@ -29,7 +29,7 @@ class RuntimeTests(unittest.TestCase):
         # With a Unix launch service this directory must exist at the identical
         # host path. The disposable runner supplies a native Linux volume.
         self.native = Path(tempfile.mkdtemp(prefix='claude-runtime-',
-                           dir=os.environ.get('CLAUDE_TEST_STATE_ROOT')))
+                           dir=os.environ.get('SANDBOX_TEST_STATE_ROOT')))
         self.addCleanup(shutil.rmtree, self.native)
         self.state = self.native / 'state'
         self.host_home = self.native / 'synthetic-host-home'

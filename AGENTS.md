@@ -17,10 +17,34 @@ Claude Code:
   Archived changes live in `changes/archive/`.
 - `tests/` contains synthetic wrapper checks and opt-in rootless runtime checks.
 - `docs/validation.md` records verified environments and unavailable checks.
-- `network/` contains protected operator policies, preflight/snapshot validation,
+- `agent/profile.json` is the single source of Claude-specific values used by
+  shared code: wrapper and variable names, images, labels, installation/state
+  names, native home/command/configuration variables, authentication methods
+  and their required provider hosts. `agent/policies/` holds the provider policies.
+- `network/` contains preflight/snapshot validation, the profile loader,
   the standalone CONNECT proxy image, native IPC bootstrap, and agent-side relay.
 - `setup/` contains host-only interactive preparation, declarative managed
   preferences, the exec-based launcher and a sandbox smoke check.
+
+## Shared and agent-specific files
+
+`network/`, `setup/` and the shared tests listed in `tests/test_alignment.py`
+are copied unchanged between the Claude, Codex, Antigravity, OpenCode and Pi
+wrappers. Never add an agent identifier (any of the profile's `identifiers`) to
+them. Read agent-specific values from the profile, or pass them from host code
+to in-container helpers. In-container paths are neutral: `/opt/sandbox-egress`,
+`/run/sandbox-egress`, `/tmp/sandbox-runtime` and `sandbox-egress-guard`.
+
+These files are per agent:
+- `agent/`, `claude-container.sh`, `Containerfile` and `.containerignore`;
+- the end-to-end tests: `test_wrapper.py`, `test_runtime.py`,
+  `test_network_runtime.py` with `network_tls_fixture.py`,
+  `test_setup_runtime.py`, `run-runtime.sh` and `image-smoke.sh`.
+
+When a shared component needs a new agent-specific value, extend the profile
+schema in `network/agent_profile.py` here first. Then propagate the shared
+files to the sibling wrappers. `tests/test_alignment.py` enforces the literal
+scan and wrapper/profile consistency.
 - `docs/setup.md` documents guided installation, maintenance consent and rollback.
 - `docs/network-contract.md` defines the shared mode and rollout contract;
   sibling wrappers remain independently unassessed.
@@ -90,10 +114,10 @@ comments, help text, and user-facing messages in English.
 Run `python3 -m unittest discover -s tests -p test_wrapper.py -v`, `bash -n`
 on changed shell scripts, and `git diff --check`. Wrapper tests use synthetic
 HOME/configuration and fake Podman on executable native temporary storage;
-`CLAUDE_TEST_TMPDIR` overrides the temporary directory. No real credentials or
+`SANDBOX_TEST_TMPDIR` overrides the temporary directory. No real credentials or
 remote Git repositories belong in tests.
 
-With a built image and rootless engine, run `CLAUDE_RUNTIME_TESTS=1 python3 -m
+With a built image and rootless engine, run `SANDBOX_RUNTIME_TESTS=1 python3 -m
 unittest discover -s tests -p test_runtime.py -v` or `bash tests/run-runtime.sh`.
 The latter uses disposable native state and same-host Unix service access;
 `--wrapper` runs wrapper tests there if host Python is unavailable. Verify both

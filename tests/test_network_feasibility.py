@@ -5,18 +5,21 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 import uuid
 
 
-IMAGE = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sandbox_profile import AGENT_IMAGE, PROFILE, env as profile_env
+IMAGE = os.environ.get(profile_env("IMAGE"), AGENT_IMAGE)
 FIXTURE = Path(__file__).with_name('network_fixture.py')
 
 
-@unittest.skipUnless(os.environ.get('CLAUDE_RUNTIME_TESTS') == '1',
-                     'set CLAUDE_RUNTIME_TESTS=1 with a rootless engine')
+@unittest.skipUnless(os.environ.get('SANDBOX_RUNTIME_TESTS') == '1',
+                     'set SANDBOX_RUNTIME_TESTS=1 with a rootless engine')
 class NetworkFeasibility(unittest.TestCase):
     def command(self, *args, **kwargs):
         result = subprocess.run(['podman', *args], text=True, capture_output=True,
@@ -29,7 +32,7 @@ class NetworkFeasibility(unittest.TestCase):
         self.assertTrue(info['host']['security']['rootless'])
         self.assertEqual(info['host']['networkBackend'], 'netavark')
         with tempfile.TemporaryDirectory(prefix='egress-gate-',
-                                        dir=os.environ.get('CLAUDE_TEST_STATE_ROOT')) as native:
+                                        dir=os.environ.get('SANDBOX_TEST_STATE_ROOT')) as native:
             root = Path(native)
             common = ['--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}']
             sessions = []
@@ -46,7 +49,7 @@ class NetworkFeasibility(unittest.TestCase):
                              'subjectAltName=DNS:upstream.test', '-keyout', '/fixture/key.pem',
                              '-out', '/fixture/cert.pem')
                 token = 'gate-' + uuid.uuid4().hex
-                name = 'claude-egress-gate-' + uuid.uuid4().hex
+                name = PROFILE.name + '-egress-gate-' + uuid.uuid4().hex
                 self.addCleanup(self.command, 'rm', '--force', '--time', '0', '--ignore', name)
                 self.command('run', '--detach', '--name', name, '--read-only', *common,
                              '--volume', f'{session}:/fixture:ro',

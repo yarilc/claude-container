@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /* Minimal ABI declarations from Linux v6.6 include/uapi/linux/landlock.h.
  * Keep the required rights explicit; never mask them for older kernels. */
-#ifndef CLAUDE_GUARD_LANDLOCK_H
-#define CLAUDE_GUARD_LANDLOCK_H
+#ifndef SANDBOX_GUARD_LANDLOCK_H
+#define SANDBOX_GUARD_LANDLOCK_H
 
 #include <stdint.h>
 

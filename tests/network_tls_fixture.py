@@ -10,7 +10,7 @@ import hashlib
 import time
 import json
 
-sys.path.insert(0, '/opt/claude-egress')
+sys.path.insert(0, '/opt/sandbox-egress')
 import proxy
 
 # A deterministic test resolver supplies only the policy's explicit loopback

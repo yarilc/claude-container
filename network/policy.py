@@ -59,7 +59,7 @@ def unique_object(pairs):
     return result
 
 
-def load(path):
+def load(path, rules=None):
     data = Path(path).read_bytes()
     if len(data) > 65536:
         fail('policy exceeds 64 KiB')
@@ -67,11 +67,17 @@ def load(path):
         value = json.loads(data, object_pairs_hook=unique_object)
     except (ValueError, UnicodeError):
         fail('invalid policy JSON')
-    validate(value)
+    validate(value, rules)
     return value
 
 
-def validate(value):
+def validate(value, rules=None):
+    """Validate policy structure; ``rules`` adds the agent profile's host requirements.
+
+    Trusted host-side code always passes the rules derived from the protected
+    agent profile before creating a session snapshot. The proxy image has no
+    profile and revalidates the snapshot's structure only.
+    """
     fields(value, ('schema_version', 'revision', 'source_date', 'sources', 'tested', 'profiles'))
     if type(value['schema_version']) is not int or value['schema_version'] != 1:
         fail('unsupported policy schema')
@@ -91,7 +97,11 @@ def validate(value):
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', name):
             fail('invalid profile name')
         fields(profile, ('authentication', 'destinations', 'disable_optional_traffic'))
-        if profile['authentication'] not in ('api', 'account', 'custom'):
+        methods = rules['methods'] if rules is not None else None
+        if not isinstance(profile['authentication'], str) or (
+                profile['authentication'] != 'custom' and
+                (profile['authentication'] not in methods if methods is not None else
+                 not re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', profile['authentication']))):
             fail('invalid authentication method')
         if profile['disable_optional_traffic'] is not True:
             fail('optional traffic must be disabled')
@@ -126,18 +136,17 @@ def validate(value):
                        (isinstance(p, ipaddress.IPv6Address) and p.ipv4_mapped) for p in parsed):
                     fail('unsafe local exception address')
                 entry['addresses'] = [str(p) for p in parsed]
-        required = {'api.anthropic.com'}
-        if profile['authentication'] == 'account':
-            required |= {'claude.ai', 'claude.com', 'platform.claude.com'}
-        if profile['authentication'] != 'custom' and not required <= {h for h, port in seen if port == 443}:
+        if rules is None:
+            continue
+        https = {h for h, port in seen if port == 443}
+        if profile['authentication'] != 'custom' and not methods[profile['authentication']] <= https:
             fail('profile lacks required authentication hosts')
-        if name == 'anthropic-api' and (profile['authentication'] != 'api' or seen != {('api.anthropic.com', 443)}):
-            fail('anthropic-api is the exact base API profile; use a new profile for extensions')
-        if name == 'anthropic-account' and (profile['authentication'] != 'account' or
-                seen != {(h, 443) for h in ('api.anthropic.com', 'claude.ai', 'claude.com', 'platform.claude.com')}):
-            fail('anthropic-account is the exact base account profile; use a new profile for extensions')
-        if name in ('anthropic-api', 'anthropic-account') and any('addresses' in d for d in entries):
-            fail('base Anthropic profiles cannot add local address exceptions')
+        if name in rules['base_profiles']:
+            method, hosts = rules['base_profiles'][name]
+            if profile['authentication'] != method or seen != {(h, 443) for h in hosts}:
+                fail(name + ' is an exact base profile; use a new profile for extensions')
+            if any('addresses' in d for d in entries):
+                fail('base profiles cannot add local address exceptions')
 
 
 def selected(value, name):

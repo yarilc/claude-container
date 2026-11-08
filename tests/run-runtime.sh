@@ -35,10 +35,10 @@ elif [[ "${1:-}" == --mux ]]; then
     shift
 elif [[ "${1:-}" == --guard || "${1:-}" == --guard-idle ]]; then
     pattern=test_guard.py
-    guard_toolchain=$(podman image inspect --format '{{.Id}}' "${CLAUDE_GUARD_TOOLCHAIN:-localhost/claude-guard-toolchain:development}")
-    guard_environment=(--env CLAUDE_GUARD_TESTS=1 --env "CLAUDE_GUARD_TOOLCHAIN=$guard_toolchain")
+    guard_toolchain=$(podman image inspect --format '{{.Id}}' "${SANDBOX_GUARD_TOOLCHAIN:-localhost/claude-guard-toolchain:development}")
+    guard_environment=(--env SANDBOX_GUARD_TESTS=1 --env "SANDBOX_GUARD_TOOLCHAIN=$guard_toolchain")
     if [[ "$1" == --guard-idle ]]; then
-        guard_environment+=(--env CLAUDE_IDLE_TESTS=1)
+        guard_environment+=(--env SANDBOX_IDLE_TESTS=1)
         set -- "$1" -k test_guarded_multiplex_idle_resume "${@:2}"
     fi
     shift
@@ -56,9 +56,9 @@ podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --volume "$socket:/run/podman/podman.sock:rw" \
     --workdir "$project_root" \
     --env CONTAINER_HOST=unix:///run/podman/podman.sock \
-    --env CLAUDE_RUNTIME_TESTS=1 \
+    --env SANDBOX_RUNTIME_TESTS=1 \
     --env "CLAUDE_CONTAINER_IMAGE=$image" \
-    --env "CLAUDE_TEST_STATE_ROOT=$native_state" \
+    --env "SANDBOX_TEST_STATE_ROOT=$native_state" \
     "${guard_environment[@]}" \
     --entrypoint python3 "$image" \
     -m unittest discover -s tests -p "$pattern" -v "$@"

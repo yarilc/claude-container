@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 IMAGE = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
 
 
-@unittest.skipUnless(os.environ.get('CLAUDE_RUNTIME_TESTS') == '1', 'requires real rootless engine')
+@unittest.skipUnless(os.environ.get('SANDBOX_RUNTIME_TESTS') == '1', 'requires real rootless engine')
 class NetworkRuntime(unittest.TestCase):
     _shared_fixtures = False
     _provider_cache = None
@@ -26,7 +26,7 @@ class NetworkRuntime(unittest.TestCase):
     def setUpClass(cls):
         cls._shared_fixtures = True
         cls._provider_cache = None
-        cls.guard_output = tempfile.TemporaryDirectory(prefix='network-guard-', dir=os.environ.get('CLAUDE_TEST_STATE_ROOT'))
+        cls.guard_output = tempfile.TemporaryDirectory(prefix='network-guard-', dir=os.environ.get('SANDBOX_TEST_STATE_ROOT'))
         cls.addClassCleanup(cls.guard_output.cleanup)
         result = subprocess.run(['bash', str(ROOT / 'network/build-guard.sh'), cls.guard_output.name],
             env=os.environ | {'CLAUDE_CONTAINER_MAINTENANCE': '1'}, capture_output=True, text=True, timeout=60)
@@ -39,7 +39,7 @@ class NetworkRuntime(unittest.TestCase):
         return result.stdout.strip()
 
     def setUp(self):
-        self.base = Path(tempfile.mkdtemp(prefix='network-runtime-', dir=os.environ.get('CLAUDE_TEST_STATE_ROOT')))
+        self.base = Path(tempfile.mkdtemp(prefix='network-runtime-', dir=os.environ.get('SANDBOX_TEST_STATE_ROOT')))
         self.addCleanup(shutil.rmtree, self.base)
         self.install = Path(self.guard_output.name) / 'installed' if self._shared_fixtures else self.base / 'installed'
         self.install.mkdir(mode=0o700, exist_ok=True)
@@ -49,12 +49,15 @@ class NetworkRuntime(unittest.TestCase):
         self.wrapper.chmod(0o700)
         for source in list((ROOT / 'network').glob('*.py')) + [ROOT / 'network/resolv.conf']:
             shutil.copyfile(source, self.install / 'network' / source.name)
+        (self.install / 'agent/policies').mkdir(mode=0o700, parents=True, exist_ok=True)
+        for name in ('agent/profile.json', 'agent/policies/default.json'):
+            shutil.copyfile(ROOT / name, self.install / name)
         binary_dir = self.install / 'network/bin'
         binary_dir.mkdir(mode=0o700, exist_ok=True)
-        for name in ('claude-egress-guard', 'claude-egress-guard.sha256'):
+        for name in ('sandbox-egress-guard', 'sandbox-egress-guard.sha256'):
             (binary_dir / name).unlink(missing_ok=True)
             shutil.copyfile(Path(self.guard_output.name) / name, binary_dir / name)
-        (binary_dir / 'claude-egress-guard').chmod(0o500)
+        (binary_dir / 'sandbox-egress-guard').chmod(0o500)
         self.project = self.base / 'project'
         self.project.mkdir()
         self.runtime = self.base / 'runtime'
@@ -221,7 +224,7 @@ left.close(); right.close()
         cleanup(self.podman, 'rmi', '--force', fixture_tag)
         self.podman('build', '--pull=never', '--tag', fixture_tag, str(context))
         fixture_id = self.podman('image', 'inspect', '--format', '{{.Id}}', fixture_tag)
-        value = json.loads((ROOT / 'network/policies/default.json').read_text())
+        value = json.loads((ROOT / 'agent/policies/default.json').read_text())
         value['profiles']['controlled-test'] = {'authentication': 'custom', 'disable_optional_traffic': True,
             'destinations': [{'host': 'localhost.localdomain', 'port': 8443, 'addresses': ['127.0.0.1', '::1']}]}
         for authentication in ('api', 'account'):
@@ -698,7 +701,7 @@ test "$ANTHROPIC_API_KEY" = synthetic-not-a-real-key
         self.assertFalse(list(self.runtime.iterdir()))
 
     def test_tampered_bootstrap_fails_before_application(self):
-        guard = self.install / 'network/bin/claude-egress-guard'
+        guard = self.install / 'network/bin/sandbox-egress-guard'
         guard.chmod(0o700)
         with guard.open('ab') as output:
             output.write(b'tampered')

@@ -299,13 +299,14 @@ such as `/tmp` are unsuitable. For example, install from this checkout:
 
 ```bash
 installation="$HOME/.local/lib/claude-container"
-install -d -m 700 "$installation/network/policies" "$installation/network/bin" "$installation/setup"
+install -d -m 700 "$installation/agent/policies" "$installation/network/bin" "$installation/setup"
 install -m 700 claude-container.sh "$installation/claude-container.sh"
 install -m 644 Containerfile .containerignore "$installation/"
 install -m 644 setup/diagnostics.py "$installation/setup/"
-install -m 644 network/control.py network/policy.py network/proxy.py \
+install -m 644 agent/profile.json "$installation/agent/"
+install -m 644 network/control.py network/policy.py network/agent_profile.py network/proxy.py \
     network/relay.py network/mux.py network/resolv.conf network/Containerfile network/.containerignore "$installation/network/"
-install -m 600 network/policies/default.json "$installation/network/policies/default.json"
+install -m 600 agent/policies/default.json "$installation/agent/policies/default.json"
 install -d -m 700 "$HOME/.local/state/claude-egress"
 # Prepare the pinned compiler image once, as operator maintenance.
 # --pull=never expects its pinned Alpine base to be prepared already; see network/README.md.
@@ -337,7 +338,7 @@ egress_image=$(podman image inspect --format '{{.Id}}' localhost/claude-egress:l
 
 CLAUDE_CONTAINER_NETWORK=provider \
 CLAUDE_CONTAINER_NETWORK_PROFILE=anthropic-api \
-CLAUDE_CONTAINER_NETWORK_POLICY="$installation/network/policies/default.json" \
+CLAUDE_CONTAINER_NETWORK_POLICY="$installation/agent/policies/default.json" \
 CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR="$HOME/.local/state/claude-egress" \
 CLAUDE_CONTAINER_EGRESS_IMAGE="$egress_image" \
 "$installation/claude-container.sh"
@@ -717,19 +718,47 @@ The image includes the `nano` editor, and `EDITOR` and `VISUAL` are set to
 `nano`, so commands that open an editor, such as `/memory`, work inside the
 container. The host's `EDITOR` and `VISUAL` are not forwarded.
 
+## Shared sandbox components and the agent profile
+
+`network/` and `setup/` are shared with the sibling Codex, Antigravity, OpenCode
+and Pi wrappers and are copied between them unchanged. They contain no
+Claude-specific names. Every agent-specific value is declared in
+`agent/profile.json`:
+- the wrapper name and the `CLAUDE_CONTAINER_*` variable prefix;
+- the `localhost/claude-*` images and `io.claude-container.*` labels;
+- installation and state names;
+- `/claude-home`, `CLAUDE_CONFIG_DIR`, `CLAUDE_YOLO` and `ANTHROPIC_API_KEY`;
+- login assistance and the required hosts for each authentication method.
+
+Provider policies are in `agent/policies/`. Inside containers the sandbox uses
+neutral paths: `/opt/sandbox-egress`, `/run/sandbox-egress`,
+`/tmp/sandbox-runtime` and the `sandbox-egress-guard` binary.
+
+The profile and policy are protected installation inputs and part of the
+qualification identity. After upgrading from a release that used
+`network/policies/` or `claude-egress-guard`, rerun `--container-setup` (or
+rebuild the guard, proxy and runtime images and rerun `--container-qualify`)
+and restart running sessions. Restricted launches refuse the stale
+qualification until then. Operator commands, variables and saved setup
+preferences are unchanged. Only test-harness controls changed:
+- `CLAUDE_TEST_TMPDIR` is now `SANDBOX_TEST_TMPDIR`;
+- `CLAUDE_TEST_STATE_ROOT` is now `SANDBOX_TEST_STATE_ROOT`;
+- `CLAUDE_RUNTIME_TESTS` is now `SANDBOX_RUNTIME_TESTS`;
+- `CLAUDE_GUARD_TOOLCHAIN` is now `SANDBOX_GUARD_TOOLCHAIN`.
+
 ## Verification
 
 ```bash
 bash -n claude-container.sh
 python3 -m unittest discover -s tests -p test_wrapper.py -v
-CLAUDE_RUNTIME_TESTS=1 python3 -m unittest discover -s tests -p test_runtime.py -v
+SANDBOX_RUNTIME_TESTS=1 python3 -m unittest discover -s tests -p test_runtime.py -v
 bash tests/run-runtime.sh
 git diff --check
 ```
 
 Wrapper tests use synthetic HOME/state and a fake Podman, without host
 credentials or a real engine. They need executable temporary storage with Unix
-permissions; set `CLAUDE_TEST_TMPDIR` to a suitable native Linux directory when
+permissions; set `SANDBOX_TEST_TMPDIR` to a suitable native Linux directory when
 `/tmp` is `noexec`. Runtime tests are opt-in and require a built image and a
 rootless engine. The runner uses a disposable native Linux volume for state,
 preserves host absolute paths, and removes only its own test resources; it can

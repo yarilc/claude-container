@@ -1,7 +1,7 @@
 /* Additional restriction, stacked on the existing OCI seccomp profile.
  * Linux x86_64 only. Argument checks match the kernel's int truncation. */
-#ifndef CLAUDE_GUARD_SECCOMP_H
-#define CLAUDE_GUARD_SECCOMP_H
+#ifndef SANDBOX_GUARD_SECCOMP_H
+#define SANDBOX_GUARD_SECCOMP_H
 #include <stdint.h>
 #include <stddef.h>
 #include <sys/socket.h>

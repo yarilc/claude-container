@@ -13,6 +13,9 @@ import ipaddress
 # helpers from the installation selected by this script's physical location.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from policy import PolicyError, canonical, load, overlaps, revision, selected, trusted_path
+import agent_profile
+
+GUARD = 'sandbox-egress-guard'
 
 
 def main():
@@ -35,7 +38,9 @@ def main():
         if any(resolved == Path(root) or Path(root) in resolved.parents for root in ('/proc', '/sys', '/dev')):
             raise PolicyError('host process, namespace and device trees cannot be restricted workspace/state binds')
     installation = trusted_path(args.installation, args.writable, directory=True)
-    for name in ('claude-container.sh', 'network/control.py', 'network/policy.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf'):
+    profile = agent_profile.load(installation / agent_profile.PROFILE, writable=args.writable)
+    for name in (profile.wrapper, 'network/control.py', 'network/policy.py', 'network/agent_profile.py',
+                 'network/relay.py', 'network/mux.py', 'network/resolv.conf', agent_profile.POLICY):
         trusted_path(installation / name, args.writable)
     diagnostics = installation / 'setup/diagnostics.py'
     if diagnostics.exists() or diagnostics.is_symlink():
@@ -46,10 +51,10 @@ def main():
             raise PolicyError('invalid effective mount target')
         if any(overlaps(target, Path(root)) for root in ('/tmp', '/run', '/var/tmp')):
             raise PolicyError('host bind overlaps a reserved private IPC hierarchy')
-    guard = trusted_path(installation / 'network/bin/claude-egress-guard', args.writable)
-    manifest = trusted_path(installation / 'network/bin/claude-egress-guard.sha256', args.writable)
+    guard = trusted_path(installation / 'network/bin' / GUARD, args.writable)
+    manifest = trusted_path(installation / 'network/bin' / (GUARD + '.sha256'), args.writable)
     identity = hashlib.sha256(guard.read_bytes()).hexdigest()
-    if manifest.read_text() != identity + '  claude-egress-guard\n':
+    if manifest.read_text() != identity + '  ' + GUARD + '\n':
         raise PolicyError('native bootstrap digest mismatch')
     if not guard.stat().st_mode & stat.S_IXUSR or guard.read_bytes()[:6] != b'\x7fELF\x02\x01':
         raise PolicyError('native bootstrap must be an executable static x86_64 ELF')
@@ -77,7 +82,8 @@ def main():
         if len(data) > 65536:
             raise PolicyError('oversized qualification input')
         value = json.loads(data, object_pairs_hook=unique_object)
-        if (not isinstance(value, dict) or set(value) != {'schema', 'token', 'addresses', 'workspace', 'provider', 'tls'} or
+        if (not isinstance(value, dict) or set(value) != {'schema', 'token', 'addresses', 'workspace', 'provider', 'tls', 'agent'} or
+                value['agent'] != profile.command or
                 type(value['schema']) is not int or value['schema'] != 1 or
                 not isinstance(value['token'], str) or not re.fullmatch(r'[a-f0-9]{32}', value['token']) or
                 type(value['provider']) is not bool or type(value['tls']) is not bool or
@@ -95,10 +101,10 @@ def main():
         return
     trusted_path(installation / 'network/proxy_hardening.py', args.writable)
     policy_path = trusted_path(args.policy, args.writable)
-    value = load(policy_path)
+    value = load(policy_path, profile.policy_rules())
     selected(value, args.profile)
     if not re.fullmatch(r'(?:(?:sha256:)?[a-f0-9]{64}|[A-Za-z0-9./:_-]+@sha256:[a-f0-9]{64})', args.proxy_image or ''):
-        raise PolicyError('CLAUDE_CONTAINER_EGRESS_IMAGE must be an immutable image ID or digest')
+        raise PolicyError(profile.env('EGRESS_IMAGE') + ' must be an immutable image ID or digest')
     runtime = trusted_path(args.runtime or '', args.writable, directory=True)
     info = runtime.stat()
     if info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -126,6 +132,6 @@ if __name__ == '__main__':
         main()
     except (PolicyError, OSError, ValueError) as error:
         # Paths can be operator supplied; never echo policy/request contents.
-        print('claude-container: network policy preflight failed: ' +
+        print(agent_profile.message_prefix() + 'network policy preflight failed: ' +
               (str(error) if isinstance(error, PolicyError) else 'input inaccessible or invalid'), file=sys.stderr)
         sys.exit(1)

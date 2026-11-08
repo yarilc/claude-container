@@ -345,9 +345,9 @@ if [[ "$network_mode" != unrestricted ]]; then
     printf '%s' "$network_platform" | python3 -I "$script_dir/network/platform_check.py" \
         --server-version "${network_version%$'\n'}" --backend "${network_backend%$'\n'}" \
         --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info" >/dev/null
-    guard_identity=$(<"$script_dir/network/bin/claude-egress-guard.sha256")
+    guard_identity=$(<"$script_dir/network/bin/sandbox-egress-guard.sha256")
     guard_digest=${guard_identity%% *}
-    "$script_dir/network/bin/claude-egress-guard" --probe >&2
+    "$script_dir/network/bin/sandbox-egress-guard" --probe >&2
 fi
 
 qualification_token=''
@@ -408,20 +408,20 @@ container_args=(
 )
 if ((qualification_probe)); then
     container_args+=(--label "io.claude-container.qualification=$qualification_token"
-        --volume "$qualification_input:/opt/claude-egress/qualification.json:ro"
-        --volume "$script_dir/network/qualification_probe.py:/opt/claude-egress/qualification_probe.py:ro"
-        --volume "$script_dir/network/qualification_runtime.py:/opt/claude-egress/qualification_runtime.py:ro")
+        --volume "$qualification_input:/opt/sandbox-egress/qualification.json:ro"
+        --volume "$script_dir/network/qualification_probe.py:/opt/sandbox-egress/qualification_probe.py:ro"
+        --volume "$script_dir/network/qualification_runtime.py:/opt/sandbox-egress/qualification_runtime.py:ro")
     for target in /workspace /shared-state /isolated-home /worktree-parent; do
         container_args+=(--volume "$workspace:$target:rw")
     done
     if ((qualification_tls)); then
-        container_args+=(--volume "$(dirname -- "$qualification_input")/cert.pem:/opt/claude-egress/qualification-cert.pem:ro")
+        container_args+=(--volume "$(dirname -- "$qualification_input")/cert.pem:/opt/sandbox-egress/qualification-cert.pem:ro")
     fi
 fi
 if [[ "$network_mode" != unrestricted ]]; then
     container_args+=(--network=none --pid=private --ipc=private
         --cap-drop=all --security-opt=no-new-privileges
-        --volume "$script_dir/network/bin/claude-egress-guard:/opt/claude-egress/guard:ro"
+        --volume "$script_dir/network/bin/sandbox-egress-guard:/opt/sandbox-egress/guard:ro"
         --volume "$script_dir/network/resolv.conf:/etc/resolv.conf:ro")
     for variable in HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy https_proxy no_proxy all_proxy; do
         container_args+=(--unsetenv "$variable")
@@ -450,7 +450,7 @@ if ((trust_host_ca)); then
 fi
 
 if ((qualification_probe)); then
-    args=(/usr/bin/python3 -I /opt/claude-egress/qualification_probe.py probe)
+    args=(/usr/bin/python3 -I /opt/sandbox-egress/qualification_probe.py probe)
 elif ((shell_mode)); then
     container_args+=(--entrypoint /bin/bash)
     args=()
@@ -764,9 +764,9 @@ if [[ "$network_mode" == provider ]]; then
     proxy_check_pid=''
     python3 -I "$script_dir/network/proxy_hardening.py" verify \
         "$session_dir/proxy.config" "$session_dir/proxy.effective"
-    container_args+=(--volume "$session_dir/transport:/run/claude-egress:ro"
-        --volume "$script_dir/network/relay.py:/opt/claude-egress/relay.py:ro"
-        --volume "$script_dir/network/mux.py:/opt/claude-egress/mux.py:ro")
+    container_args+=(--volume "$session_dir/transport:/run/sandbox-egress:ro"
+        --volume "$script_dir/network/relay.py:/opt/sandbox-egress/relay.py:ro"
+        --volume "$script_dir/network/mux.py:/opt/sandbox-egress/mux.py:ro")
     for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
         container_args+=(--env "$variable=http://127.0.0.1:18080")
     done
@@ -777,19 +777,19 @@ if [[ "$network_mode" == provider ]]; then
         )
     [[ -z "${ANTHROPIC_API_KEY:-}" ]] || container_args+=(--env ANTHROPIC_API_KEY)
     if ((qualification_probe)); then
-        args=(/usr/bin/python3 -I /opt/claude-egress/relay.py /usr/bin/python3 -I /opt/claude-egress/qualification_probe.py probe)
+        args=(/usr/bin/python3 -I /opt/sandbox-egress/relay.py /usr/bin/python3 -I /opt/sandbox-egress/qualification_probe.py probe)
     elif ((shell_mode)); then
-        args=(/usr/bin/python3 -I /opt/claude-egress/relay.py /bin/bash)
+        args=(/usr/bin/python3 -I /opt/sandbox-egress/relay.py /bin/bash)
     else
-        args=(/usr/bin/python3 -I /opt/claude-egress/relay.py /usr/local/bin/claude "${args[@]}")
+        args=(/usr/bin/python3 -I /opt/sandbox-egress/relay.py /usr/local/bin/claude "${args[@]}")
     fi
 fi
 if [[ "$network_mode" != unrestricted ]]; then
-    container_args+=(--entrypoint /opt/claude-egress/guard)
+    container_args+=(--entrypoint /opt/sandbox-egress/guard)
     if [[ "$network_mode" == provider ]]; then
         args=(--provider -- "${args[@]}")
     elif ((qualification_probe)); then
-        args=(--offline -- /usr/bin/python3 -I /opt/claude-egress/qualification_probe.py probe)
+        args=(--offline -- /usr/bin/python3 -I /opt/sandbox-egress/qualification_probe.py probe)
     elif ((shell_mode)); then
         args=(--offline -- /bin/bash)
     else

@@ -6,7 +6,7 @@ import socket
 import ssl
 import sys
 
-sys.path.insert(0, '/opt/claude-egress')
+sys.path.insert(0, '/opt/sandbox-egress')
 import proxy
 
 original_resolver = socket.getaddrinfo
