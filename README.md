@@ -34,6 +34,15 @@ all protected-path, guard and qualification checks.
 See the [guided setup reference](docs/setup.md) for saved preferences, image
 preparation, reruns/rollback and separate sandbox/authentication readiness.
 
+Provider transport isolates a missing stream-close acknowledgement from healthy
+tunnels. Closing records remain within the 64-stream budget until acknowledged;
+exhaustion refuses new local tunnels while established ones continue. Temporary
+control congestion applies bounded backpressure; a sustained shared-write stall
+still fails the channel closed. To deploy the N23 update, prepare matching runtime
+and immutable proxy images plus protected code, rerun qualification through setup
+or the manual workflow, and restart existing sessions. Failed candidates preserve
+the previous activation; see the setup reference for matching-image rollback.
+
 When a Unix service is required, setup reuses the selected same-host rootless
 endpoint or offers `systemctl --user enable --now podman.socket` with separate
 confirmation. This enables a host launch service; application delegation remains

@@ -46,6 +46,16 @@ setup, or update and requalify a manual restricted installation: changing the
 wrapper invalidates its old qualification identity. Existing activation and
 last-working-release rollback remain unchanged.
 
+The N23 transport update also requires matching protected code, runtime image
+and immutable proxy image: both images embed the multiplex implementation.
+Prepare them under explicit maintenance consent and rerun setup or manual
+qualification; old code/image fingerprints cannot authorize the candidate.
+Existing running sessions keep their original transport and need a restart to
+gain stream-failure isolation. Failed qualification keeps the previous activation.
+Rollback uses the previous protected release with its matching images and a
+currently valid report, requalifying when required. No fallback network mode is
+selected during update or rollback.
+
 Provider mode authorizes CONNECT hostname/address and requires matching SNI in
 the initial TLS ClientHello before forwarding client bytes. It preserves
 end-to-end certificate verification. ECH (including GREASE), missing/malformed or

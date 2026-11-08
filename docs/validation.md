@@ -1,5 +1,164 @@
 # Validation record
 
+## Multiplex stream-failure isolation (N23): 2026-11-08
+
+Change: `openspec/changes/archive/2026-11-08-isolate-mux-stream-failures/`. Measured on WSL2
+`6.6.87.2-microsoft-standard-WSL2` x86_64, usable Landlock ABI 3, rootless Podman
+server 4.9.3, Netavark, cgroups v2/systemd and standard OCI seccomp.
+SELinux/AppArmor were disabled. Host Python was 3.11.2. Runtime checks used the
+existing same-host Unix service, disposable native volumes and protected test
+installations. No real credentials, provider authentication, model requests or
+user-service activation were used. The actual Claude CLI test talks only to the
+local synthetic Messages fixture with a synthetic key.
+
+Measured candidate identities:
+
+- Runtime image: `d3df53d6595a3e8edb7dacac648092ab498d191475b9bd07252fab705bc4bedb`.
+- Production proxy image: `da6f4176269a91cc85843d713ec217388951c0c469fff78059fbdca9c9842f25`.
+- Guard: `6dc1ab5478118317f1228b21c04b7dfe95de7a5472e4fb811bb0a53ba0342a2c`.
+- Guard toolchain: `0b69ba43c894c4599fcfc0fa7b5e3c150ec26fcf7a2690e3c83708688ff9402c`.
+- `network/mux.py`: `13a8ec8eeb6ad261680855cf855072c675499129e4267ed5a22104a2d1db0fb8`.
+- `network/relay.py`: `3f37c023096e497bba83ea5d65193b5aaa781e708e56b25806debeb19a43484f`.
+
+Both candidate images were built from the checked-out Containerfiles with
+`podman build --pull=never`, retaining existing dependency layers. Controlled TLS
+tests build disposable fixture images from this production proxy and pin their
+identities separately; these images add only synthetic certificates/upstream
+fixtures. No operator image tags or installations were replaced.
+
+### Component evidence and unchanged limits
+
+The regression against the original implementation failed on both endpoint
+roles: a withheld CLOSE acknowledgement closed an unrelated stream at the real
+ten-second deadline (two cases, 20.066 s total). Before the change, a separate
+controlled blocked-writer experiment closed the channel after 66 OPEN/CLOSE
+pairs with 64 controls queued. These injected component faults do not establish
+their frequency in real Claude sessions.
+
+The revised mux suite passes 26 tests (23.631 s). It covers real ten-second
+acknowledgement expiry in both roles, delayed acknowledgement/capacity recovery,
+concurrent close ownership, exhausted outstanding slots with an established
+working stream, crossing open/data/credit/EOF frames, invalid transitions,
+discard accounting, coalesced closure bursts, queue recovery, caller cancellation
+at queue/lock/drain, session teardown and permanent write stalls. Shortened
+component deadlines and instrumented socket pairs remain separate from runtime
+acceptance. Initial development runs also caught a misplaced acknowledgement
+flag and a misplaced test assertion; both were corrected before final passes.
+
+There remain 64 outstanding stream slots, 64 queued controls, one control sender,
+at most 64 shared channel-owned stream-close tasks, 16 KiB DATA frames, 256 KiB
+receive credit per stream and a 16 MiB session buffer bound. Missing ACK retains
+compact state and its admission slot until remote CLOSE/channel teardown, never
+payload buffering or a running application tunnel. Queue admission, writer-lock
+acquisition and drain share a finite 30-second control-write deadline. The local
+ACK wait remains ten seconds after transmission; partial frames retain their
+separate absolute ten-second deadline, idle stream operations 300 seconds and
+tunnel lifetime 12 hours. No runtime limits were raised or removed.
+
+### Production-path evidence
+
+`bash tests/run-runtime.sh --guard` passed 18 discovered tests in 158.377 s,
+including 17 executed tests and the separately opt-in idle test skipped. Mocked
+guard component checks remain instrumentation only; the checks below use the
+unmodified static production guard, confined relay and trusted proxy.
+
+The test-owned wire boundary lives outside those processes and translates only
+test stream IDs, leaving TLS bytes intact. One case withholds the first CLOSE
+acknowledgement for 11 seconds while an independent TLS stream completes all 75
+progress chunks; a subsequent approved TLS request succeeds on the original
+channel. Another temporarily stops consuming proxy output and injects 8,140
+sequential immediately closed streams until shared socket backpressure is
+observed, then resumes reading. The established TLS stream completes and another
+approved connection succeeds on the same channel. Exact internal queue occupancy
+is asserted by the component test; runtime evidence observes propagated socket
+pressure and recovery without claiming an internal runtime queue measurement.
+Both cases retain denied-authority and mismatched-SNI zero-byte rejection
+controls through the production code. No shipped fault flag, syscall mock or
+application-command exception is involved.
+
+The first runtime-pressure attempt failed with the intermediate proxy
+`38a99d69448babe57da92bdfa2bb8af9c41998fcc3652bc5e25e3a3ceeab53fb`:
+the unrelated TLS reader timed out. Investigation addressed cancelled-worker
+reclamation for coalesced OPEN/CLOSE and the test boundary's partial-write
+pressure release. The full final guard pass above supersedes that attempt; the
+initial filtered run remains failed (4 discovered tests, one skipped, 225.008 s).
+
+### Integration and installation checks
+
+| Check | Result |
+| --- | --- |
+| Wrapper unittest suite | Passed: 62 tests, 218.419 s |
+| TLS parser/proxy suites (`test_tls_*.py`) | Passed: 12 tests, 0.774 s |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 13 tests, 1.951 s |
+| `bash tests/run-runtime.sh --setup` | Passed: 54 tests, 23.490 s |
+| Production network acceptance | All 19 cases covered: initial 15 passes plus successful scoped reruns of the four fixture failures (see below) |
+| Protected qualification acceptance | Passed: 13 tests, 115.937 s; requested runtime and proxy built from current sources |
+| Setup runtime acceptance | Passed: 2 tests, 158.856 s; candidate runtime/proxy, actual protected installation and rollback |
+| Real-duration 305-second idle acceptance | Passed: 1 test, 366.554 s; final candidate pair, actual 305-second idle pause |
+| Change strict validation, Bash syntax, Python parsing and whitespace | Passed |
+| Real authentication, native Linux/active LSMs and real user-service activation | Unavailable; not exercised by N23 |
+
+Concurrent initial qualification/setup runs encountered actual bounded Podman
+operation timeouts, including a 30-second identity probe, setup preparation and
+proxy-budget inspection. A provider probe also ended early in one run, and a
+candidate smoke returned status 1 after successful qualification in another.
+These were failures, not skipped controls; concurrency was present but is not
+proof of the cause of each failure. Initial qualification runs were 13 tests in
+229.630 s and 183.406 s (one failure each); a subsequent run passed all 13 in
+168.082 s but still selected the historical proxy. Setup runs failed one of two
+tests in 178.831 s, 86.477 s and 80.725 s respectively. Final reruns retain all
+production deadlines. Qualification acceptance now builds its disposable proxy
+from current sources instead of selecting the historical TLS-change tag.
+The setup acceptance harness explicitly
+routes only its prepared-runtime image lookup to the requested candidate, as it
+already does for its disposable proxy, without retagging operator defaults.
+
+The first full network run executed 19 tests in 766.918 s: 15 passed and four
+failed because the shared fixture supplied no ordinary runtime mode, retaining
+the pre-N20 implicit-offline assumption. The four diagnostics were missing-setup
+refusals, including the bootstrap-tampering and Windows-workspace cases. The
+fixture now explicitly selects offline; provider cases override it as before.
+All four scoped reruns passed: guarded argv/stdin/status/TTY in both state modes
+(1 test, 62.699 s), explicit offline/delegation rejection (1 test, 24.839 s),
+bootstrap tampering before application execution (1 test, 2.695 s), and Windows
+workspace persistence/restrictions (1 test, 31.342 s). The original full run
+remains failed; these scoped results complete its missing coverage. Other
+production-network cases passed, including both profile inventories, synthetic
+Claude tool execution, 64 verified TLS connections, effective 256 MiB/128-process
+budgets, actual process/memory exhaustion, CA off/on, signals and owned cleanup.
+
+Final selected-image qualification and setup were run sequentially after the
+network reruns, with no production-code or deadline changes. Qualification covers
+missing/stale/unsafe evidence, changed input identities, cancellation, concurrent
+atomic publication, fixed probes and real provider enforcement. Setup covers a
+fresh provider installation with host CA trust, a new terminal/managed launcher,
+unchanged rerun, offline migration, failed proxy/smoke candidates preserving the
+previous activation and reports, and unrestricted fresh setup/shell use. The
+initial failures above remain part of the record; final successful reruns do not
+retroactively change their outcomes. The exact cause of every transient initial
+failure was not established.
+
+Deployment requires matching protected code and both images, followed by setup
+or manual local qualification. Running sessions retain their previous transport
+until restarted. Failed qualification preserves the prior activation; rollback
+uses matching previous code/images and current matching evidence. These checks
+do not activate an operator installation or publish release-measured evidence.
+
+### Specification synchronization and archive: 2026-11-08
+
+All 14 implementation/acceptance tasks and all four planning artifacts were
+complete before archiving. The `network-egress` main spec now contains the
+updated multiplex transport requirement and the two added closing-state/control-
+pressure requirements. Comparison verified all delta descriptions and scenarios,
+with title/Purpose and every unrelated requirement preserved exactly; no delta
+operation headers remain. Change strict validation, main-spec validation (9/9)
+and whitespace checks passed. Main specs retain long-requirement warnings,
+including the existing multiplex requirement; no unrelated requirement was
+refactored for lint. The complete change, including `.openspec.yaml`, was moved
+to the archive path above with file hashes preserved. Only specs/documentation
+changed after the implementation acceptance runs; measured transport hashes and
+candidate image identities remain unchanged.
+
 ## Missing-setup admission (N20): 2026-11-08
 
 Change: `openspec/changes/archive/2026-11-08-clarify-missing-setup-startup/`. Measured on WSL2

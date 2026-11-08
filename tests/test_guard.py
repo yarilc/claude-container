@@ -323,12 +323,18 @@ class GuardTests(unittest.TestCase):
     def test_guarded_multiplex_proxy_tls_streaming_and_websocket(self):
         self.guarded_multiplex()
 
+    def test_guarded_multiplex_delayed_close_ack_preserves_tls(self):
+        self.guarded_multiplex(fault='ack')
+
+    def test_guarded_multiplex_control_pressure_preserves_tls(self):
+        self.guarded_multiplex(fault='pressure')
+
     @unittest.skipUnless(os.environ.get('CLAUDE_IDLE_TESTS') == '1',
                          'run tests/run-runtime.sh --guard-idle for the 305-second idle check')
     def test_guarded_multiplex_idle_resume(self):
         self.guarded_multiplex(idle=True)
 
-    def guarded_multiplex(self, idle=False):
+    def guarded_multiplex(self, idle=False, fault=None):
         import time
         from test_network_runtime import NetworkRuntime
         harness = NetworkRuntime('test_provider_uses_real_proxy_and_cleans_resources')
@@ -372,19 +378,31 @@ class GuardTests(unittest.TestCase):
             time.sleep(0.05)
         shutil.copyfile(context / 'cert.pem', self.fixture / 'cert.pem')
         script = (ROOT / 'tests/guard_mux_fixture.py').read_text() + '\n' + (ROOT / 'tests/tls_binding_fixture.py').read_text()
+        selected_transport = transport
+        if fault:
+            from mux_fault_boundary import FaultBoundary
+            selected_transport = self.fixture / 'fault-transport'
+            selected_transport.mkdir(mode=0o700)
+            boundary = FaultBoundary(selected_transport, transport, self.fixture, fault)
+            self.addCleanup(boundary.close)
+            script = (ROOT / 'tests/mux_failure_fixture.py').read_text() + '\n' + (ROOT / 'tests/tls_binding_fixture.py').read_text()
         if idle:
             script += '\n' + (ROOT / 'tests/idle_mux_fixture.py').read_text()
         (self.fixture / 'client.py').write_text(script)
-        extra = ['--volume', f'{transport}:/run/claude-egress:ro',
+        extra = ['--volume', f'{selected_transport}:/run/claude-egress:ro',
                  '--volume', f'{ROOT / "network/relay.py"}:/opt/claude-egress/relay.py:ro',
                  '--volume', f'{ROOT / "network/mux.py"}:/opt/claude-egress/mux.py:ro',
                  '--env', 'HTTPS_PROXY=http://127.0.0.1:18080',
                  '--env', 'https_proxy=http://127.0.0.1:18080']
         result = self.production_container('', mode='provider', extra=extra, program=[
             '/usr/bin/python3', '-I', '/opt/claude-egress/relay.py',
-            '/usr/bin/python3', '-I', '/workspace/client.py'], timeout=420 if idle else 60)
+            '/usr/bin/python3', '-I', '/workspace/client.py'], timeout=420 if idle else 120 if fault else 60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr + harness.podman('logs', name))
-        self.assertIn('guarded-mux-tls-ok', result.stdout)
+        self.assertIn('guarded-mux-stream-failure-recovered' if fault else 'guarded-mux-tls-ok', result.stdout)
+        if fault:
+            self.assertFalse(boundary.errors, boundary.errors)
+            self.assertTrue(boundary.delayed if fault == 'ack' else boundary.pressure)
+            print(f'production wire fault={fault} injected={boundary.injected} recovered', flush=True)
         if idle:
             self.assertIn('guarded-mux-idle-resume-ok', result.stdout)
 

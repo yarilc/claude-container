@@ -13,6 +13,7 @@ MAX_SESSION = MAX_STREAMS * WINDOW
 IDLE_TIMEOUT = 300
 WRITE_TIMEOUT = 30
 FRAME_TIMEOUT = 10
+CLOSE_TIMEOUT = 10
 
 
 async def bounded(awaitable, timeout):
@@ -44,6 +45,7 @@ class Stream:
         self.close_sent = False
         self.remote_done = asyncio.Event()
         self.worker = None
+        self.closer = None
         if opened:
             self.ready.set()
 
@@ -86,21 +88,39 @@ class Stream:
             await self.channel.frame(HALF_CLOSE, self.ident)
 
     async def close(self):
-        await self.channel.end_stream(self, remove=False)
-        if self.channel.closed:
-            self.channel.streams.pop(self.ident, None)
+        if self.remote_closed or self.channel.closed:
+            await self.channel.end_stream(self)
             return
-        if not self.close_sent:
-            self.close_sent = True
-            await self.channel.frame(CLOSE, self.ident)
-        if self.remote_closed:
-            self.channel.streams.pop(self.ident, None)
-        else:
-            try:
-                await bounded(self.remote_done.wait(), 10)
-            except asyncio.TimeoutError:
-                await self.channel.close()
+        # One channel-owned cleanup per outstanding stream survives caller
+        # cancellation. It expires independently of the retained wire state.
+        if self.closer is None:
+            self.closer = asyncio.create_task(self.finish_close())
+            self.channel.closers.add(self.closer)
+            self.closer.add_done_callback(self.channel.closers.discard)
+        await asyncio.shield(self.closer)
 
+    async def finish_close(self):
+        await self.channel.end_stream(self, remove=False)
+        if self.worker and not self.worker.done():
+            self.worker.cancel()
+        try:
+            if not self.close_sent:
+                self.close_sent = True
+                sent, deadline = await self.channel.queue_control(CLOSE, self.ident)
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        await sent.wait()
+                except asyncio.TimeoutError:
+                    await self.channel.close()
+                    return
+            try:
+                await bounded(self.remote_done.wait(), CLOSE_TIMEOUT)
+            except asyncio.TimeoutError:
+                # Retain only bounded validation state, occupying its original
+                # admission slot until acknowledgement or channel teardown.
+                pass
+        except StreamClosed:
+            pass
 
 
 class Channel:
@@ -109,6 +129,7 @@ class Channel:
         self.audit = audit
         self.streams = {}
         self.tasks = set()
+        self.closers = set()
         self.last_id = 0
         self.next_id = 1
         self.closed = False
@@ -133,25 +154,47 @@ class Channel:
             self.writer.close()
             raise
 
-    async def frame(self, kind, ident, payload=b''):
+    async def frame(self, kind, ident, payload=b'', *, deadline=None):
         if self.closed:
             raise StreamClosed()
-        async with self.write_lock:
-            if self.closed:
-                raise StreamClosed()
-            self.writer.write(HEADER.pack(kind, ident, len(payload)) + payload)
-            await bounded(self.writer.drain(), WRITE_TIMEOUT)
+        if deadline is None:
+            deadline = asyncio.get_running_loop().time() + WRITE_TIMEOUT
+        try:
+            async with asyncio.timeout_at(deadline):
+                async with self.write_lock:
+                    if self.closed:
+                        raise StreamClosed()
+                    self.writer.write(HEADER.pack(kind, ident, len(payload)) + payload)
+                    await self.writer.drain()
+        except (OSError, asyncio.TimeoutError):
+            await self.close()
+            raise StreamClosed() from None
+
+    async def queue_control(self, kind, ident):
+        if self.closed:
+            raise StreamClosed()
+        deadline = asyncio.get_running_loop().time() + WRITE_TIMEOUT
+        sent = asyncio.Event()
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self.controls.put((kind, ident, deadline, sent))
+        except asyncio.TimeoutError:
+            await self.close()
+            raise StreamClosed() from None
+        return sent, deadline
 
     async def send_controls(self):
         try:
             while True:
-                kind, ident = await self.controls.get()
-                await self.frame(kind, ident)
+                kind, ident, deadline, sent = await self.controls.get()
+                await self.frame(kind, ident, deadline=deadline)
+                sent.set()
         except (OSError, asyncio.TimeoutError, StreamClosed):
             await self.close()
 
     async def open(self, authority):
-        if self.on_open or self.closed or len(self.streams) >= MAX_STREAMS:
+        if (self.on_open or self.closed or len(self.streams) >= MAX_STREAMS or
+                len(self.closers) >= MAX_STREAMS):
             raise StreamClosed()
         if not 0 < len(authority) <= MAX_OPEN or self.next_id > 0xffffffff:
             raise ProtocolError()
@@ -192,7 +235,7 @@ class Channel:
         if kind == OPEN:
             if not self.on_open or ident != self.last_id + 1 or len(self.streams) >= MAX_STREAMS:
                 raise ProtocolError()
-            if len(self.tasks) >= MAX_STREAMS:
+            if len(self.tasks) >= MAX_STREAMS or len(self.closers) >= MAX_STREAMS:
                 raise ProtocolError()
             self.last_id = ident
             stream = Stream(self, ident)
@@ -210,6 +253,7 @@ class Channel:
             if retired and kind in (CLOSE, WINDOW_UPDATE):
                 return
             raise ProtocolError()
+        acknowledge = False
         async with stream.changed:
             if kind in (OPEN_OK, OPEN_ERR):
                 if self.on_open or stream.response_received:
@@ -249,16 +293,24 @@ class Channel:
                     self.streams.pop(ident, None)
                 else:
                     stream.close_sent = True
-                    try:
-                        self.controls.put_nowait((CLOSE, ident))
-                    except asyncio.QueueFull:
-                        raise ProtocolError() from None
+                    acknowledge = True
                     self.streams.pop(ident, None)
+                self.queued -= len(stream.buffer)
+                stream.buffer.clear()
                 if stream.worker and not stream.worker.done():
                     stream.worker.cancel()
             else:
                 raise ProtocolError()
             stream.changed.notify_all()
+        # The receiver itself provides bounded backpressure. Never wait for
+        # queue space while holding a stream lock or spawn enqueue tasks.
+        if stream.remote_closed and stream.worker:
+            # Reclaim the cancelled worker before admitting another OPEN.
+            # Buffered OPEN/CLOSE bursts must not turn cancellation latency
+            # into an apparent violation of the outstanding-stream limit.
+            await asyncio.gather(stream.worker, return_exceptions=True)
+        if acknowledge:
+            await self.queue_control(CLOSE, ident)
 
     async def receive(self):
         try:
@@ -285,22 +337,25 @@ class Channel:
         if self.closed:
             return
         self.closed = True
+        self.writer.close()
         for stream in list(self.streams.values()):
             stream.remote_done.set()
             await self.end_stream(stream)
         current = asyncio.current_task()
-        for task in tuple(self.tasks):
+        pending = self.tasks | self.closers
+        for task in tuple(pending):
             if task is not current:
                 task.cancel()
-        if self.tasks:
-            await asyncio.gather(*(t for t in self.tasks if t is not current), return_exceptions=True)
+        if pending:
+            await asyncio.gather(*(t for t in pending if t is not current), return_exceptions=True)
         if self.receiver and self.receiver is not current:
             self.receiver.cancel()
             await asyncio.gather(self.receiver, return_exceptions=True)
         if self.control_sender and self.control_sender is not current:
             self.control_sender.cancel()
             await asyncio.gather(self.control_sender, return_exceptions=True)
-        self.writer.close()
+        while not self.controls.empty():
+            self.controls.get_nowait()
 
 
 async def bridge(stream, reader, writer):

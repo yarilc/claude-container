@@ -45,10 +45,10 @@ class Relay:
                 except OSError:
                     pass
         finally:
-            if stream:
-                await stream.close()
             writer.close()
             self.active -= 1
+            if stream:
+                await stream.close()
 
 
 async def run(channel_socket, ready):

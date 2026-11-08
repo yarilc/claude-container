@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 import io
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -156,6 +157,16 @@ class QualificationRuntime(unittest.TestCase):
             env=os.environ | {'CLAUDE_CONTAINER_MAINTENANCE':'1'}, capture_output=True, text=True, timeout=60)
         if result.returncode:
             raise RuntimeError(result.stderr)
+        tag = 'localhost/claude-qualification-test:' + uuid.uuid4().hex
+        cls.addClassCleanup(subprocess.run, ['podman', 'rmi', '--force', tag],
+                            capture_output=True, timeout=30)
+        result = subprocess.run(['podman', 'build', '--pull=never', '--tag', tag,
+            '--file', str(ROOT/'network/Containerfile'), str(ROOT/'network')],
+            capture_output=True, text=True, timeout=60)
+        if result.returncode:
+            raise RuntimeError(result.stdout + result.stderr)
+        cls.proxy_image = subprocess.check_output(['podman', 'image', 'inspect',
+            '--format', '{{.Id}}', tag], text=True).strip()
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix='qualification-', dir=os.environ['CLAUDE_TEST_STATE_ROOT'])
@@ -211,8 +222,7 @@ class QualificationRuntime(unittest.TestCase):
         self.assertFalse((self.project/'agent-started').exists())
 
     def test_installed_provider_qualification_and_fixed_probe_cannot_run_application(self):
-        image=subprocess.check_output(['podman','image','inspect','--format','{{.Id}}',
-            'localhost/claude-egress:tls-binding-candidate'],text=True).strip()
+        image=self.proxy_image
         policy=self.install/'policy.json'; shutil.copyfile(ROOT/'network/policies/default.json',policy)
         self.env.update(CLAUDE_CONTAINER_NETWORK='provider',CLAUDE_CONTAINER_NETWORK_PROFILE='anthropic-account',
             CLAUDE_CONTAINER_NETWORK_POLICY=str(policy),CLAUDE_CONTAINER_EGRESS_IMAGE=image)
@@ -299,8 +309,7 @@ os.execv(os.environ['QUALIFY_ENGINE'],[os.environ['QUALIFY_ENGINE'],*args])
                 process.kill(); process.communicate()
 
     def test_cancelled_tls_gate_is_bounded_and_cleans_owned_resources(self):
-        image=subprocess.check_output(['podman','image','inspect','--format','{{.Id}}',
-            'localhost/claude-egress:tls-binding-candidate'],text=True).strip()
+        image=self.proxy_image
         policy=self.install/'policy.json'; shutil.copyfile(ROOT/'network/policies/default.json',policy)
         self.env.update(CLAUDE_CONTAINER_NETWORK='provider',CLAUDE_CONTAINER_NETWORK_PROFILE='anthropic-account',
             CLAUDE_CONTAINER_NETWORK_POLICY=str(policy),CLAUDE_CONTAINER_EGRESS_IMAGE=image)

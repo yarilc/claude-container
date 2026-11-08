@@ -33,13 +33,19 @@ class SetupRuntime(unittest.TestCase):
         self.proxy_selection = self.base / 'test-proxy-image'
         self.proxy_selection.write_text(self.build_proxy(ROOT / 'network'))
         prepared_proxy = self.proxy_selection.read_text()
-        # Route only setup's prepared-proxy lookup to this disposable build.
+        prepared_runtime = subprocess.check_output([self.real_podman, 'image', 'inspect',
+            '--format', '{{.Id}}', os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')],
+            env=self.env, text=True).strip()
+        # Route prepared lookups to the requested runtime and disposable proxy.
         # Do not retag or replace any operator-owned image.
         shim_dir = self.base / 'test-engine'
         shim_dir.mkdir()
         shim = shim_dir / 'podman'
         shim.write_text('#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n'
             + 'args=sys.argv[1:]\n'
+            + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/claude-code:latest', prepared_runtime)) + ": sys.exit(0)\n"
+            + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/claude-code:latest', prepared_runtime)) + ":\n"
+            + ' print(' + repr(prepared_runtime) + '); sys.exit(0)\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/claude-egress:local', prepared_proxy)) + ": sys.exit(0)\n"
             + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/claude-egress:local', prepared_proxy)) + ":\n"
             + ' print(Path(' + repr(str(self.proxy_selection)) + ').read_text().strip()); sys.exit(0)\n'

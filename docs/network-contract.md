@@ -90,7 +90,16 @@ An established channel does not expire merely because no frames arrive: an idle
 prompt needs no heartbeat or reconnect. After the first frame byte, header and
 payload completion share an absolute 10-second deadline. Stream idle operations
 remain bounded at 300 seconds and tunnel lifetimes at 12 hours; ordinary tunnel
-expiry with acknowledged closure preserves the session channel. EOF, incomplete
+expiry and missing close acknowledgement preserve a healthy session channel.
+The caller waits at most ten seconds for acknowledgement after CLOSE transmission;
+compact closing records occupy the existing 64-stream budget until remote CLOSE.
+Exhaustion refuses new local opens while existing healthy tunnels continue. Late
+frames retain state/credit checks; discarded DATA receives no new credit. A
+64-entry control queue, one sender and at most 64 shared stream-close tasks bound
+closure work. Temporary queue saturation applies bounded backpressure outside
+stream locks; queue admission, writer-lock acquisition and drain share an
+absolute 30-second control-write budget. Sustained write failure closes the
+channel; recoverable congestion alone does not. EOF, incomplete
 frames, protocol errors and actual proxy loss continue to fail closed.
 
 External pathname/abstract Unix services stay inaccessible regardless of mount,

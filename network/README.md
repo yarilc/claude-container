@@ -234,7 +234,11 @@ At most 64 streams are active. Each direction begins with 256 KiB of credit per
 stream; returned credit cannot exceed that window. Received bytes cannot exceed
 outstanding credit, 256 KiB per-stream buffers, or the 16 MiB session buffer cap.
 Writer buffering is bounded with backpressure; control acknowledgments have a
-separate queue of at most 64 entries so reading never waits on a congested writer.
+separate queue of at most 64 entries and one sender. Temporary saturation applies
+bounded backpressure outside stream locks; receiver dispatch can pause until
+space is available. Queue admission, writer-lock acquisition and drain share an
+absolute 30-second control-write budget. A sustained shared-write stall closes
+the channel; temporary pressure does not create a protocol error or drop CLOSE.
 The loopback relay accepts at most 64 active client handlers. Handshake/payload
 reads take at most 10 seconds; stream idle operations 300 seconds, writes 30 seconds,
 OPEN replies 15 seconds, CLOSE acknowledgments 10 seconds and tunnels 12 hours.
@@ -243,9 +247,20 @@ An established channel can wait indefinitely for the first byte of a new frame,
 including when no tunnels are open. Once a frame starts, its remaining header
 and validated payload share one absolute 10-second completion deadline; partial
 progress does not reset it. Quiet sessions require no heartbeat or reconnect.
-Individual tunnel expiry preserves the channel when closure is acknowledged;
+Local cancellation, operation expiry and a missing CLOSE acknowledgement preserve
+healthy unrelated tunnels. After the ten-second acknowledgement wait, the caller
+finishes and only compact validation state remains until remote CLOSE or channel
+teardown. Closing records count against the 64 outstanding-stream slots: repeated
+missing acknowledgements can exhaust admission, which rejects new local opens
+while established healthy tunnels continue. Valid crossing frames are checked;
+discarded DATA consumes remaining receive credit without granting fresh credit.
+Concurrent callers share one channel-owned close task per stream, at most 64;
+caller cancellation cannot drop required closure work. Payload buffers and tunnel
+workers are released, and delayed acknowledgement restores the occupied slot.
+Fully retired IDs still accept only idempotent CLOSE and WINDOW_UPDATE.
 EOF, malformed/incomplete frames, transport failure and cancellation still close
-it safely. Actual channel loss requires a new session.
+it safely (cancellation here means the session/channel, not one tunnel).
+Actual channel loss requires a new session.
 
 Run `bash tests/run-runtime.sh --guard-idle` with the prepared runtime and immutable
 guard toolchain images for opt-in idle acceptance. It runs controlled verified

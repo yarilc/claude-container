@@ -62,6 +62,8 @@ class NetworkRuntime(unittest.TestCase):
         (self.base / 'home').mkdir(mode=0o700)
         self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.base / 'home'),
                     'CONTAINER_HOST': os.environ['CONTAINER_HOST'],
+                    # Ordinary launches require explicit mode since N20.
+                    'CLAUDE_CONTAINER_NETWORK': 'offline',
                     'CLAUDE_CONTAINER_STATE_DIR': str(self.base / 'state'),
                     'CLAUDE_CONTAINER_IMAGE': IMAGE,
                     'CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR': str(self.runtime)}

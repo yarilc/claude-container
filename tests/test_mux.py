@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'network'))
 import mux
 import proxy
 import relay
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 class MuxTests(unittest.IsolatedAsyncioTestCase):
@@ -258,6 +258,259 @@ class MuxTests(unittest.IsolatedAsyncioTestCase):
         await self.peers[0].close()
         with self.assertRaises(mux.StreamClosed):
             await asyncio.wait_for(pending, 2)
+
+    async def test_missing_close_ack_preserves_other_stream_and_delayed_ack_releases_slot(self):
+        for server_side in (False, True):
+            with self.subTest(server_side=server_side):
+                await self.asyncTearDown()
+                await self.asyncSetUp()
+                first = await self.client.open(b'allowed.test:443')
+                healthy = await self.client.open(b'allowed.test:443')
+                local = self.peers[0] if server_side else self.client
+                remote = self.client if server_side else self.peers[0]
+                closing = local.streams[first.ident]
+                original = remote.frame
+
+                async def withhold(kind, ident, payload=b'', **kwargs):
+                    if kind != mux.CLOSE or ident != first.ident:
+                        await original(kind, ident, payload, **kwargs)
+
+                started = asyncio.get_running_loop().time()
+                with patch.object(remote, 'frame', withhold):
+                    await asyncio.wait_for(closing.close(), 12)
+                self.assertGreaterEqual(asyncio.get_running_loop().time() - started, 9.9)
+                self.assertFalse(local.closed)
+                self.assertIn(first.ident, local.streams)
+                self.assertFalse(closing.buffer)
+                await healthy.send(b'still-alive')
+                self.assertEqual(await healthy.read(), b'still-alive')
+                await original(mux.CLOSE, first.ident)
+                await asyncio.wait_for(closing.remote_done.wait(), 2)
+                self.assertNotIn(first.ident, local.streams)
+                following = await self.client.open(b'allowed.test:443')
+                await following.send(b'following')
+                self.assertEqual(await following.read(), b'following')
+                await asyncio.gather(healthy.close(), following.close())
+
+    async def test_missing_acks_bound_capacity_and_concurrent_close_ownership(self):
+        streams = [await self.client.open(b'allowed.test:443') for _ in range(mux.MAX_STREAMS)]
+        original = self.peers[0].frame
+
+        async def withhold(kind, ident, payload=b'', **kwargs):
+            if kind != mux.CLOSE:
+                await original(kind, ident, payload, **kwargs)
+
+        with patch.object(self.peers[0], 'frame', withhold), patch.object(mux, 'CLOSE_TIMEOUT', .03):
+            await asyncio.gather(*(s.close() for s in streams[:-1]), streams[0].close())
+        self.assertEqual(len(self.client.streams), mux.MAX_STREAMS)
+        self.assertFalse(self.client.closers)
+        self.assertEqual(self.client.queued, 0)
+        with self.assertRaises(mux.StreamClosed):
+            await self.client.open(b'allowed.test:443')
+        await streams[-1].send(b'capacity-exhausted-but-alive')
+        self.assertEqual(await streams[-1].read(), b'capacity-exhausted-but-alive')
+        await original(mux.CLOSE, streams[0].ident)
+        await asyncio.wait_for(streams[0].remote_done.wait(), 1)
+        new = await self.client.open(b'allowed.test:443')
+        await asyncio.gather(new.close(), streams[-1].close())
+        self.assertFalse(self.client.closed)
+
+    async def test_closing_stream_validates_crossing_data_credit_and_eof(self):
+        stream = await self.client.open(b'allowed.test:443')
+        original = self.peers[0].frame
+
+        async def withhold(kind, ident, payload=b'', **kwargs):
+            if kind not in (mux.CLOSE, mux.WINDOW_UPDATE):
+                await original(kind, ident, payload, **kwargs)
+
+        with patch.object(self.peers[0], 'frame', withhold), patch.object(mux, 'CLOSE_TIMEOUT', .02):
+            await stream.send(b'queued')
+            async with asyncio.timeout(1):
+                while not stream.buffer:
+                    await asyncio.sleep(.001)
+            await stream.close()
+        await original(mux.WINDOW_UPDATE, stream.ident, struct.pack('!I', len(b'queued')))
+        await original(mux.DATA, stream.ident, b'crossing')
+        await original(mux.HALF_CLOSE, stream.ident)
+        # The following terminal frame provides an ordered processing barrier.
+        await original(mux.CLOSE, stream.ident)
+        await asyncio.wait_for(stream.remote_done.wait(), 1)
+        self.assertEqual(stream.receive_credit, mux.WINDOW - len(b'queuedcrossing'))
+        self.assertEqual(stream.credit, mux.WINDOW)
+        self.assertFalse(stream.buffer)
+        self.assertEqual(self.client.queued, 0)
+        self.assertFalse(self.client.closed)
+        await original(mux.DATA, stream.ident, b'fully-retired')
+        await asyncio.wait_for(self.client.receiver, 1)
+        self.assertTrue(self.client.closed)
+
+    async def test_retained_closing_state_rejects_invalid_transitions(self):
+        for invalid in ('credit', 'after-eof', 'duplicate-response', 'over-receive-credit'):
+            with self.subTest(invalid=invalid):
+                await self.asyncTearDown()
+                await self.asyncSetUp()
+                stream = await self.client.open(b'allowed.test:443')
+                original = self.peers[0].frame
+                async def withhold(kind, ident, payload=b'', **kwargs):
+                    if kind != mux.CLOSE:
+                        await original(kind, ident, payload, **kwargs)
+                with patch.object(self.peers[0], 'frame', withhold), patch.object(mux, 'CLOSE_TIMEOUT', .02):
+                    await stream.close()
+                if invalid == 'credit':
+                    await original(mux.WINDOW_UPDATE, stream.ident, struct.pack('!I', 1))
+                elif invalid == 'after-eof':
+                    await original(mux.HALF_CLOSE, stream.ident)
+                    await original(mux.DATA, stream.ident, b'x')
+                elif invalid == 'duplicate-response':
+                    await original(mux.OPEN_OK, stream.ident)
+                else:
+                    for _ in range(mux.WINDOW // mux.MAX_DATA + 1):
+                        await original(mux.DATA, stream.ident, b'x' * mux.MAX_DATA)
+                await asyncio.wait_for(self.client.receiver, 1)
+                self.assertTrue(self.client.closed)
+                self.assertEqual(self.client.queued, 0)
+
+    async def test_control_burst_recovers_with_fixed_queue_and_no_enqueue_tasks(self):
+        channel, writer = await self.wire_pair(True)
+        await channel.write_lock.acquire()
+        try:
+            for ident in range(1, 70):
+                value = b'allowed.test:443'
+                writer.write(mux.HEADER.pack(mux.OPEN, ident, len(value)) + value +
+                             mux.HEADER.pack(mux.CLOSE, ident, 0))
+                await writer.drain()
+            # Coalesced frames must reclaim cancelled workers as well as
+            # tolerate queue pressure; no scheduling delay between requests.
+            await asyncio.sleep(.05)
+            self.assertFalse(channel.closed)
+            self.assertEqual(channel.controls.qsize(), mux.MAX_STREAMS)
+            self.assertLessEqual(len(channel.tasks), mux.MAX_STREAMS)
+            self.assertLessEqual(len(channel.closers), mux.MAX_STREAMS)
+        finally:
+            channel.write_lock.release()
+        for _ in range(200):
+            if channel.last_id == 69 and channel.controls.empty():
+                break
+            await asyncio.sleep(.005)
+        self.assertEqual(channel.last_id, 69)
+        self.assertTrue(channel.controls.empty())
+        self.assertFalse(channel.closed)
+
+    async def test_shared_write_deadline_includes_lock_and_drain(self):
+        for blocked_at in ('lock', 'drain', 'queue'):
+            with self.subTest(blocked_at=blocked_at):
+                channel, writer = await self.wire_pair(False)
+                with patch.object(mux, 'WRITE_TIMEOUT', .05):
+                    if blocked_at == 'queue':
+                        channel.control_sender.cancel()
+                        await asyncio.gather(channel.control_sender, return_exceptions=True)
+                        for _ in range(mux.MAX_STREAMS):
+                            await channel.queue_control(mux.CLOSE, 1)
+                        operation = channel.queue_control(mux.CLOSE, 1)
+                    elif blocked_at == 'lock':
+                        await channel.write_lock.acquire()
+                        operation = channel.frame(mux.CLOSE, 1)
+                    else:
+                        async def stalled():
+                            await asyncio.Event().wait()
+                        channel.writer.drain = stalled
+                        operation = channel.frame(mux.CLOSE, 1)
+                    with self.assertRaises(mux.StreamClosed):
+                        await asyncio.wait_for(operation, 1)
+                self.assertTrue(channel.closed)
+                self.assertFalse(channel.streams)
+                self.assertTrue(channel.controls.empty())
+                if channel.write_lock.locked():
+                    channel.write_lock.release()
+
+    async def test_caller_cancel_during_close_does_not_drop_required_control(self):
+        stream = await self.client.open(b'allowed.test:443')
+        await self.client.write_lock.acquire()
+        closing = asyncio.create_task(stream.close())
+        await asyncio.sleep(.02)
+        closing.cancel()
+        await asyncio.gather(closing, return_exceptions=True)
+        self.assertFalse(self.client.closed)
+        self.assertEqual(len(self.client.closers), 1)
+        self.client.write_lock.release()
+        await asyncio.wait_for(stream.remote_done.wait(), 1)
+        await asyncio.sleep(0)
+        self.assertNotIn(stream.ident, self.client.streams)
+        self.assertFalse(self.client.closed)
+
+    async def test_close_cancellation_at_queue_and_drain_and_session_shutdown(self):
+        for phase in ('queue', 'drain'):
+            for shutdown in (False, True):
+                with self.subTest(phase=phase, shutdown=shutdown):
+                    await self.asyncTearDown()
+                    await self.asyncSetUp()
+                    retired = await self.client.open(b'allowed.test:443')
+                    await retired.close()
+                    stream = await self.client.open(b'allowed.test:443')
+                    gate = asyncio.Event()
+                    drain = self.client.writer.drain
+                    async def paused():
+                        await gate.wait()
+                        await drain()
+                    self.client.writer.drain = paused
+                    if phase == 'queue':
+                        for _ in range(mux.MAX_STREAMS + 1):
+                            await self.client.queue_control(mux.CLOSE, retired.ident)
+                            await asyncio.sleep(0)
+                    closing = asyncio.create_task(stream.close())
+                    await asyncio.sleep(.02)
+                    closing.cancel()
+                    await asyncio.gather(closing, return_exceptions=True)
+                    self.assertLessEqual(len(self.client.closers), 1)
+                    if shutdown:
+                        await asyncio.wait_for(self.client.close(), 1)
+                        self.assertTrue(all(t.done() for t in self.client.closers))
+                        self.assertTrue(self.client.controls.empty())
+                        self.assertFalse(self.client.streams)
+                    else:
+                        gate.set()
+                        await asyncio.wait_for(stream.remote_done.wait(), 1)
+                        self.assertNotIn(stream.ident, self.client.streams)
+                        healthy = await self.client.open(b'allowed.test:443')
+                        await healthy.send(b'cancel-recovered')
+                        self.assertEqual(await healthy.read(), b'cancel-recovered')
+                        await healthy.close()
+                        self.assertFalse(self.client.closed)
+
+    async def test_outstanding_open_response_can_cross_cancelled_open(self):
+        channel, writer = await self.wire_pair(False)
+        # A raw peer withholds OPEN_OK until local cancellation is complete.
+        with patch.object(mux, 'CLOSE_TIMEOUT', .02):
+            opening = asyncio.create_task(channel.open(b'allowed.test:443'))
+            await asyncio.sleep(.01)
+            opening.cancel()
+            await asyncio.gather(opening, return_exceptions=True)
+        stream = channel.streams[1]
+        writer.write(mux.HEADER.pack(mux.OPEN_OK, 1, 0) +
+                     mux.HEADER.pack(mux.DATA, 1, 1) + b'x' +
+                     mux.HEADER.pack(mux.CLOSE, 1, 0))
+        await writer.drain()
+        await asyncio.wait_for(stream.remote_done.wait(), 1)
+        self.assertTrue(stream.response_received)
+        self.assertFalse(channel.closed)
+        self.assertEqual(channel.queued, 0)
+
+    async def test_relay_releases_socket_and_handler_when_close_is_cancelled(self):
+        stream = MagicMock()
+        stream.close = AsyncMock(side_effect=asyncio.CancelledError)
+        channel = MagicMock(closed=False)
+        channel.open = AsyncMock(return_value=stream)
+        adapter = relay.Relay(channel)
+        reader = asyncio.StreamReader()
+        reader.feed_data(b'CONNECT allowed.test:443 HTTP/1.1\r\n\r\n')
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+        with patch.object(relay, 'bridge', AsyncMock(side_effect=asyncio.CancelledError)):
+            with self.assertRaises(asyncio.CancelledError):
+                await adapter.handle(reader, writer)
+        self.assertEqual(adapter.active, 0)
+        writer.close.assert_called_once()
+        stream.close.assert_awaited_once()
 
     async def test_malformed_lengths_versions_and_ids_close_channel(self):
         rng = random.Random(9731)
