@@ -18,7 +18,7 @@ PROVIDER_CHECKS = ('proxy-policy', 'proxy-budgets', 'tls-match', 'tls-mismatch-z
 GUARD = 'sandbox-egress-guard'
 # Shared code plus the agent profile and provider policy. The wrapper name comes
 # from the profile, so ``code_files`` binds the profile that selected it.
-SHARED_CODE = ('network/control.py', 'network/platform_check.py', 'network/agent_profile.py',
+SHARED_CODE = ('network/control.py', 'network/platform_check.py', 'network/agent_profile.py', 'network/session.py',
                'network/policy.py', 'network/proxy_hardening.py', 'network/qualify.py',
                'network/qualification_records.py', 'network/qualification_runtime.py',
                'network/qualification_probe.py', 'network/qualification_peer.py',

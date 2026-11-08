@@ -304,7 +304,7 @@ install -m 700 claude-container.sh "$installation/claude-container.sh"
 install -m 644 Containerfile .containerignore "$installation/"
 install -m 644 setup/diagnostics.py "$installation/setup/"
 install -m 644 agent/profile.json "$installation/agent/"
-install -m 644 network/control.py network/policy.py network/agent_profile.py network/proxy.py \
+install -m 644 network/control.py network/policy.py network/agent_profile.py network/session.py network/proxy.py \
     network/relay.py network/mux.py network/resolv.conf network/Containerfile network/.containerignore "$installation/network/"
 install -m 600 agent/policies/default.json "$installation/agent/policies/default.json"
 install -d -m 700 "$HOME/.local/state/claude-egress"

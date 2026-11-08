@@ -25,12 +25,23 @@ SHARED_TESTS = (
     'tests/guard_bind_fixture.py', 'tests/guard_mux_fixture.py', 'tests/guard_runtime_fixture.py',
     'tests/guard_syscall_mock.c', 'tests/idle_mux_fixture.py', 'tests/mux_failure_fixture.py',
     'tests/mux_fault_boundary.py', 'tests/network_fixture.py', 'tests/proxy_budget_fixture.py',
-    'tests/tls_binding_fixture.py',
+    'tests/tls_binding_fixture.py', 'tests/test_session.py',
 )
 SKIPPED_PARTS = ('__pycache__', 'bin')
 # Exact (path, line) exceptions. Keep empty unless a reviewed reason exists.
 ALLOWED = frozenset()
 NEUTRAL = ('/opt/sandbox-egress', '/run/sandbox-egress', 'sandbox-egress-guard')
+HELPER_OPERATIONS = ('prepare', 'start', 'agent-args', 'stop')
+# In-line restricted lifecycle that belongs to network/session.py, never to a wrapper.
+INLINE_LIFECYCLE = (
+    r'network/control\.py', r'network/platform_check\.py', r'proxy_hardening\.py',
+    r'sandbox-egress-guard', r'/opt/sandbox-egress', r'/run/sandbox-egress',
+    r'--pids-limit', r'transport/ready', r'EGRESS_PROFILE=',
+)
+
+
+def inline_lifecycle(text):
+    return [pattern for pattern in INLINE_LIFECYCLE if re.search(pattern, text)]
 
 
 def shared_files(root):
@@ -89,15 +100,26 @@ class WrapperConsistency(unittest.TestCase):
         self.assertTrue(set(agent_profile.SUFFIXES) <= used)
 
     def test_wrapper_uses_profile_labels_images_and_home(self):
-        for kind in agent_profile.LABELS:
-            self.assertIn(PROFILE.label(kind), self.wrapper)
+        # Egress and qualification labels are applied by the shared helper.
+        self.assertIn(PROFILE.label('session'), self.wrapper)
         self.assertIn(PROFILE.images['agent'], self.wrapper)
         self.assertIn(PROFILE.home, self.wrapper)
         self.assertIn(PROFILE.command, self.wrapper)
 
-    def test_wrapper_and_image_use_neutral_internal_paths(self):
+    def test_wrapper_delegates_the_restricted_session_to_the_shared_helper(self):
+        self.assertIn('network/session.py', self.wrapper)
+        for operation in HELPER_OPERATIONS:
+            self.assertRegex(self.wrapper, r'"\$\{session_helper\[@\]\}" ' + operation + r'\b')
+        self.assertEqual(inline_lifecycle(self.wrapper), [])
+
+    def test_inline_lifecycle_detection_detects_a_reintroduced_call(self):
+        changed = self.wrapper + '\npython3 -I "$script_dir/network/control.py" snapshot\n'
+        self.assertEqual(inline_lifecycle(changed), [r'network/control\.py'])
+
+    def test_image_and_helper_use_neutral_internal_paths(self):
+        helper = (ROOT / 'network/session.py').read_text()
         for path in NEUTRAL:
-            self.assertIn(path, self.wrapper)
+            self.assertIn(path, helper)
         self.assertIn('/opt/sandbox-egress/', self.image)
         legacy = re.compile(r'/(?:opt|run)/(?!sandbox-egress)[a-z0-9-]+-egress\b|\b(?!sandbox-)[a-z0-9]+-egress-guard\b')
         self.assertEqual(legacy.findall(self.wrapper), [])

@@ -327,39 +327,38 @@ if ((trust_host_ca)); then
     fi
 fi
 
-network_preflight=()
+# Restricted sessions use the shared helper; this wrapper keeps only the
+# agent-specific command, environment, state and credentials.
+session_helper=(python3 -I "$script_dir/network/session.py")
+network_inputs=()
+qualification_inputs=()
+guard_digest=''
 if [[ "$network_mode" != unrestricted ]]; then
-    network_preflight=(--installation "$script_dir" --writable "$workspace_mount"
+    network_inputs=(--installation "$script_dir" --writable "$workspace_mount"
         --mount-target "$workspace_mount" --mount-target /claude-home)
     if [[ -n "$state_dir" ]]; then
-        network_preflight+=(--writable "$state_dir")
+        network_inputs+=(--writable "$state_dir")
     else
-        network_preflight+=(--writable "$claude_dir" --writable "$openspec_dir")
+        network_inputs+=(--writable "$claude_dir" --writable "$openspec_dir")
     fi
     if [[ "$network_mode" == provider ]]; then
-        network_preflight+=(--policy "$CLAUDE_CONTAINER_NETWORK_POLICY"
+        network_inputs+=(--policy "$CLAUDE_CONTAINER_NETWORK_POLICY"
             --profile "$CLAUDE_CONTAINER_NETWORK_PROFILE" --proxy-image "$CLAUDE_CONTAINER_EGRESS_IMAGE"
             --runtime "$CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR")
     fi
-    python3 -I "$script_dir/network/control.py" preflight "${network_preflight[@]}"
-    printf '%s' "$network_platform" | python3 -I "$script_dir/network/platform_check.py" \
-        --server-version "${network_version%$'\n'}" --backend "${network_backend%$'\n'}" \
-        --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info" >/dev/null
-    guard_identity=$(<"$script_dir/network/bin/sandbox-egress-guard.sha256")
-    guard_digest=${guard_identity%% *}
-    "$script_dir/network/bin/sandbox-egress-guard" --probe >&2
-fi
-
-qualification_token=''
-qualification_tls=0
-qualification_input=''
-if ((qualification_probe)); then
-    qualification_input=${CLAUDE_CONTAINER_QUALIFICATION_INPUT:-}
-    qualification_record=$(python3 -I "$script_dir/network/control.py" qualification-input \
-        "${network_preflight[@]}" --input "$qualification_input" --workspace "$workspace" --mode "$network_mode")
-    read -r qualification_token qualification_tls <<< "$qualification_record"
-    [[ "$qualification_token" =~ ^[a-f0-9]{32}$ && "$qualification_tls" =~ ^[01]$ ]] \
-        || die 'invalid fixed qualification input'
+    prepare_inputs=(--mode "$network_mode" --server-version "${network_version%$'\n'}"
+        --backend "${network_backend%$'\n'}" --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info")
+    if ((qualification_probe)); then
+        prepare_inputs+=(--probe --qualification-input "${CLAUDE_CONTAINER_QUALIFICATION_INPUT:-}"
+            --workspace "$workspace")
+    fi
+    prepared=$(printf '%s' "$network_platform" | "${session_helper[@]}" prepare "${network_inputs[@]}" "${prepare_inputs[@]}")
+    read -r guard_digest qualification_token qualification_tls <<< "$prepared"
+    if ((qualification_probe)); then
+        qualification_inputs=(--probe --token "$qualification_token" --workspace "$workspace"
+            --qualification-input "${CLAUDE_CONTAINER_QUALIFICATION_INPUT:-}")
+        [[ "$qualification_tls" != 1 ]] || qualification_inputs+=(--tls)
+    fi
 fi
 
 if ((build_image)); then
@@ -406,27 +405,6 @@ container_args=(
     --volume "$workspace_mount:$workspace_mount:rw"
     "${state_mounts[@]}"
 )
-if ((qualification_probe)); then
-    container_args+=(--label "io.claude-container.qualification=$qualification_token"
-        --volume "$qualification_input:/opt/sandbox-egress/qualification.json:ro"
-        --volume "$script_dir/network/qualification_probe.py:/opt/sandbox-egress/qualification_probe.py:ro"
-        --volume "$script_dir/network/qualification_runtime.py:/opt/sandbox-egress/qualification_runtime.py:ro")
-    for target in /workspace /shared-state /isolated-home /worktree-parent; do
-        container_args+=(--volume "$workspace:$target:rw")
-    done
-    if ((qualification_tls)); then
-        container_args+=(--volume "$(dirname -- "$qualification_input")/cert.pem:/opt/sandbox-egress/qualification-cert.pem:ro")
-    fi
-fi
-if [[ "$network_mode" != unrestricted ]]; then
-    container_args+=(--network=none --pid=private --ipc=private
-        --cap-drop=all --security-opt=no-new-privileges
-        --volume "$script_dir/network/bin/sandbox-egress-guard:/opt/sandbox-egress/guard:ro"
-        --volume "$script_dir/network/resolv.conf:/etc/resolv.conf:ro")
-    for variable in HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy https_proxy no_proxy all_proxy; do
-        container_args+=(--unsetenv "$variable")
-    done
-fi
 if [[ -t 0 && -t 1 ]]; then
     container_args+=(--tty)
     [[ -z "${TERM:-}" ]] || container_args+=(--env TERM)
@@ -450,7 +428,7 @@ if ((trust_host_ca)); then
 fi
 
 if ((qualification_probe)); then
-    args=(/usr/bin/python3 -I /opt/sandbox-egress/qualification_probe.py probe)
+    args=()  # The shared helper supplies the fixed probe command.
 elif ((shell_mode)); then
     container_args+=(--entrypoint /bin/bash)
     args=()
@@ -485,17 +463,14 @@ create_output=''
 creation_pending=0
 shutdown_deadline=0
 ownership_label=io.claude-container.session
-proxy_label=io.claude-container.egress
-proxy_id=''
-proxy_pending=0
-proxy_cid=''
-proxy_output=''
-proxy_check_pid=''
+session_start_pid=''
 qualification_check_pid=''
 
 cleanup_warning() {
+    local proxy_id=unknown
+    [[ -z "$session_dir" || ! -s "$session_dir/proxy.id" ]] || proxy_id=$(<"$session_dir/proxy.id")
     printf 'claude-container: cleanup %s (container=%s proxy=%s session=%s); inspect the Podman engine for remaining session containers\n' \
-        "$*" "${container_id:-unknown}" "${proxy_id:-unknown}" "${session_token:-unknown}" >&2
+        "$*" "${container_id:-unknown}" "$proxy_id" "${session_token:-unknown}" >&2
 }
 
 # All shutdown engine calls share a deadline and reserve time for local clients.
@@ -574,28 +549,6 @@ recover_container() {
     fi
 }
 
-recover_proxy() {
-    local candidate='' owner
-    [[ -z "$proxy_id" && "$proxy_pending" == 1 ]] || return 0
-    if [[ -s "$proxy_cid" ]]; then
-        candidate=$(<"$proxy_cid")
-    elif [[ -s "$proxy_output" ]]; then
-        candidate=$(<"$proxy_output")
-    fi
-    if [[ ! "$candidate" =~ ^[a-f0-9]{64}$ ]]; then
-        candidate=$(control ps --all --no-trunc --filter "label=$proxy_label=$session_token" --format '{{.ID}}') || return 1
-    fi
-    [[ -n "$candidate" ]] || return 0
-    [[ "$candidate" =~ ^[a-f0-9]{64}$ ]] || { cleanup_warning 'invalid recovered proxy identity'; return 1; }
-    if owner=$(control inspect --type container --format "{{index .Config.Labels \"$proxy_label\"}}" "$candidate") \
-        && [[ "$owner" == "$session_token" ]]; then
-        proxy_id=$candidate
-    else
-        cleanup_warning 'could not confirm recovered proxy ownership'
-        return 1
-    fi
-}
-
 # Keep collision reconciliation interruptible just like the create request.
 creation_lookup() {
     local lookup_status=0
@@ -631,7 +584,6 @@ shutdown() {
     fi
     if [[ -n "$session_dir" ]]; then
         recover_container
-        recover_proxy
         if [[ -n "$signal" && -n "$container_id" && -n "$client_pid" ]]; then
             control kill --signal "$signal" "$container_id" >/dev/null
             graceful_until=$((SECONDS + 5))
@@ -640,13 +592,13 @@ shutdown() {
             done
         fi
         [[ -z "$container_id" ]] || control rm --force --time 0 --ignore "$container_id" >/dev/null
-        if [[ -n "$proxy_check_pid" ]]; then
-            # GNU timeout owns a separate process group. Reap the whole group
-            # before its leader, including a client that ignores TERM.
-            kill -TERM -- "-$proxy_check_pid" 2>/dev/null || true
+        if [[ -n "$session_start_pid" ]]; then
+            # The session helper owns a separate process group. Reap the whole
+            # group before its leader, including an engine client that ignores TERM.
+            kill -TERM -- "-$session_start_pid" 2>/dev/null || true
             sleep 0.1
-            kill -KILL -- "-$proxy_check_pid" 2>/dev/null || true
-            reap_client "$proxy_check_pid"
+            kill -KILL -- "-$session_start_pid" 2>/dev/null || true
+            reap_client "$session_start_pid"
         fi
         reap_client "$create_pid"
         reap_client "$client_pid"
@@ -665,14 +617,10 @@ shutdown() {
                 cleanup_warning 'interrupted creation could not be reconciled'
             fi
         fi
-        [[ -z "$proxy_id" ]] || control rm --force --time 0 --ignore "$proxy_id" >/dev/null
-        if ((proxy_pending)) && [[ -z "$proxy_id" ]]; then
-            recover_proxy
-            [[ -z "$proxy_id" ]] || control rm --force --time 0 --ignore "$proxy_id" >/dev/null
-        fi
-        if [[ -f "$session_dir/logs/denials.jsonl" ]]; then
-            printf 'claude-container: recent protected egress diagnostics (sanitized)\n' >&2
-            tail -n 20 -- "$session_dir/logs/denials.jsonl" >&2
+        if [[ "$network_mode" == provider ]]; then
+            # Owned proxy recovery/removal and diagnostics share the remaining budget.
+            "${session_helper[@]}" stop --session "$session_dir" --deadline "$((shutdown_deadline - SECONDS))" \
+                --container "${container_id:-unknown}" || true
         fi
         rm -rf -- "$session_dir"
     fi
@@ -701,101 +649,32 @@ if [[ "$network_mode" != unrestricted ]] && ((qualification_probe == 0)); then
     fi
 fi
 if [[ "$network_mode" == provider ]]; then
-    policy_identity=$(python3 -I "$script_dir/network/control.py" snapshot "${network_preflight[@]}" --session "$session_dir")
-    printf 'claude-container: network profile=%s policy=%s\n' "$CLAUDE_CONTAINER_NETWORK_PROFILE" "$policy_identity" >&2
-    printf 'claude-container: egress session=%s diagnostics=%s/logs/denials.jsonl\n' "$session_token" "$session_dir" >&2
-    proxy_cid=$session_dir/proxy.cid
-    proxy_output=$session_dir/proxy.stdout
-    proxy_pending=1
-    proxy_fixture_args=()
-    proxy_fixture_command=()
-    if ((qualification_probe)); then
-        proxy_fixture_args+=(--label "io.claude-container.qualification=$qualification_token")
-        if ((qualification_tls)); then
-            proxy_fixture_args+=(--entrypoint python3
-                --volume "$script_dir/network/qualification_proxy.py:/qualification-proxy.py:ro"
-                --volume "$(dirname -- "$qualification_input"):/qualification:ro")
-            proxy_fixture_command=(-I /qualification-proxy.py)
-        fi
-    fi
-    podman create --name "claude-egress-$session_token" --cidfile "$proxy_cid" \
-        --label "$proxy_label=$session_token" --read-only --read-only-tmpfs=false \
-        --userns=keep-id --user "$caller_uid:$caller_gid" \
-        --cap-drop=all --security-opt=no-new-privileges \
-        --pids-limit=128 --memory=256m \
-        --volume "$session_dir/config:/config:ro" \
-        --volume "$session_dir/transport:/transport:rw" \
-        --volume "$session_dir/logs:/logs:rw" \
-        --env "EGRESS_PROFILE=$CLAUDE_CONTAINER_NETWORK_PROFILE" --env "EGRESS_SESSION=$session_token" \
-        "${proxy_fixture_args[@]}" "$CLAUDE_CONTAINER_EGRESS_IMAGE" "${proxy_fixture_command[@]}" >"$proxy_output" &
-    create_pid=$!
-    wait "$create_pid"
-    create_pid=''
-    proxy_id=$(<"$proxy_output")
-    [[ "$proxy_id" =~ ^[a-f0-9]{64}$ ]] || die 'invalid egress proxy container ID'
-    proxy_pending=0
-    podman start "$proxy_id" >"$session_dir/proxy.start" &
-    create_pid=$!
-    wait "$create_pid"
-    create_pid=''
-    proxy_deadline=$((SECONDS + 10))
-    while [[ ! -f "$session_dir/transport/ready" || ! -S "$session_dir/transport/proxy.sock" ]]; do
-        ((SECONDS < proxy_deadline)) || die 'egress proxy unavailable: readiness deadline expired; check immutable image and policy'
-        sleep 0.05
-    done
-    [[ $(<"$session_dir/transport/ready") == "$policy_identity guard=$guard_digest mux=1 tls=tls-clienthello-sni-v1" ]] || die 'egress proxy policy/bootstrap/protocol identity mismatch'
-    # Bounded, interruptible checks in the actual proxy cgroup; engine flags
-    # alone do not prove that rootless controllers applied their limits.
-    timeout --signal=TERM --kill-after=1s 5s podman inspect --type container \
-        --format '{{json .HostConfig}}' "$proxy_id" >"$session_dir/proxy.config" &
-    proxy_check_pid=$!
-    if ! wait "$proxy_check_pid"; then
-        proxy_check_pid=''
-        die 'cannot inspect proxy resource budgets; agent not started'
-    fi
-    proxy_check_pid=''
-    timeout --signal=TERM --kill-after=1s 5s podman exec "$proxy_id" python3 -I \
-        -c "$(<"$script_dir/network/proxy_hardening.py")" probe >"$session_dir/proxy.effective" &
-    proxy_check_pid=$!
-    if ! wait "$proxy_check_pid"; then
-        proxy_check_pid=''
-        die 'cannot verify effective proxy hardening; check rootless cgroup v2 memory/pids controllers and proxy image; agent not started'
-    fi
-    proxy_check_pid=''
-    python3 -I "$script_dir/network/proxy_hardening.py" verify \
-        "$session_dir/proxy.config" "$session_dir/proxy.effective"
-    container_args+=(--volume "$session_dir/transport:/run/sandbox-egress:ro"
-        --volume "$script_dir/network/relay.py:/opt/sandbox-egress/relay.py:ro"
-        --volume "$script_dir/network/mux.py:/opt/sandbox-egress/mux.py:ro")
-    for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
-        container_args+=(--env "$variable=http://127.0.0.1:18080")
-    done
-    container_args+=(--env NO_PROXY=localhost,127.0.0.1,::1 --env no_proxy=localhost,127.0.0.1,::1
-        --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --env DISABLE_AUTOUPDATER=1
-        --env DISABLE_TELEMETRY=1 --env DISABLE_ERROR_REPORTING=1
-        --env ENABLE_CLAUDEAI_MCP_SERVERS=false --env CLAUDE_CODE_DISABLE_ARTIFACT=1
-        )
-    [[ -z "${ANTHROPIC_API_KEY:-}" ]] || container_args+=(--env ANTHROPIC_API_KEY)
-    if ((qualification_probe)); then
-        args=(/usr/bin/python3 -I /opt/sandbox-egress/relay.py /usr/bin/python3 -I /opt/sandbox-egress/qualification_probe.py probe)
-    elif ((shell_mode)); then
-        args=(/usr/bin/python3 -I /opt/sandbox-egress/relay.py /bin/bash)
-    else
-        args=(/usr/bin/python3 -I /opt/sandbox-egress/relay.py /usr/local/bin/claude "${args[@]}")
-    fi
+    "${session_helper[@]}" start "${network_inputs[@]}" "${qualification_inputs[@]}" --session "$session_dir" \
+        --guard-digest "$guard_digest" >"$session_dir/policy.identity" &
+    session_start_pid=$!
+    wait "$session_start_pid"
+    session_start_pid=''
 fi
 if [[ "$network_mode" != unrestricted ]]; then
-    container_args+=(--entrypoint /opt/sandbox-egress/guard)
-    if [[ "$network_mode" == provider ]]; then
-        args=(--provider -- "${args[@]}")
-    elif ((qualification_probe)); then
-        args=(--offline -- /usr/bin/python3 -I /opt/sandbox-egress/qualification_probe.py probe)
-    elif ((shell_mode)); then
-        args=(--offline -- /bin/bash)
-    else
-        args=(--offline -- /usr/local/bin/claude "${args[@]}")
+    application=()
+    if ((shell_mode)); then
+        application=(/bin/bash)
+    elif ((qualification_probe == 0)); then
+        application=(/usr/local/bin/claude "${args[@]}")
     fi
-    printf 'claude-container: guard=%s abi-min=3 filter=native-x86_64-v1 mux=1\n' "$guard_digest" >&2
+    "${session_helper[@]}" agent-args --installation "$script_dir" --mode "$network_mode" \
+        --session "$session_dir" --guard-digest "$guard_digest" "${qualification_inputs[@]}" \
+        -- "${application[@]}" >"$session_dir/agent.args"
+    mapfile -d '' -t restricted <"$session_dir/agent.args"
+    [[ "${restricted[0]:-}" =~ ^[0-9]+$ ]] || die 'invalid restricted session arguments'
+    container_args+=("${restricted[@]:1:${restricted[0]}}")
+    args=("${restricted[@]:$((1 + restricted[0]))}")
+    if [[ "$network_mode" == provider ]]; then
+        container_args+=(--env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --env DISABLE_AUTOUPDATER=1
+            --env DISABLE_TELEMETRY=1 --env DISABLE_ERROR_REPORTING=1
+            --env ENABLE_CLAUDEAI_MCP_SERVERS=false --env CLAUDE_CODE_DISABLE_ARTIFACT=1)
+        [[ -z "${ANTHROPIC_API_KEY:-}" ]] || container_args+=(--env ANTHROPIC_API_KEY)
+    fi
 fi
 for ((attempt=0; attempt<20; attempt++)); do
     name="$prefix-$next_index"

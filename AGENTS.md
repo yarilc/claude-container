@@ -22,7 +22,10 @@ Claude Code:
   names, native home/command/configuration variables, authentication methods
   and their required provider hosts. `agent/policies/` holds the provider policies.
 - `network/` contains preflight/snapshot validation, the profile loader,
-  the standalone CONNECT proxy image, native IPC bootstrap, and agent-side relay.
+  the restricted session helper (`session.py`: `prepare`, `start`,
+  `agent-args`, `stop`), the standalone CONNECT proxy image, native IPC
+  bootstrap, and agent-side relay. The wrapper calls the helper and never
+  re-implements proxy lifecycle, guard arguments or proxy cleanup in-line.
 - `setup/` contains host-only interactive preparation, declarative managed
   preferences, the exec-based launcher and a sandbox smoke check.
 

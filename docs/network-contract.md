@@ -215,6 +215,17 @@ wrapper keeps the following per-agent items:
 `tests/test_alignment.py` fails if an agent identifier enters the shared files.
 Variable prefixes differ; behavior and migration semantics must agree.
 
+Port checklist for a wrapper:
+1. Copy `network/`, `setup/` and the shared tests listed in `tests/test_alignment.py`.
+2. Write `agent/profile.json` and `agent/policies/default.json`.
+3. In the wrapper, keep CLI, engine verification, image operations, state layout
+   and the agent container lifecycle. Call `network/session.py` `prepare`,
+   `start`, `agent-args` and `stop` as documented in `network/README.md`. Add
+   only agent-specific command, environment and credential options.
+4. Pass the remaining shutdown budget to `stop`, and terminate an in-flight
+   `start` by process group.
+5. Adapt the agent-specific tests, then run the shared and runtime suites.
+
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
 | Claude (this repository) | WSL ABI-3/additive-filter contract specified here | Mandatory bootstrap and multiplexed proxy integrated | See versioned guard, IP/IPC and wrapper evidence | Account login/reuse/refresh passed; real-key API optional/unavailable |

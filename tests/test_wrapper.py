@@ -422,7 +422,7 @@ class WrapperTests(unittest.TestCase):
         (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
         shutil.copyfile(ROOT / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
         shutil.copyfile(ROOT / 'network/platform_check.py', install / 'network/platform_check.py')
-        for name in ('network/agent_profile.py', 'network/policy.py', 'agent/profile.json'):
+        for name in ('network/session.py', 'network/agent_profile.py', 'network/policy.py', 'agent/profile.json'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
         (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')

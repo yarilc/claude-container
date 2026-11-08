@@ -1,5 +1,50 @@
 # Validation record
 
+## Restricted session helper extraction: 2026-11-08
+
+Change: `openspec/changes/extract-network-session/`. `network/session.py` now owns
+preflight, the guard probe, proxy lifecycle, restricted arguments and proxy
+cleanup. `claude-container.sh` went from 850 to 729 lines and calls `prepare`,
+`start`, `agent-args` and `stop`.
+
+### Executed in the restricted Claude session
+
+This session has no `AF_UNIX`, no Podman service and only `noexec` or
+permission-emulating storage. The helper suite ran on the 9p checkout mount,
+which allows execution.
+
+| Command | Result |
+| --- | --- |
+| `SANDBOX_TEST_TMPDIR=<exec dir> python3 -m unittest discover -s tests -p test_session.py` | Passed: 14 tests, 6 skipped. The skips are the readiness-dependent `start` success and fail-closed cases, which need a Unix socket fixture. Covered here: argument refusal, prepare outputs and refusals, invalid proxy ID and engine status, the 10-second readiness bound, process-group termination of an interrupted `start` with recovery by `stop`, ownership-confirmed `stop` paths, deadline bounding with a TERM-ignoring engine, the diagnostics tail, and exact NUL-safe `agent-args` per mode |
+| `test_alignment.py` | Passed: 9 tests. Covered: the helper in the shared inventory; the wrapper calls all four operations and contains no in-line lifecycle, with a detection self-test; the literal scan, which caught and fixed two agent literals in the new tests |
+| `test_agent_profile.py`, `test_network_policy.py`, `test_qualification.py`, `test_platform.py`, `test_mux.py`, `test_tls_*.py` | Passed (runtime-only cases skipped) |
+| `bash -n claude-container.sh`, `git diff --check` | Passed |
+| Simulated port with the dummy profile (`network/`, `setup/` and shared tests copied unchanged, `diff -rq` identical) | Shared suites including `test_session.py` passed unchanged |
+
+### Executed on the WSL host
+
+Operator run on 2026-11-08, native temporary directory, rootless Podman. No
+initial failures.
+
+| Command | Result |
+| --- | --- |
+| `test_session.py` | Passed: 14 tests, none skipped (socket-dependent `start` cases included) |
+| `test_wrapper.py` | Passed: 62 tests, with the real `session.py` in the restricted fixture, including `test_proxy_probe_timeout_and_interruption_clean_only_proxy` and `test_stalled_controls_and_repeated_signal_are_bounded` |
+| `test_setup.py` | Passed: 57 tests, including the manifest test with `network/session.py` |
+| `run-runtime.sh --guard` | Passed: 18 tests, 1 skipped (idle case, run separately) |
+| `run-runtime.sh --guard-idle` | Passed: 1 test (346 s) |
+| `run-runtime.sh --network-policy` | Passed: 14 tests |
+| `run-runtime.sh --network` | Passed: 19 tests |
+| `run-runtime.sh --qualification` | Passed: 15 tests |
+| `run-runtime.sh --setup-runtime` | Passed: 2 tests |
+
+### Managed setup and launches
+
+Operator run on 2026-11-08. A managed `--container-setup` completed for the
+offline and the provider mode. The offline launch started a working container
+without model access, as expected. The provider launch worked normally,
+Claude Code included. The session running this change uses that installation.
+
 ## Agent profile extraction: 2026-11-08
 
 Change: `openspec/changes/extract-agent-profile/`. This record covers only the

@@ -39,7 +39,7 @@ def main():
             raise PolicyError('host process, namespace and device trees cannot be restricted workspace/state binds')
     installation = trusted_path(args.installation, args.writable, directory=True)
     profile = agent_profile.load(installation / agent_profile.PROFILE, writable=args.writable)
-    for name in (profile.wrapper, 'network/control.py', 'network/policy.py', 'network/agent_profile.py',
+    for name in (profile.wrapper, 'network/control.py', 'network/policy.py', 'network/agent_profile.py', 'network/session.py',
                  'network/relay.py', 'network/mux.py', 'network/resolv.conf', agent_profile.POLICY):
         trusted_path(installation / name, args.writable)
     diagnostics = installation / 'setup/diagnostics.py'

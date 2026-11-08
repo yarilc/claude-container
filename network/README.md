@@ -37,8 +37,32 @@ OCI seccomp, SELinux policy and mount restrictions; failures never cause a
 privileged or unrestricted retry. Unrestricted agent launches retain their
 existing arguments.
 
+## Restricted session helper
+
+Wrappers do not implement the restricted lifecycle themselves. They call
+`network/session.py` as a separate process (`python3 -I`) with four fixed
+operations, in this order:
+
+| Operation | Does | Output |
+| --- | --- | --- |
+| `prepare --mode M --installation I --writable … --mount-target … [provider inputs] --server-version … --backend … --endpoint … --engine …` (platform JSON on stdin) | control preflight, platform check, guard `--probe`; with `--probe --qualification-input F --workspace W`, validates the fixed qualification input | one line: `guard_digest` or `guard_digest token tls` |
+| `start [network inputs] [probe inputs] --session S --guard-digest D` | snapshot, proxy create and start, readiness identity, bounded inspect/exec hardening checks; runs in its own process group | `policy_identity` |
+| `agent-args --installation I --mode M --session S --guard-digest D [probe inputs] -- command…` | restricted options, provider relay mounts and proxy variables, guard entrypoint | NUL-terminated records: option count, options, entrypoint arguments |
+| `stop --session S --deadline SECONDS [--container ID]` | ownership-confirmed proxy recovery (`proxy.id`, or `proxy.pending` with cid, stdout or label) and removal within the remaining shutdown budget; sanitized diagnostics tail | none; warnings on stderr |
+
+The wrapper keeps everything agent-specific and adds it itself:
+- the agent command and approval-bypass arguments;
+- optional-traffic variables and credential forwarding;
+- the state layout and the agent container lifecycle.
+
+On shutdown it terminates an in-flight `start` by process group, removes the agent
+container and then calls `stop` with the seconds left of its 20-second budget.
+`start` never cleans up; its `proxy.pending`/`proxy.id` markers let `stop`
+recover ownership. Failures keep the exact statuses and messages of the
+underlying checks.
+
 Each session proxy has `--pids-limit=128 --memory=256m`. After readiness, the
-wrapper performs bounded inspect and exec checks of its actual cgroup v2
+session helper performs bounded inspect and exec checks of its actual cgroup v2
 `pids.max=128` and `memory.max=268435456`, zero capability sets, NoNewPrivs and
 standard seccomp before any agent runs. `network/proxy_hardening.py` is protected
 installed code; its fixed probe runs inside the proxy without extra mounts or
