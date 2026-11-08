@@ -76,6 +76,12 @@ The relay is confined, no unfiltered supervisor remains, and neither proxy nor
 protocol sends host descriptors or exposes administration. Channel death fails
 closed and requires a new session; no finite one-shot socket pool or reconnect
 exception is permitted. Close the data FD before executing the application branch.
+An established channel does not expire merely because no frames arrive: an idle
+prompt needs no heartbeat or reconnect. After the first frame byte, header and
+payload completion share an absolute 10-second deadline. Stream idle operations
+remain bounded at 300 seconds and tunnel lifetimes at 12 hours; ordinary tunnel
+expiry with acknowledged closure preserves the session channel. EOF, incomplete
+frames, protocol errors and actual proxy loss continue to fail closed.
 
 External pathname/abstract Unix services stay inaccessible regardless of mount,
 alias, socket type or creation time. **New named Unix services and unconnected Unix sockets are denied everywhere,

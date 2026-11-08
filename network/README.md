@@ -236,9 +236,26 @@ outstanding credit, 256 KiB per-stream buffers, or the 16 MiB session buffer cap
 Writer buffering is bounded with backpressure; control acknowledgments have a
 separate queue of at most 64 entries so reading never waits on a congested writer.
 The loopback relay accepts at most 64 active client handlers. Handshake/payload
-reads take at most 10 seconds; idle operations 300 seconds, writes 30 seconds,
+reads take at most 10 seconds; stream idle operations 300 seconds, writes 30 seconds,
 OPEN replies 15 seconds, CLOSE acknowledgments 10 seconds and tunnels 12 hours.
 Async timeouts preserve cancellation without spawning detached operations.
+An established channel can wait indefinitely for the first byte of a new frame,
+including when no tunnels are open. Once a frame starts, its remaining header
+and validated payload share one absolute 10-second completion deadline; partial
+progress does not reset it. Quiet sessions require no heartbeat or reconnect.
+Individual tunnel expiry preserves the channel when closure is acknowledged;
+EOF, malformed/incomplete frames, transport failure and cancellation still close
+it safely. Actual channel loss requires a new session.
+
+Run `bash tests/run-runtime.sh --guard-idle` with the prepared runtime and immutable
+guard toolchain images for opt-in idle acceptance. It runs controlled verified
+TLS requests and the existing TLS rejection controls through the production
+guard, relay and proxy, pauses for 305 seconds without application requests,
+then opens a fresh tunnel in the same session. Production timeout constants stay
+unchanged; only this test's application watchdog is extended to 420 seconds.
+Ordinary qualification and `--guard` do not include the long wait. No real
+credentials or model calls are used. Component tests use shortened deadlines
+and are separate evidence from this real-duration check.
 
 Unknown types, versions, IDs, reused OPEN IDs, oversized lengths, credit overflow,
 zero credit, data before authorization/after EOF and invalid transitions close

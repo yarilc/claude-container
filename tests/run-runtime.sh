@@ -33,10 +33,14 @@ elif [[ "${1:-}" == --network-policy ]]; then
 elif [[ "${1:-}" == --mux ]]; then
     pattern=test_mux.py
     shift
-elif [[ "${1:-}" == --guard ]]; then
+elif [[ "${1:-}" == --guard || "${1:-}" == --guard-idle ]]; then
     pattern=test_guard.py
     guard_toolchain=$(podman image inspect --format '{{.Id}}' "${CLAUDE_GUARD_TOOLCHAIN:-localhost/claude-guard-toolchain:development}")
     guard_environment=(--env CLAUDE_GUARD_TESTS=1 --env "CLAUDE_GUARD_TOOLCHAIN=$guard_toolchain")
+    if [[ "$1" == --guard-idle ]]; then
+        guard_environment+=(--env CLAUDE_IDLE_TESTS=1)
+        set -- "$1" -k test_guarded_multiplex_idle_resume "${@:2}"
+    fi
     shift
 fi
 volume=''

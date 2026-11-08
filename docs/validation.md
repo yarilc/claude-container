@@ -1,5 +1,59 @@
 # Validation record
 
+## Provider idle channel regression: 2026-11-08
+
+Change: `openspec/changes/archive/2026-11-08-fix-provider-idle-disconnect/`. Measured on WSL2
+`6.6.87.2-microsoft-standard-WSL2` x86_64, usable Landlock ABI 3, rootless Podman
+server 4.9.3 with Netavark, standard OCI seccomp, SELinux/AppArmor disabled.
+No real credentials, authenticated provider requests or model calls were used.
+
+| Check | Result |
+| --- | --- |
+| Wrapper synthetic suite | Passed, 59 tests |
+| Multiplex and actual relay component suite | Passed, 16 tests; shortened test-only deadlines |
+| TLS ClientHello parser / TLS proxy component suites | Passed, 7 / 5 tests |
+| Policy suite on disposable native storage | Passed, 13 tests, including protected ancestors |
+| Production guard suite | Passed, 15 executed tests; dedicated slow idle test skipped by default |
+| `bash tests/run-runtime.sh --guard-idle` | Passed, 1 test in 361.548 seconds, including a real 305-second idle gap |
+| Same idle acceptance with pre-fix receiver | Expected failure: verified TLS worked before idle, then loopback CONNECT failed with errno 111 after 305 seconds |
+| Qualification suite | 11/13 initially passed; TLS cancellation readiness and concurrent platform admission failed during concurrent suite execution. Both passed on a separate two-test rerun (46.513 seconds); no qualification control was weakened |
+| Production-wrapper network suite | 18/19 initially passed (979.809 seconds). Bootstrap fault acceptance stopped in preliminary qualification with `controlled TLS probe ended early`; the unchanged test passed separately (52.034 seconds), and also passed separately with the old receiver (57.571 seconds) |
+| Bash syntax / whitespace / OpenSpec strict validation | Passed |
+| Real authenticated idle session compatibility | Unavailable; requires separate credential/model-call authorization |
+
+Idle acceptance used the production static guard, confined relay and trusted
+proxy with unchanged timeout constants, a controlled TLS endpoint and a disposable
+exact-destination policy. Matching TLS, streaming/WebSocket, denied destinations
+and 15 zero-byte TLS rejection controls ran before the idle gap. A fresh verified
+TLS tunnel succeeded afterwards. The proxy only admits one bootstrap channel,
+so this successful resume did not replace or reconnect that channel. The old
+receiver was taken from commit `f8db098cb54ce1edda894db66d1da9ce6a9f32c3` into a
+separate disposable checkout; its expected failure reproduced the reported error.
+
+Measured identities (not a new release-measured qualification entry):
+
+- Runtime base image: `a96af83c8276d42d029a501ecfc6f886c446055ed5157a934cfeac486d9b0ef9`.
+  The protected relay/multiplex sources were mounted read-only by the production
+  guard fixture, as in restricted wrapper launches.
+- Rebuilt production proxy: `9817b1083f1c6f27831c5d51f2c57bbe3a587c9336b9002f36f09806f5563c8b`.
+- Controlled TLS image for the passing idle case: `2ca69d9606e8db80e037b23187ed171cb3e0034e964579d65fd67028031e6165`.
+- Guard SHA-256: `6dc1ab5478118317f1228b21c04b7dfe95de7a5472e4fb811bb0a53ba0342a2c`;
+  immutable toolchain: `0b69ba43c894c4599fcfc0fa7b5e3c150ec26fcf7a2690e3c83708688ff9402c`.
+- Shared `network/mux.py` SHA-256: `2e63d6f7a7ec573c6f09420fe1f2755a795d7f54f581f60c1d0ec114df38333d`.
+- Controlled policy revision/digest: `anthropic-2026-11-06-v1`
+  `45f645648427d15e9616b4212b168ed08a5d7347a5c10e2c3a4d5bcde8c4e1f5`.
+
+These results do not deploy or activate a managed installation. Follow the
+matching-code/image rebuild and qualification procedure in `docs/setup.md` and
+relaunch existing sessions. Production guard evidence is separate from link-time
+syscall-mock component coverage in the guard suite.
+The network suite included both bundled profile inventories against controlled
+TLS endpoints, proxy loss, 64-stream budgets and actual process/memory exhaustion.
+Initial admission/readiness failures and successful reruns are separate results;
+the full network and qualification suites did not each pass in a single run.
+Their intermittent failures were not reproduced in the isolated reruns, and no
+claim is made that this change fixes those admission/readiness failures.
+
 ## Local restricted-platform qualification (N19): 2026-11-07–08
 
 Implementation is tracked by

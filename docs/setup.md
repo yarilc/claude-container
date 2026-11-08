@@ -72,6 +72,18 @@ can invoke `--container-qualify` alone with their existing explicit environment
 configuration; this command never starts an ordinary Claude session or grants
 maintenance. Help and unrestricted launches do not require a report.
 
+For the provider idle-channel fix, rerun setup from the updated reviewed checkout
+and explicitly approve maintenance and image refresh so both the runtime and
+proxy images contain the same updated multiplex receiver. Install the matching
+protected release and let normal qualification regenerate reports for its changed
+code and immutable image identities; an old report must not be copied or reused.
+The guard ABI and mux wire version remain unchanged. Relaunch existing sessions:
+their preconnected channel cannot be repaired after closure. The optional
+`bash tests/run-runtime.sh --guard-idle` check documented in `network/README.md`
+verifies reuse after a real 305-second pause without authentication. Rollback
+uses the retained last-working release and its normal qualification checks;
+the previous receiver still has the five-minute inactivity defect.
+
 Reports bind kernel/boot, ABI, engine/backend/security artifacts, protected code,
 immutable images, selected policy/profile, CA trust and hardening. Relevant changes
 require requalification. Unobservable active LSM policy state forces a new gate

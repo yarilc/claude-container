@@ -12,6 +12,7 @@ WINDOW = 256 * 1024
 MAX_SESSION = MAX_STREAMS * WINDOW
 IDLE_TIMEOUT = 300
 WRITE_TIMEOUT = 30
+FRAME_TIMEOUT = 10
 
 
 async def bounded(awaitable, timeout):
@@ -262,13 +263,17 @@ class Channel:
     async def receive(self):
         try:
             while True:
-                raw = await bounded(self.reader.readexactly(HEADER.size), IDLE_TIMEOUT)
-                kind, ident, size = HEADER.unpack(raw)
-                limits = {OPEN: (1, MAX_OPEN), OPEN_OK: (0, 0), OPEN_ERR: (1, 11),
-                          DATA: (1, MAX_DATA), HALF_CLOSE: (0, 0), CLOSE: (0, 0), WINDOW_UPDATE: (4, 4)}
-                if kind not in limits or not limits[kind][0] <= size <= limits[kind][1]:
-                    raise ProtocolError()
-                payload = await bounded(self.reader.readexactly(size), 10) if size else b''
+                # Quiet sessions retain their sole preconnected channel. Once a
+                # frame starts, one absolute deadline bounds header and payload.
+                first = await self.reader.readexactly(1)
+                async with asyncio.timeout(FRAME_TIMEOUT):
+                    raw = first + await self.reader.readexactly(HEADER.size - 1)
+                    kind, ident, size = HEADER.unpack(raw)
+                    limits = {OPEN: (1, MAX_OPEN), OPEN_OK: (0, 0), OPEN_ERR: (1, 11),
+                              DATA: (1, MAX_DATA), HALF_CLOSE: (0, 0), CLOSE: (0, 0), WINDOW_UPDATE: (4, 4)}
+                    if kind not in limits or not limits[kind][0] <= size <= limits[kind][1]:
+                        raise ProtocolError()
+                    payload = await self.reader.readexactly(size) if size else b''
                 await self.dispatch(kind, ident, payload)
         except (ProtocolError, asyncio.IncompleteReadError, OSError, asyncio.TimeoutError, StreamClosed):
             if self.audit:

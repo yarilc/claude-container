@@ -181,7 +181,7 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 78)
         self.assertIn('runtime directory validation', result.stderr)
 
-    def production_container(self, script, mode='offline', extra=(), program=None):
+    def production_container(self, script, mode='offline', extra=(), program=None, timeout=60):
         image = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
         command = ['podman', 'run', '--rm', '--interactive', '--network=none',
                    '--pid=private', '--ipc=private', '--read-only',
@@ -195,7 +195,7 @@ class GuardTests(unittest.TestCase):
                    '--volume', f'{ROOT / "network/resolv.conf"}:/etc/resolv.conf:ro',
                    *extra, '--entrypoint', '/usr/local/bin/guard', image,
                    '--' + mode, '--', *(program or ['/usr/bin/python3', '-I', '-c', script])]
-        return subprocess.run(command, input='', capture_output=True, text=True, timeout=60)
+        return subprocess.run(command, input='', capture_output=True, text=True, timeout=timeout)
 
     def test_production_filter_and_landlock_on_real_rootless_kernel(self):
         endpoint = self.fixture / 'external.sock'
@@ -321,6 +321,14 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(received, [b'approved-channel'])
 
     def test_guarded_multiplex_proxy_tls_streaming_and_websocket(self):
+        self.guarded_multiplex()
+
+    @unittest.skipUnless(os.environ.get('CLAUDE_IDLE_TESTS') == '1',
+                         'run tests/run-runtime.sh --guard-idle for the 305-second idle check')
+    def test_guarded_multiplex_idle_resume(self):
+        self.guarded_multiplex(idle=True)
+
+    def guarded_multiplex(self, idle=False):
         import time
         from test_network_runtime import NetworkRuntime
         harness = NetworkRuntime('test_provider_uses_real_proxy_and_cleans_resources')
@@ -364,6 +372,8 @@ class GuardTests(unittest.TestCase):
             time.sleep(0.05)
         shutil.copyfile(context / 'cert.pem', self.fixture / 'cert.pem')
         script = (ROOT / 'tests/guard_mux_fixture.py').read_text() + '\n' + (ROOT / 'tests/tls_binding_fixture.py').read_text()
+        if idle:
+            script += '\n' + (ROOT / 'tests/idle_mux_fixture.py').read_text()
         (self.fixture / 'client.py').write_text(script)
         extra = ['--volume', f'{transport}:/run/claude-egress:ro',
                  '--volume', f'{ROOT / "network/relay.py"}:/opt/claude-egress/relay.py:ro',
@@ -372,9 +382,11 @@ class GuardTests(unittest.TestCase):
                  '--env', 'https_proxy=http://127.0.0.1:18080']
         result = self.production_container('', mode='provider', extra=extra, program=[
             '/usr/bin/python3', '-I', '/opt/claude-egress/relay.py',
-            '/usr/bin/python3', '-I', '/workspace/client.py'])
+            '/usr/bin/python3', '-I', '/workspace/client.py'], timeout=420 if idle else 60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr + harness.podman('logs', name))
         self.assertIn('guarded-mux-tls-ok', result.stdout)
+        if idle:
+            self.assertIn('guarded-mux-idle-resume-ok', result.stdout)
 
     def test_operator_packaging_uses_same_static_immutable_artifact(self):
         destination = self.fixture / 'packaged'
