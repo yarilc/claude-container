@@ -57,11 +57,28 @@ def unix_control(names):
 
 def effective_budgets(budgets, cgroup=Path('/sys/fs/cgroup'), membership=Path('/proc/self/cgroup')):
     # Effective agent budgets in this container's private cgroup v2 namespace.
+    # Enforced budgets must match exactly; a budget whose controller the engine
+    # does not delegate must be absent (missing interface or 'max').
     assert membership.read_text() == '0::/\n', 'unsupported cgroup namespace'
-    assert int((cgroup / 'memory.max').read_text()) == budgets['memory'], 'agent memory budget is not effective'
-    assert int((cgroup / 'pids.max').read_text()) == budgets['pids'], 'agent process budget is not effective'
-    quota, period = (cgroup / 'cpu.max').read_text().split()
-    assert quota != 'max' and int(quota) * 10**9 == budgets['nano_cpus'] * int(period), 'agent CPU budget is not effective'
+    enforced = budgets['enforced']
+
+    def limit(name):
+        path = cgroup / name
+        return path.read_text().split() if path.exists() else None
+    memory, pids, cpu = limit('memory.max'), limit('pids.max'), limit('cpu.max')
+    if 'memory' in enforced:
+        assert memory and memory[0] != 'max' and int(memory[0]) == budgets['memory'], 'agent memory budget is not effective'
+    else:
+        assert memory in (None, ['max']), 'unenforced agent memory budget is present'
+    if 'pids' in enforced:
+        assert pids and pids[0] != 'max' and int(pids[0]) == budgets['pids'], 'agent process budget is not effective'
+    else:
+        assert pids in (None, ['max']), 'unenforced agent process budget is present'
+    if 'cpu' in enforced:
+        assert cpu and len(cpu) == 2 and cpu[0] != 'max' and \
+            int(cpu[0]) * 10**9 == budgets['nano_cpus'] * int(cpu[1]), 'agent CPU budget is not effective'
+    else:
+        assert cpu is None or cpu[0] == 'max', 'unenforced agent CPU budget is present'
 
 
 if sys.argv[1:] == ['control']:

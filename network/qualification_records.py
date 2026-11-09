@@ -191,7 +191,11 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
     code = {name: digest(trusted_path(root / name, []).read_bytes()) for name in code_files(profile)}
     try:
         # Agent capability, budget and lifetime settings of the launch being qualified.
-        agent = agent_budgets.agent_hardening(env, profile)
+        # The enforced budgets follow the controllers the verified engine delegates.
+        agent = agent_budgets.agent_hardening(env, profile, engine_configuration['cgroupControllers'])
+        proxy_enforced = agent_budgets.enforced(engine_configuration['cgroupControllers'], 'proxy')
+    except agent_budgets.ControllerError:
+        raise PolicyError('unverifiable engine cgroup controllers') from None
     except agent_budgets.BudgetError as error:
         raise PolicyError('invalid ' + profile.env(str(error)) + ' agent budget or lifetime') from None
     identity = dict(revision=REVISION, platform=value, engine_configuration=engine_configuration,
@@ -199,7 +203,7 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
                     security=security, code=code, runtime=runtime, proxy=proxy,
                     mode=mode, profile=selected_profile if mode == 'provider' else '', policy=policy_id,
                     hardening=dict(capabilities=[], no_new_privs=True, pids=PIDS_LIMIT, memory=MEMORY_LIMIT,
-                                   agent=agent))
+                                   enforced=proxy_enforced, agent=agent))
     # Active LSM policy identity cannot generally be read by an unprivileged
     # operator. Rerun the gate each launch instead of caching unverifiable state.
     return identity, not (value['selinux'] or value['apparmor'])

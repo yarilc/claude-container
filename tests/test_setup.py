@@ -99,6 +99,7 @@ if 'info' in args:
     template=args[-1]
     if 'RemoteSocket.Path' in template: print('true '+os.environ.get('SETUP_TEST_SOCKET','/run/user/1000/podman/podman.sock'))
     elif 'NetworkBackend' in template: print('netavark')
+    elif 'CgroupControllers' in template: print(os.environ.get('SETUP_TEST_CONTROLLERS', '[cpu memory pids]'))
     elif 'json .Host' in template:
         print(json.dumps({'kernel':'6.6.87.2-microsoft-standard-WSL2','arch':'amd64',
            'security':{'seccompEnabled':True,'selinuxEnabled':False,'apparmorEnabled':False}}))
@@ -262,6 +263,26 @@ class SetupTests(unittest.TestCase):
         self.assertIn('cancelled before', output)
         self.assertFalse(Path(self.value['installation']).exists())
         self.assertFalse(any(c['args'][0] in ('build', 'pull', 'tag') for c in self.calls()))
+
+    def test_setup_plan_names_unenforced_budgets_without_a_question(self):
+        for controllers, notices in (('[memory pids]', ['agent CPU budget not enforced: cgroup controller cpu']),
+                                     ('[cpu pids]', ['agent memory budget not enforced: cgroup controller memory']),
+                                     ('[cpu memory pids]', [])):
+            with self.subTest(controllers=controllers):
+                env = self.env | {name('NETWORK'): 'provider', 'SETUP_TEST_MISSING': '1',
+                                  'SETUP_TEST_ENGINE': 'true linux false', 'SETUP_TEST_CONTROLLERS': controllers}
+                answers = self.answers() + [('Refresh prepared images', 'no'), ('Apply this installation', 'no')]
+                code, output = pty_run(['bash', str(ROOT / WRAPPER), '--container-setup'], env,
+                                       self.workspace, answers)
+                self.assertEqual(code, 1, output)
+                self.assertIn('enforced agent budgets: ' + ', '.join(controllers[1:-1].split()), output)
+                for notice in notices:
+                    self.assertIn(notice, output)
+                if not notices:
+                    self.assertNotIn('budget not enforced', output)
+                # This questionnaire selects unrestricted mode, which has no proxy.
+                self.assertNotIn('proxy memory budget', output)
+                self.assertIn('cancelled before', output)
 
     def test_questionnaire_defaults_retries_and_explicit_delegation_conflict(self):
         with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', ROOT):
@@ -1123,6 +1144,27 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         code, output = pty_run([str(command), '--version'], self.env, project, [])
         self.assertEqual(code, 0, output)
         self.assertIn('APP_TTY=yes ARGS=--container-git-worktree --version', output)
+
+    def test_smoke_budgets_follow_the_enforced_controllers(self):
+        import smoke
+        base = Path(tempfile.mkdtemp(dir=self.base))
+        def write(**values):
+            for key in ('memory.max', 'pids.max', 'cpu.max'):
+                (base / key).unlink(missing_ok=True)
+            for key, value in values.items():
+                (base / (key + '.max')).write_text(value + '\n')
+        write(memory='4294967296', pids='512', cpu='200000 100000')
+        smoke.budgets(4294967296, 2000000000, 512, ('cpu', 'memory', 'pids'), base)
+        write(memory='4294967296', pids='512')
+        smoke.budgets(4294967296, 2000000000, 512, ('memory', 'pids'), base)
+        with self.assertRaises(AssertionError):
+            smoke.budgets(4294967296, 2000000000, 512, ('cpu', 'memory', 'pids'), base)
+        write(memory='max', pids='max', cpu='max 100000')
+        smoke.budgets(4294967296, 2000000000, 512, (), base)
+        write(memory='4294967296', pids='512', cpu='200000 100000')
+        for enforced in (('memory', 'pids'), ('cpu', 'pids'), ('cpu', 'memory'), ()):
+            with self.subTest(enforced=enforced), self.assertRaises(AssertionError):
+                smoke.budgets(4294967296, 2000000000, 512, enforced, base)
 
     def test_smoke_requires_confirmed_success_and_has_no_maintenance_or_key(self):
         _, release = self.release()

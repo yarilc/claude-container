@@ -31,8 +31,9 @@ class QualificationContracts(unittest.TestCase):
         return dict(mode='provider', revision=records.REVISION, runtime='a'*64, proxy='b'*64,
                     policy='c'*64, platform=dict(abi=3), code={'guard':'d'*64},
                     hardening=dict(capabilities=[], no_new_privs=True, pids=128, memory=268435456,
-                                   agent=dict(capabilities=[], no_new_privs=True, memory=4294967296,
-                                              nano_cpus=2000000000, pids=512, timeout=0)))
+                                   enforced=['memory', 'pids'],
+                                   agent=dict(capabilities=[], no_new_privs=True, enforced=['cpu', 'memory', 'pids'],
+                                              memory=4294967296, nano_cpus=2000000000, pids=512, timeout=0)))
 
     def report(self):
         identity = self.identity()
@@ -57,6 +58,11 @@ class QualificationContracts(unittest.TestCase):
 
     def test_each_enforcement_identity_change_invalidates_evidence(self):
         report = self.report()
+        for mutate in (lambda i: i['hardening'].update(enforced=['pids']),
+                       lambda i: i['hardening']['agent'].update(enforced=['memory', 'pids'])):
+            changed = self.identity(); mutate(changed)
+            with self.subTest(enforced=changed['hardening']), self.assertRaises(ValueError):
+                records.validate_report(report, changed)
         for key in ('mode', 'runtime', 'proxy', 'policy', 'revision', 'platform', 'code', 'hardening'):
             changed = self.identity(); changed[key] = 'changed'
             with self.subTest(key=key), self.assertRaises(ValueError):
@@ -149,7 +155,8 @@ class QualificationContracts(unittest.TestCase):
         import control
         workspace = '/qualification/project'
         base = dict(schema=1, token='a' * 32, workspace=workspace, provider=False, tls=False, agent=PROFILE.command,
-                    budgets=dict(capabilities=[], no_new_privs=True, memory=1, nano_cpus=1, pids=1, timeout=0))
+                    budgets=dict(capabilities=[], no_new_privs=True, enforced=['cpu', 'memory', 'pids'],
+                                 memory=1, nano_cpus=1, pids=1, timeout=0))
         accept = (dict(base, ipv6=True, addresses=['10.89.0.2', 'fd00::2']),
                   dict(base, ipv6=False, addresses=['10.89.0.2']))
         for value in accept:
@@ -168,6 +175,16 @@ class QualificationContracts(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertFalse(control.fixed_qualification_input(value, PROFILE.command, 'offline', workspace))
         self.assertFalse(control.fixed_qualification_input(accept[1], PROFILE.command, 'offline', None))
+        for enforced in (['memory', 'pids'], ['cpu'], []):
+            with self.subTest(enforced=enforced):
+                value = dict(accept[1], budgets=dict(base['budgets'], enforced=enforced))
+                self.assertTrue(control.fixed_qualification_input(value, PROFILE.command, 'offline', workspace))
+        for enforced in (['pids', 'memory'], ['cpu', 'cpu'], ['io'], 'cpu', [['cpu']], None):
+            with self.subTest(enforced=enforced):
+                value = dict(accept[1], budgets=dict(base['budgets'], enforced=enforced))
+                self.assertFalse(control.fixed_qualification_input(value, PROFILE.command, 'offline', workspace))
+        missing = dict(accept[1], budgets={k: v for k, v in base['budgets'].items() if k != 'enforced'})
+        self.assertFalse(control.fixed_qualification_input(missing, PROFILE.command, 'offline', workspace))
 
     def protected_function(self, path, name):
         # The probe programs run only inside containers; load one function by name.
@@ -218,19 +235,43 @@ class QualificationContracts(unittest.TestCase):
 
     def test_agent_hardening_follows_the_effective_environment(self):
         import agent_budgets
-        default = agent_budgets.agent_hardening({}, PROFILE)
+        full = '[cpu memory pids]'
+        default = agent_budgets.agent_hardening({}, PROFILE, full)
         self.assertEqual(default, self.identity()['hardening']['agent'])
         saved = {name('MEMORY_LIMIT'): '8g', name('CPU_LIMIT'): '1.5', name('PIDS_LIMIT'): '1024',
                  name('RUN_TIMEOUT'): '3600'}
-        self.assertEqual(agent_budgets.agent_hardening(saved, PROFILE),
-                         dict(capabilities=[], no_new_privs=True, memory=8 << 30, nano_cpus=1500000000,
-                              pids=1024, timeout=3600))
+        self.assertEqual(agent_budgets.agent_hardening(saved, PROFILE, full),
+                         dict(capabilities=[], no_new_privs=True, enforced=['cpu', 'memory', 'pids'],
+                              memory=8 << 30, nano_cpus=1500000000, pids=1024, timeout=3600))
         for suffix, value in (('PIDS_LIMIT', '2048'), ('RUN_TIMEOUT', '1'), ('CPU_LIMIT', '2.5'), ('MEMORY_LIMIT', '4097m')):
             with self.subTest(suffix=suffix):
-                self.assertNotEqual(agent_budgets.agent_hardening(saved | {name(suffix): value}, PROFILE),
-                                    agent_budgets.agent_hardening(saved, PROFILE))
+                self.assertNotEqual(agent_budgets.agent_hardening(saved | {name(suffix): value}, PROFILE, full),
+                                    agent_budgets.agent_hardening(saved, PROFILE, full))
         with self.assertRaises(agent_budgets.BudgetError):
-            agent_budgets.agent_hardening({name('PIDS_LIMIT'): '0'}, PROFILE)
+            agent_budgets.agent_hardening({name('PIDS_LIMIT'): '0'}, PROFILE, full)
+        # A different delegated-controller set changes the hardening identity.
+        self.assertNotEqual(agent_budgets.agent_hardening(saved, PROFILE, '[memory pids]'),
+                            agent_budgets.agent_hardening(saved, PROFILE, full))
+
+    def test_enforced_budgets_follow_the_engine_controllers(self):
+        import agent_budgets
+        cases = (('[cpu memory pids]', ['cpu', 'memory', 'pids'], ['memory', 'pids']),
+                 ('[cpuset cpu io memory hugetlb pids rdma misc]', ['cpu', 'memory', 'pids'], ['memory', 'pids']),
+                 ('[memory pids]', ['memory', 'pids'], ['memory', 'pids']),
+                 ('[cpu pids]', ['cpu', 'pids'], ['pids']),
+                 ('[cpu memory]', ['cpu', 'memory'], ['memory']),
+                 ('[]', [], []),
+                 (['pids', 'cpu', 'pids'], ['cpu', 'pids'], ['pids']))
+        for value, agent, proxy in cases:
+            with self.subTest(value=value):
+                self.assertEqual(agent_budgets.enforced(value), agent)
+                self.assertEqual(agent_budgets.enforced(value, 'proxy'), proxy)
+        for value in ('cpu memory', '[cpu,memory]', '[ cpu]', '[cpu ]', '[CPU]', '[cpu\nmemory]', '',
+                      None, 7, ['cpu', 1], ['../cpu'], '[' + ' '.join(['a'] * 33) + ']'):
+            with self.subTest(value=value), self.assertRaises(agent_budgets.ControllerError):
+                agent_budgets.enforced(value)
+        with self.assertRaises(KeyError):
+            agent_budgets.enforced('[cpu]', 'other')
 
     def test_probe_requires_effective_agent_budgets(self):
         import ast
@@ -254,6 +295,26 @@ class QualificationContracts(unittest.TestCase):
                     write(**change)
                     with self.assertRaises((AssertionError, ValueError)):
                         namespace['effective_budgets'](budgets, base, membership)
+            # Unenforced budgets must be absent: a missing interface or 'max'.
+            for enforced, missing in ((['memory', 'pids'], ['cpu.max']), (['cpu', 'pids'], ['memory.max']),
+                                      (['cpu', 'memory'], ['pids.max']), ([], ['cpu.max', 'memory.max', 'pids.max'])):
+                with self.subTest(enforced=enforced):
+                    write()
+                    for key in missing:
+                        (base / key).unlink()
+                    partial = dict(budgets, enforced=enforced)
+                    namespace['effective_budgets'](partial, base, membership)
+                    for key in missing:
+                        (base / key).write_text(('max 100000' if key == 'cpu.max' else 'max') + '\n')
+                    namespace['effective_budgets'](partial, base, membership)
+                    write()
+                    if missing:
+                        with self.assertRaises(AssertionError):
+                            namespace['effective_budgets'](partial, base, membership)
+                    for key in missing:
+                        (base / key).unlink()
+                    with self.assertRaises(AssertionError):
+                        namespace['effective_budgets'](dict(budgets, enforced=['cpu', 'memory', 'pids']), base, membership)
 
     def test_missing_report_names_budgets_as_a_cause(self):
         with tempfile.TemporaryDirectory(dir=test_setting('TEST_TMPDIR')) as temporary:

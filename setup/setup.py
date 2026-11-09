@@ -596,6 +596,14 @@ def scratch_workspace():
         yield workspace
 
 
+def engine_enforced(env):
+    # Budgets are enforced only for controllers the verified engine delegates.
+    try:
+        return agent_budgets.enforced(record(['podman', 'info', '--format', '{{.Host.CgroupControllers}}'], env))
+    except agent_budgets.ControllerError:
+        raise SetupError('The Podman engine reported an unverifiable cgroup controller list.') from None
+
+
 def expected_budgets(value):
     record = agent_budgets.normalize({suffix: value[name] for name, suffix in BUDGETS.items()})
     return [str(record[key]) for key in ('memory', 'nano_cpus', 'pids')]
@@ -623,7 +631,8 @@ def smoke_in(value, release, workspace):
             print('This installation passed local enforcement checks; its combination is not release-measured. SELinux/AppArmor compatibility is not guaranteed.')
     script = (release / 'setup/smoke.py').read_text()
     smoke_args = [value['network'], '1' if value['trust_ca'] else '0', PROFILE.home,
-                  PROFILE.config_dir_env, PROFILE.command, *expected_budgets(value)]
+                  PROFILE.config_dir_env, PROFILE.command, *expected_budgets(value),
+                  ','.join(engine_enforced(env))]
     program = ('set -Eeuo pipefail\npython3 - ' + ' '.join(map(shlex.quote, smoke_args))
                + " <<'SANDBOX_SETUP_SMOKE'\n" + script + '\nSANDBOX_SETUP_SMOKE\n')
     args = ['bash', str(release / PROFILE.wrapper), '--container-shell']
@@ -708,6 +717,18 @@ def main():
         for name in ('runtime', 'toolchain', 'proxy'):
             if name in images:
                 print(f'  {name} image: ' + ('reuse inspected ' + images[name] if images[name] else 'prepare/build missing image'))
+        # Budgets follow the controllers the engine delegates; no extra question.
+        enforced = engine_enforced(env)
+        print('  enforced agent budgets: ' + (', '.join(enforced) or 'none'))
+        for controller, label in (('memory', 'memory'), ('cpu', 'CPU'), ('pids', 'process')):
+            if controller not in enforced:
+                print(f'  agent {label} budget not enforced: cgroup controller {controller} '
+                      'is not delegated to the rootless engine')
+        if value['network'] == 'provider':
+            for controller, label in (('memory', 'memory'), ('pids', 'process')):
+                if controller not in enforced:
+                    print(f'  proxy {label} budget not enforced: cgroup controller {controller} '
+                          'is not delegated to the rootless engine')
         path_guidance(value['command'])
         refresh = yes('Refresh prepared images and recompile the guard instead of reusing valid artifacts?')
         print('Missing/selected images will be prepared; restricted mode includes a static guard and manifest.')

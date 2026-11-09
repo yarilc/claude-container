@@ -1,5 +1,43 @@
 # Validation record
 
+## Budgets follow delegated cgroup controllers: 2026-11-09
+
+Change: `openspec/changes/adapt-budgets-to-delegated-controllers/`.
+
+- **Trigger:** on the Rocky 9 lab host, systemd does not delegate the `cpu`
+  controller to the user. The qualification agent failed with "crun:
+  controller `cpu` is not available under .../user@31600276.service/...".
+  The operator decided that the host must not be modified and that the
+  sandbox continues automatically.
+- **Policy (relaxes the earlier "never remove a budget" rule):**
+  - A budget is enforced only when the verified engine's
+    `Host.CgroupControllers` lists its controller: `memory`, `cpu` or `pids`
+    for the agent, `memory` or `pids` for the provider proxy.
+  - Unenforced budgets are not requested (`--pids-limit=-1` overrides a
+    `containers.conf` default) and are announced on every launch, in the
+    setup plan and in the smoke.
+  - Enforced budgets must be exact, and unenforced ones must be absent (no
+    configured value, and the cgroup interface missing or `max`).
+  - The agent and proxy enforced sets are part of the qualification
+    identity.
+
+Measured on WSL2 x86_64 (all three controllers delegated), with Podman client
+4.3.1 and server 4.9.3, from an unrestricted session with the host socket
+delegated. No credentials or model requests were used.
+
+| Check | Result |
+| --- | --- |
+| `test_wrapper.py` (branch versus `main`, same runner) | 73 versus 70 tests; identical environment failure set. The new controller-subset test passed: flags, notices, `--pids-limit=-1`, ignored delegated limits, unexpected unenforced limits, malformed lists and query failure |
+| `test_session.py` | Passed: 17 tests, including proxy flags and notices per controller subset and exact per-budget hardening verification |
+| `test_qualification.py` | Passed: 25 tests, including enforced-set parsing, identity staleness on enforced-set change, fixed-input validation and probe checks for each subset |
+| `test_setup.py` | 66 tests; the same 2 environment errors as `main`; new smoke-budget and setup-plan notice tests passed |
+| `test_network_policy.py`, `test_alignment.py`, `test_image_pins.py`, `test_tls_proxy.py` | Passed |
+| `bash tests/run-runtime.sh --qualification` (all controllers delegated) | Passed: 25 tests in 166 s, including 7 real qualification gates; no budget notice printed |
+| Lab host without `cpu` delegation: `--container-setup` (provider, refresh) | Pending: to be run by the operator |
+
+Existing qualification reports become stale (new identity fields).
+Restricted installations rerun `--container-setup`.
+
 ## Qualification on kernels without IPv6: 2026-11-09
 
 Change: `openspec/changes/qualify-ipv6-disabled-kernels/`.

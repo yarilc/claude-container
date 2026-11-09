@@ -246,9 +246,10 @@ retry. Agent resource budgets are described in
 [Agent hardening, budgets and lifetime](#agent-hardening-budgets-and-lifetime).
 Each provider proxy is limited to 128 processes and 256 MiB memory. Startup
 verifies Podman configuration and the effective limits inside the actual proxy
-cgroup before starting the agent. Rootless cgroup v2 `pids` and `memory`
-controllers must be available; missing, ignored or unverifiable limits stop
-provider preparation. Proxy exhaustion leaves outbound access closed.
+cgroup before starting the agent. A limit whose rootless cgroup v2 controller
+(`pids` or `memory`) the engine does not delegate is not requested and is
+announced; a delegated limit that is ignored or unverifiable stops provider
+preparation. Proxy exhaustion leaves outbound access closed.
 
 Restricted eligibility requires rootless Netavark/Podman server >= 4.9 through an
 explicit same-host Unix CONTAINER_HOST, host Python 3, standard OCI seccomp and
@@ -744,7 +745,8 @@ Every agent container runs with `--cap-drop=all` and
 are unsupported; the wrapper never adds one back. The delegated Podman client
 works without capabilities, but the socket still grants host engine authority.
 
-Every agent container also receives memory, CPU and process budgets:
+Every agent container also receives memory, CPU and process budgets, for each
+budget whose cgroup v2 controller the rootless engine delegates:
 
 | Variable | Default | Accepted values |
 | --- | --- | --- |
@@ -760,9 +762,23 @@ launch then stops until you requalify with `--container-qualify`. Budgets
 cannot be disabled: empty, `0`, `-1` and `max` are rejected before any engine
 operation. Each launch checks the created container's configured limits before
 the application starts; setup smoke and restricted qualification measure the
-effective cgroup v2 `memory.max`, `pids.max` and `cpu.max`. Rootless cgroup v2
-`cpu`, `memory` and `pids` controller delegation is required. Budgets and tmpfs
+effective cgroup v2 `memory.max`, `pids.max` and `cpu.max`. Budgets and tmpfs
 sizes do not limit workspace or state storage growth.
+
+The sandbox adapts to the controllers the engine reports
+(`podman info --format '{{.Host.CgroupControllers}}'`) instead of requiring host
+changes. A budget whose controller (`memory`, `cpu` or `pids`) is not delegated
+is not requested; every launch and the setup plan print a notice such as
+`agent CPU budget not enforced: cgroup controller cpu is not delegated to the
+rootless engine`, and continue without asking. The check is still strict: a
+delegated budget must be applied exactly, an unenforced one must be absent, and
+the enforced set is part of the restricted qualification identity, so a later
+delegation change requires requalification. Provider proxy budgets follow the
+same rule. Risk: without memory or process budgets, a compromised or runaway
+agent can exhaust host memory or processes for your user; without a CPU budget
+it can saturate every CPU. Delegating the controllers (for example a systemd
+`Delegate=cpu cpuset io memory pids` drop-in for `user@.service`) restores full
+enforcement, but the sandbox never requires it.
 
 With a lifetime limit, the engine stops the agent container after that many
 seconds. The wrapper reports `session lifetime limit reached` and keeps the

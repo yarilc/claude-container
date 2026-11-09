@@ -48,6 +48,9 @@ elif args[0] == 'info':
     if args[-1] == '{{.Host.NetworkBackend}}':
         print(os.environ.get('FAKE_BACKEND', 'netavark'))
         sys.exit(0)
+    if args[-1] == '{{.Host.CgroupControllers}}':
+        print(os.environ.get('FAKE_CONTROLLERS', '[cpu memory pids]'))
+        sys.exit(int(os.environ.get('FAKE_CONTROLLERS_STATUS', '0')))
     sys.stdout.write(os.environ.get('FAKE_INFO_RAW', os.environ.get('FAKE_INFO', 'true linux false') + '\n'))
     sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0')))
 elif args[0] == 'version':
@@ -79,7 +82,7 @@ elif args[0] == 'create':
     token = args[args.index('--label') + 1].split('=', 1)[1]
     state.write_text(token)
     from decimal import Decimal
-    flag = lambda name: next(a.split('=', 1)[1] for a in args if a.startswith(name + '='))
+    flag = lambda name: next((a.split('=', 1)[1] for a in args if a.startswith(name + '=')), '0')
     pathlib.Path(str(log) + '.budgets').write_text(' '.join((flag('--memory'),
         str(int(Decimal(flag('--cpus')) * 10**9)), flag('--pids-limit'))))
     pause = os.environ.get('FAKE_CREATE_PAUSE')
@@ -484,7 +487,8 @@ class WrapperTests(unittest.TestCase):
         (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
         shutil.copyfile(ROOT / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
         shutil.copyfile(ROOT / 'network/platform_check.py', install / 'network/platform_check.py')
-        for name in ('network/session.py', 'network/agent_profile.py', 'network/policy.py', 'network/revisions.py', 'agent/profile.json'):
+        for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py',
+                     'network/revisions.py', 'agent/profile.json'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
         (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
@@ -588,6 +592,48 @@ if args[0]=='snapshot':
                                   pids=int(configured[2]), timeout=timeout)
                     self.assertEqual(actual, expected)
                     self.assertEqual(actual[keys[name]], expected[keys[name]])
+
+    def test_budgets_follow_delegated_controllers(self):
+        notices = {'memory': 'agent memory budget not enforced: cgroup controller memory',
+                   'cpu': 'agent CPU budget not enforced: cgroup controller cpu',
+                   'pids': 'agent process budget not enforced: cgroup controller pids'}
+        flags = {'memory': '--memory=4294967296', 'cpu': '--cpus=2', 'pids': '--pids-limit=512'}
+        for controllers in ('[cpu memory pids]', '[cpuset cpu io memory pids]', '[memory pids]',
+                            '[cpu pids]', '[cpu memory]', '[]'):
+            with self.subTest(controllers=controllers):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = self.create()
+                present = controllers[1:-1].split()
+                for name in ('memory', 'cpu', 'pids'):
+                    self.assertEqual(flags[name] in create, name in present)
+                    self.assertEqual(notices[name] in result.stderr, name not in present)
+                self.assertEqual('--pids-limit=-1' in create, 'pids' not in present)
+                self.assertFalse(any(a.startswith('--cpus=') for a in create) and 'cpu' not in present)
+                self.assertTrue(any(c[0] == 'start' for c in self.calls()))
+        # A delegated controller whose limit the engine drops still stops the launch;
+        # an unenforced limit that unexpectedly appears is rejected too.
+        for controllers, reported in (('[memory pids]', '0 0 512'), ('[memory pids]', '4294967296 2000000000 512'),
+                                      ('[cpu memory]', '4294967296 2000000000 512'),
+                                      ('[cpu memory]', '4294967296 2000000000 2048')):
+            with self.subTest(controllers=controllers, reported=reported):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers, FAKE_AGENT_BUDGETS=reported)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('agent resource budgets were not applied', result.stderr)
+                self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+        for controllers in ('cpu memory pids', '[cpu,memory]', '[CPU]', '[ cpu]', ''):
+            with self.subTest(malformed=controllers):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('unverifiable cgroup controller list', result.stderr)
+                self.assertFalse(any(c[0] == 'create' for c in self.calls()))
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper(FAKE_CONTROLLERS_STATUS='125')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('cannot query the rootless cgroup controllers', result.stderr)
 
     def test_ignored_budgets_stop_before_start_and_remove_owned_container(self):
         for reported in ('0 0 0', '4294967296 2000000000 0', '4294967296 0 512', '0 2000000000 512',
@@ -781,7 +827,8 @@ if args[0]=='snapshot':
                     self.assertEqual(result.returncode, 0, result.stderr)
                     args = next(c for c in self.calls() if c[0] == 'build')
                     secrets = [args[i + 1] for i, arg in enumerate(args) if arg == '--secret']
-                    self.assertEqual(secrets, [f'id=build-ca,src={ca}'] if trust == '1' else [])
+                    # The wrapper passes the resolved bundle path (readlink -f).
+                    self.assertEqual(secrets, [f'id=build-ca,src={ca.resolve()}'] if trust == '1' else [])
                     self.assertEqual(args[-3:], ['--file', str(ROOT / 'Containerfile'), str(ROOT)])
 
     def test_build_and_image_inspection_errors(self):
