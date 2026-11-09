@@ -115,7 +115,11 @@ comments, help text, and user-facing messages in English.
 ## Testing Guidelines
 
 Run `python3 -m unittest discover -s tests -p test_wrapper.py -v`, `bash -n`
-on changed shell scripts, and `git diff --check`. Wrapper tests use synthetic
+on changed shell scripts, and `git diff --check`. Run `test_image_pins.py`
+after any `Containerfile` or `tested.cli` change; image inputs stay pinned and
+change only through the maintenance procedure in `docs/validation.md`. Every
+agent container drops capabilities and receives memory/CPU/process budgets in
+all modes; never add a capability or remove a budget to make a tool work. Wrapper tests use synthetic
 HOME/configuration and fake Podman on executable native temporary storage;
 `SANDBOX_TEST_TMPDIR` overrides the temporary directory. No real credentials or
 remote Git repositories belong in tests.

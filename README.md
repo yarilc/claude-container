@@ -237,11 +237,13 @@ CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 bash ./clau
 | `provider` | Same isolation plus an external CONNECT proxy with initial and retried TLS SNI binding |
 | `unrestricted` | Explicit ordinary runtime networking; socket delegation is eligible |
 
-Restricted agent containers and their session proxies explicitly drop all Linux
-capabilities and enable container-level `no-new-privileges` before startup.
-Caller UID/GID and `--userns=keep-id`, standard OCI seccomp, SELinux policy and
-existing mount restrictions remain in force. Hardening failures stop startup
-without a weaker retry. These settings do not change unrestricted sessions.
+Every agent container, in all three modes and including shell mode and Podman
+delegation, and every session proxy explicitly drops all Linux capabilities and
+enables container-level `no-new-privileges` before startup. Caller UID/GID and
+`--userns=keep-id`, standard OCI seccomp, SELinux policy and existing mount
+restrictions remain in force. Hardening failures stop startup without a weaker
+retry. Agent resource budgets are described in
+[Agent hardening, budgets and lifetime](#agent-hardening-budgets-and-lifetime).
 Each provider proxy is limited to 128 processes and 256 MiB memory. Startup
 verifies Podman configuration and the effective limits inside the actual proxy
 cgroup before starting the agent. Rootless cgroup v2 `pids` and `memory`
@@ -585,6 +587,8 @@ The wrapper mounts the immediate parent of the physical directory from which
 it is launched; it does not search for a Git or worktree root. For example,
 launching from `/path/to/root/main/src` mounts `/path/to/root/main`. Use the
 flag from the worktree root when the shared metadata is in the common parent.
+A parent that is a refused sensitive directory, such as your home, stops the
+launch.
 
 ### Trusting a host CA
 
@@ -692,8 +696,9 @@ sticky mode `1777`. Their contents disappear when the container is removed.
 must not depend on executable temporary files there. No writable `/var/log`
 mount is added. The optional host CA remains a single read-only file.
 No full host home, SSH agent, desktop bus, or keyring is added automatically.
-A selected workspace or worktree parent can itself contain those host files;
-a parent of `$HOME` or `/` exposes that entire directory read/write.
+A selected workspace or worktree parent can itself contain those host files.
+The wrapper therefore refuses sensitive workspace roots; see
+[Agent hardening, budgets and lifetime](#agent-hardening-budgets-and-lifetime).
 
 **With `CLAUDE_CONTAINER_PODMAN=1`, Claude can control the service user's
 containers and volumes and request new host bind mounts beyond the workspace.**
@@ -720,6 +725,48 @@ settings. The independent outer network boundary is controlled by
 The four socket/YOLO combinations above apply in unrestricted mode. Restricted
 modes reject enabled delegation.
 
+### Agent hardening, budgets and lifetime
+
+Every agent container runs with `--cap-drop=all` and
+`--security-opt=no-new-privileges` in every mode. Tools that need a capability
+are unsupported; the wrapper never adds one back. The delegated Podman client
+works without capabilities, but the socket still grants host engine authority.
+
+Every agent container also receives memory, CPU and process budgets:
+
+| Variable | Default | Accepted values |
+| --- | --- | --- |
+| `CLAUDE_CONTAINER_MEMORY_LIMIT` | `4g` | positive integer with unit `k`, `m` or `g` |
+| `CLAUDE_CONTAINER_CPU_LIMIT` | `2` | positive number of CPUs with at most 3 decimals |
+| `CLAUDE_CONTAINER_PIDS_LIMIT` | `512` | positive integer up to 4194304 |
+| `CLAUDE_CONTAINER_RUN_TIMEOUT` | `0` (disabled) | whole seconds of container lifetime |
+
+`--container-setup` asks for these values and saves them; the managed launcher
+supplies them unless a variable is exported. Change them by rerunning setup.
+An exported value that differs from the saved one is used, but a restricted
+launch then stops until you requalify with `--container-qualify`. Budgets
+cannot be disabled: empty, `0`, `-1` and `max` are rejected before any engine
+operation. Each launch checks the created container's configured limits before
+the application starts; setup smoke and restricted qualification measure the
+effective cgroup v2 `memory.max`, `pids.max` and `cpu.max`. Rootless cgroup v2
+`cpu`, `memory` and `pids` controller delegation is required. Budgets and tmpfs
+sizes do not limit workspace or state storage growth.
+
+With a lifetime limit, the engine stops the agent container after that many
+seconds. The wrapper reports `session lifetime limit reached` and keeps the
+engine client's exit status (255 on the measured Podman 4.9.3 server); owned proxies are cleaned up within the usual
+shutdown budget.
+
+The writable workspace mount (the parent with `--container-git-worktree`) must
+not be `/`, your home directory, `/home`, `/root`, `/etc`, `/usr`, `/var`, `/bin`,
+`/sbin`, `/lib`, `/lib64`, `/boot`, `/opt`, `/srv`, `/mnt`, `/media`, `/proc`,
+`/sys`, `/dev`, `/run`, `/tmp` or a WSL drive root such as `/mnt/c`. Physical
+paths are compared, so symlinks do not bypass the check. Launch from a project
+subdirectory instead. Exact `CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` permits a
+refused directory with a warning and relaxes nothing else.
+
+### Standard security policies
+
 Standard seccomp and SELinux policy remain in force. The wrapper adds no
 privileged mode, capabilities, custom security profiles, disabled labels, or
 automatic bind relabeling (the former OpenSpec `:z` option is removed). If host
@@ -735,6 +782,12 @@ The image includes Node.js/npm, Claude Code, Python 3, Bubblewrap (`bwrap`), the
 Podman client, Git, Bash, local search and editing tools, archive tools, JSON
 support, and diagnostics needed to work in a repository and run tests in
 containers.
+
+Image inputs are pinned: the `Containerfile` installs exact Claude Code and
+OpenSpec versions on a base image referenced by digest, and sets
+`DISABLE_AUTOUPDATER=1`. The pinned CLI version must equal the policy's
+`tested.cli`; `tests/test_image_pins.py` enforces both rules. Update them only
+through the [maintenance procedure](docs/validation.md#updating-pinned-image-inputs).
 
 The image includes the `nano` editor, and `EDITOR` and `VISUAL` are set to
 `nano`, so commands that open an editor, such as `/memory`, work inside the

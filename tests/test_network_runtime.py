@@ -361,6 +361,37 @@ test "$(curl --fail --silent --show-error --max-time 10 https://localhost.locald
         self.assertEqual(proc.stdout.readline().strip(), 'network-ready')
         return proc
 
+    def test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy(self):
+        _, provider = self.provider_fixture()
+        check = """from pathlib import Path
+import sys
+memory, nano, pids = map(int, sys.argv[1:4])
+root = Path('/sys/fs/cgroup')
+assert Path('/proc/self/cgroup').read_text() == '0::/\\n'
+assert int((root / 'memory.max').read_text()) == memory
+assert int((root / 'pids.max').read_text()) == pids
+quota, period = (root / 'cpu.max').read_text().split()
+assert int(quota) * 10**9 == nano * int(period)
+print('AGENT_BUDGETS_OK')
+"""
+        cases = (({}, (4 << 30, 2 * 10**9, 512)),
+                 ({'CLAUDE_CONTAINER_MEMORY_LIMIT': '2g', 'CLAUDE_CONTAINER_CPU_LIMIT': '0.5',
+                   'CLAUDE_CONTAINER_PIDS_LIMIT': '384'}, (2 << 30, 500000000, 384)))
+        for mode in ('offline', 'provider'):
+            for budgets, expected in cases:
+                with self.subTest(mode=mode, budgets=budgets):
+                    environment = provider | budgets | {'CLAUDE_CONTAINER_NETWORK': mode}
+                    script = ("python3 - " + ' '.join(map(str, expected)) + " <<'PY'\n" + check + 'PY\n')
+                    result = self.shell(script, **environment)
+                    self.assert_success(result)
+                    self.assertIn('AGENT_BUDGETS_OK', result.stdout)
+        environment = provider | {'CLAUDE_CONTAINER_NETWORK': 'provider', 'CLAUDE_CONTAINER_RUN_TIMEOUT': '4'}
+        result = self.shell('sleep 60\n', **environment)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'session lifetime limit reached (4 s); exit status {result.returncode}', result.stderr)
+        self.assertEqual(self.owned_proxies(), [])
+        self.assertFalse(list(self.runtime.iterdir()))
+
     def test_proxy_death_fails_closed_and_preserves_status(self):
         _, environment = self.provider_fixture()
         command = 'printf "network-ready\\n"; read -r marker; if curl --fail --silent --max-time 3 --cacert cert.pem https://localhost.localdomain:8443/; then exit 42; fi; exit 37'

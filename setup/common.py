@@ -9,6 +9,7 @@ from collections import deque
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'network'))
+import agent_budgets  # noqa: E402
 import agent_profile  # noqa: E402
 
 # The checkout or release that contains this file selects its own profile.
@@ -26,7 +27,7 @@ MANIFEST = (
     'network/guard-build.Containerfile', 'network/build-guard.sh',
     'network/guard.c', 'network/guard_landlock.h', 'network/guard_seccomp.h',
     'network/control.py', 'network/policy.py', 'network/agent_profile.py', 'network/session.py',
-    'network/proxy.py', 'network/proxy_hardening.py',
+    'network/proxy.py', 'network/proxy_hardening.py', 'network/agent_budgets.py',
     'network/tls_client_hello.py', 'network/revisions.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf',
     'network/platform_check.py', 'network/qualify.py', 'network/qualification_records.py',
     'network/qualification_probe.py', 'network/qualification_runtime.py',
@@ -42,7 +43,14 @@ FIELDS = {
     'state_dir', 'config_dir', 'runtime_dir', 'endpoint', 'delegation_socket',
     'podman', 'yolo', 'worktree', 'trust_ca', 'ca_bundle', 'image', 'image_id',
     'proxy_image', 'toolchain_image', 'guard_sources_sha256',
+    'memory_limit', 'cpu_limit', 'pids_limit', 'run_timeout',
 }
+# Saved agent budgets/lifetime and the wrapper variable suffix each one supplies.
+BUDGETS = {'memory_limit': 'MEMORY_LIMIT', 'cpu_limit': 'CPU_LIMIT',
+           'pids_limit': 'PIDS_LIMIT', 'run_timeout': 'RUN_TIMEOUT'}
+SCHEMA_VERSION = 2
+# Schema 1 preferences predate budgets; they are upgraded with the defaults.
+FIELDS_V1 = FIELDS - set(BUDGETS)
 BOOLS = ('podman', 'yolo', 'worktree', 'trust_ca')
 PATHS = ('installation', 'command', 'state_dir', 'config_dir', 'runtime_dir',
          'delegation_socket', 'ca_bundle')
@@ -132,7 +140,7 @@ def unique_object(pairs):
 def validate(value):
     if not isinstance(value, dict) or set(value) != FIELDS:
         raise SetupError('Invalid managed preference fields; no credentials or arbitrary environment variables are accepted.')
-    if type(value['schema_version']) is not int or value['schema_version'] != 1:
+    if type(value['schema_version']) is not int or value['schema_version'] != SCHEMA_VERSION:
         raise SetupError('Unsupported managed preference schema.')
     for name in BOOLS:
         if type(value[name]) is not bool:
@@ -161,6 +169,22 @@ def validate(value):
             raise SetupError('Invalid immutable image or source identity.')
     if value['network'] == 'provider' and (not value['runtime_dir'] or not value['proxy_image']):
         raise SetupError('Provider preferences require a runtime directory and immutable proxy image.')
+    for name, suffix in BUDGETS.items():
+        try:
+            if agent_budgets.canonical(suffix, value[name]) != value[name]:
+                raise agent_budgets.BudgetError(suffix)
+        except agent_budgets.BudgetError:
+            raise SetupError('Invalid saved agent budget or lifetime.') from None
+    return value
+
+
+def upgrade(value):
+    """Accept exactly the schema 1 field set and add the default budgets."""
+    if (isinstance(value, dict) and set(value) == FIELDS_V1 and type(value.get('schema_version')) is int
+            and value['schema_version'] == 1):
+        value = dict(value, schema_version=SCHEMA_VERSION)
+        for name, suffix in BUDGETS.items():
+            value[name] = agent_budgets.DEFAULTS[suffix]
     return value
 
 
@@ -171,7 +195,7 @@ def load(path):
         raise SetupError('Managed preferences must be a private caller-owned regular file.')
     if info.st_size > 65536:
         raise SetupError('Managed preferences exceed 64 KiB.')
-    return validate(json.loads(path.read_text(), object_pairs_hook=unique_object))
+    return validate(upgrade(json.loads(path.read_text(), object_pairs_hook=unique_object)))
 
 
 def save(path, value):
@@ -183,13 +207,14 @@ def save(path, value):
 
 def defaults(root=None):
     home = Path(os.environ['HOME'])
-    return dict(schema_version=1, installation=str(root or home / '.local/lib' / PROFILE.name),
+    return dict(schema_version=SCHEMA_VERSION, installation=str(root or home / '.local/lib' / PROFILE.name),
                 command=str(home / '.local/bin' / PROFILE.name), network='provider', auth=next(iter(PROFILE.auth)),
                 state_dir='', config_dir='', runtime_dir=str(home / '.local/state' / PROFILE.state_name),
                 endpoint='default', delegation_socket='', podman=False, yolo=False,
                 worktree=False, trust_ca=False, ca_bundle='',
                 image=PROFILE.image('agent', 'latest'), image_id='', proxy_image='',
-                toolchain_image='', guard_sources_sha256='')
+                toolchain_image='', guard_sources_sha256='',
+                **{name: agent_budgets.DEFAULTS[suffix] for name, suffix in BUDGETS.items()})
 
 
 def source_identity(root):
@@ -215,6 +240,7 @@ def runtime_environment(value, release, *, overrides=True):
         name('NETWORK_POLICY'): str(release / agent_profile.POLICY),
         name('EGRESS_IMAGE'): value['proxy_image'],
         'CONTAINER_HOST': endpoint_url(value['endpoint']),
+        **{name(suffix): value[key] for key, suffix in BUDGETS.items()},
     }
     if not overrides:
         for name in (*selected, 'CONTAINER_CONNECTION', PROFILE.env('MAINTENANCE'), *PROFILE.credential_envs):
@@ -225,8 +251,8 @@ def runtime_environment(value, release, *, overrides=True):
     return env
 
 
-def writable_mounts(env, args=(), worktree=False):
-    workspace = Path.cwd().resolve()
+def writable_mounts(env, args=(), worktree=False, workspace=None):
+    workspace = Path(workspace or Path.cwd()).resolve()
     if worktree or '--container-git-worktree' in args:
         workspace = workspace.parent
     mounts = [workspace]
@@ -274,8 +300,8 @@ def launcher_paths(path):
     return current, links
 
 
-def protect_mounts(value, env, args=(), *, launcher=None):
-    mounts = writable_mounts(env, args, value['worktree'])
+def protect_mounts(value, env, args=(), *, launcher=None, workspace=None):
+    mounts = writable_mounts(env, args, value['worktree'], workspace)
     paths = [value['installation'], value['command']]
     if launcher is not None:
         resolved, links = launcher_paths(launcher)

@@ -50,8 +50,11 @@ Restricted agent and session proxy containers drop all capabilities and enable
 container-level no-new-privileges before code executes. Caller identity,
 keep-id user namespaces, standard OCI seccomp, host security policy and mount
 restrictions remain unchanged. Hardening rejection stops preparation without
-adding privileges or retrying with unrestricted networking. These additions do
-not change explicit unrestricted launches.
+adding privileges or retrying with unrestricted networking. Explicit
+unrestricted launches receive the same agent capability drop, no-new-privileges
+and resource budgets, but no egress proxy, guard or network restriction.
+Agent memory, CPU and process budgets and the optional lifetime are part of the
+qualification identity: changing them requires requalification.
 
 Every session proxy has enforced budgets of 128 processes and 256 MiB memory.
 Provider startup verifies configured and effective cgroup v2 limits plus actual

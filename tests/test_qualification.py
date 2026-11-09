@@ -30,7 +30,9 @@ class QualificationContracts(unittest.TestCase):
     def identity(self):
         return dict(mode='provider', revision=records.REVISION, runtime='a'*64, proxy='b'*64,
                     policy='c'*64, platform=dict(abi=3), code={'guard':'d'*64},
-                    hardening=dict(capabilities=[], no_new_privs=True, pids=128, memory=268435456))
+                    hardening=dict(capabilities=[], no_new_privs=True, pids=128, memory=268435456,
+                                   agent=dict(capabilities=[], no_new_privs=True, memory=4294967296,
+                                              nano_cpus=2000000000, pids=512, timeout=0)))
 
     def report(self):
         identity = self.identity()
@@ -46,6 +48,8 @@ class QualificationContracts(unittest.TestCase):
                        lambda r:r.update(extra='ignored'), lambda r:r.update(fingerprint='0'*64),
                        lambda r:r['identity']['hardening'].update(memory=0),
                        lambda r:r['identity']['hardening'].update(no_new_privs=1),
+                       lambda r:r['identity']['hardening']['agent'].update(pids=1024),
+                       lambda r:r['identity']['hardening']['agent'].update(timeout=60),
                        lambda r:r.update(reusable='true')):
             value = copy.deepcopy(report); mutate(value)
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -60,6 +64,53 @@ class QualificationContracts(unittest.TestCase):
         for data in (b'{"schema":1,"schema":1}', b'{}\n{}', b'x'*65537):
             with self.assertRaises(ValueError):
                 records.decode(data)
+
+    def test_agent_hardening_follows_the_effective_environment(self):
+        import agent_budgets
+        default = agent_budgets.agent_hardening({}, PROFILE)
+        self.assertEqual(default, self.identity()['hardening']['agent'])
+        saved = {name('MEMORY_LIMIT'): '8g', name('CPU_LIMIT'): '1.5', name('PIDS_LIMIT'): '1024',
+                 name('RUN_TIMEOUT'): '3600'}
+        self.assertEqual(agent_budgets.agent_hardening(saved, PROFILE),
+                         dict(capabilities=[], no_new_privs=True, memory=8 << 30, nano_cpus=1500000000,
+                              pids=1024, timeout=3600))
+        for suffix, value in (('PIDS_LIMIT', '2048'), ('RUN_TIMEOUT', '1'), ('CPU_LIMIT', '2.5'), ('MEMORY_LIMIT', '4097m')):
+            with self.subTest(suffix=suffix):
+                self.assertNotEqual(agent_budgets.agent_hardening(saved | {name(suffix): value}, PROFILE),
+                                    agent_budgets.agent_hardening(saved, PROFILE))
+        with self.assertRaises(agent_budgets.BudgetError):
+            agent_budgets.agent_hardening({name('PIDS_LIMIT'): '0'}, PROFILE)
+
+    def test_probe_requires_effective_agent_budgets(self):
+        import ast
+        source = (ROOT / 'network/qualification_probe.py').read_text()
+        node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'effective_budgets')
+        namespace = {'Path': Path}
+        exec(compile(ast.Module([node], []), 'qualification_probe.py', 'exec'), namespace)
+        budgets = self.identity()['hardening']['agent']
+        with tempfile.TemporaryDirectory(dir=test_setting('TEST_TMPDIR')) as temporary:
+            base = Path(temporary)
+            membership = base / 'membership'
+            def write(memory='4294967296', pids='512', cpu='200000 100000', cgroup='0::/'):
+                membership.write_text(cgroup + '\n')
+                for key, value in (('memory.max', memory), ('pids.max', pids), ('cpu.max', cpu)):
+                    (base / key).write_text(value + '\n')
+            write()
+            namespace['effective_budgets'](budgets, base, membership)
+            for change in (dict(memory='max'), dict(pids='513'), dict(cpu='max 100000'), dict(cpu='100000 100000'),
+                           dict(cgroup='0::/user.slice')):
+                with self.subTest(change=change):
+                    write(**change)
+                    with self.assertRaises((AssertionError, ValueError)):
+                        namespace['effective_budgets'](budgets, base, membership)
+
+    def test_missing_report_names_budgets_as_a_cause(self):
+        with tempfile.TemporaryDirectory(dir=test_setting('TEST_TMPDIR')) as temporary:
+            root = Path(temporary)
+            (root / 'qualification').mkdir(mode=0o700)
+            with patch.object(records, 'trusted_path', side_effect=lambda path, writable, directory=False: Path(path)), \
+                    self.assertRaisesRegex(ValueError, 'agent budgets/lifetime; rerun --container-qualify'):
+                records.read(root, self.identity(), [])
 
     def test_release_measured_requires_exact_protected_acceptance_entry(self):
         identity = self.identity()
@@ -239,9 +290,20 @@ class QualificationRuntime(unittest.TestCase):
         self.assertEqual(len(paths),1)
         report=json.loads(paths[0].read_text())
         self.assertEqual(report['identity']['hardening']['memory'],268435456)
+        self.assertEqual(report['identity']['hardening']['agent']['pids'],512)
         result=self.command('--container-shell',input='printf qualified-startup-ok\n')
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('qualified-startup-ok',result.stdout)
+        # An exported budget that differs from the qualified one needs requalification.
+        self.env[name('PIDS_LIMIT')]='1024'
+        result=self.command('--container-shell',input='touch agent-started\n')
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('agent budgets/lifetime',result.stderr)
+        self.assertFalse((self.project/'agent-started').exists())
+        self.env[name('PIDS_LIMIT')]='512'
+        result=self.command('--container-shell',input='printf explicit-default-ok\n')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        del self.env[name('PIDS_LIMIT')]
         helper=self.install/'network/platform_check.py'
         helper.chmod(0o666)
         result=self.command('--container-shell',input='touch agent-started\n')

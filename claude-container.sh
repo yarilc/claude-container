@@ -54,6 +54,15 @@ Environment:
   CLAUDE_CONTAINER_CA_BUNDLE      CA bundle file to trust (default: first of
                                   /etc/ssl/certs/ca-certificates.crt and
                                   /etc/pki/tls/certs/ca-bundle.crt)
+  CLAUDE_CONTAINER_MEMORY_LIMIT   agent memory, integer with k/m/g unit (default: 4g)
+  CLAUDE_CONTAINER_CPU_LIMIT      agent CPUs, up to 3 decimals (default: 2)
+  CLAUDE_CONTAINER_PIDS_LIMIT     agent process limit (default: 512)
+                                  Budgets cannot be disabled; managed launches use
+                                  the values saved by setup unless exported
+  CLAUDE_CONTAINER_RUN_TIMEOUT    agent container lifetime in whole seconds
+                                  (default: 0, disabled by default)
+  CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE  exact 1 permits a refused sensitive
+                                  workspace with a warning (default: disabled)
 
 New users must first run: bash ./claude-container.sh --container-setup
 Then use the managed launch command printed by setup from your workspace.
@@ -108,14 +117,21 @@ The guard adds
 unprivileged Landlock and restrictive seccomp, preserving the OCI profile.
 New Unix services are unavailable; fixed-peer pairs may have private inert names.
 See network/README.md for packaging and docs/validation.md for measured evidence.
-Restricted agents and session proxies drop all capabilities and enable
-no-new-privileges. Provider proxies require effective cgroup v2 limits of
-128 processes and 256 MiB memory; unavailable or ignored limits stop startup.
-Unrestricted sessions retain their existing container arguments.
+Every agent container, in all modes including shell and delegation, drops all
+capabilities, enables no-new-privileges and receives the memory, CPU and process
+budgets; the created configuration is checked before the application starts.
+Budgets and tmpfs sizes do not limit workspace or state storage growth.
+Provider proxies require effective cgroup v2 limits of 128 processes and
+256 MiB memory; unavailable or ignored limits stop startup.
+The workspace mount (the parent in worktree mode) must not be /, your home,
+/home, /root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt, /srv,
+/mnt, /media, /proc, /sys, /dev, /run, /tmp or a WSL drive root such as /mnt/c.
+A reached lifetime limit is reported; the exit status is preserved.
 Qualification is credential-free, uses disposable fixed controls and never grants
 image maintenance or forwards an application command. ABI queries alone do not
 qualify an installation. Changed boot, engine/backend/security, code/images,
-policy/profile, CA trust or hardening invalidates evidence. Unknown active LSM
+policy/profile, CA trust or hardening, including agent budgets and
+lifetime, invalidates evidence. Unknown active LSM
 policy identity requires the gate each launch. Locally-qualified installations
 are visibly distinguished from exact release-measured acceptance records.
 EOF
@@ -198,6 +214,57 @@ fi
 [[ -z "${CLAUDE_CONTAINER_STATE_DIR:-}" || -z "${CLAUDE_CONFIG_DIR:-}" ]] \
     || die 'CLAUDE_CONTAINER_STATE_DIR conflicts with CLAUDE_CONFIG_DIR; unset CLAUDE_CONFIG_DIR to isolate state'
 
+# Agent budgets and lifetime. network/agent_budgets.py implements the same
+# rules for setup and qualification; unrestricted installs may lack host Python.
+# Only an unset budget selects its default; no value disables a budget.
+memory_text=${CLAUDE_CONTAINER_MEMORY_LIMIT-4g}
+cpu_text=${CLAUDE_CONTAINER_CPU_LIMIT-2}
+pids_text=${CLAUDE_CONTAINER_PIDS_LIMIT-512}
+timeout_text=${CLAUDE_CONTAINER_RUN_TIMEOUT:-0}
+memory_bytes=0
+if [[ "$memory_text" =~ ^([1-9][0-9]{0,15})([kmgKMG])$ ]]; then
+    case "${BASH_REMATCH[2],,}" in
+        k) unit=1024 ;;
+        m) unit=1048576 ;;
+        *) unit=1073741824 ;;
+    esac
+    ((10#${BASH_REMATCH[1]} > (1 << 50) / unit)) || memory_bytes=$((10#${BASH_REMATCH[1]} * unit))
+fi
+((memory_bytes > 0)) || die 'CLAUDE_CONTAINER_MEMORY_LIMIT must be a positive integer with unit k, m or g, for example 4g'
+cpu_nano=0
+if [[ "$cpu_text" =~ ^([0-9]{1,4})(\.([0-9]{1,3}))?$ ]]; then
+    fraction=${BASH_REMATCH[3]}000
+    cpu_nano=$((10#${BASH_REMATCH[1]} * 1000000000 + 10#${fraction:0:3} * 1000000))
+    ((cpu_nano <= 1024000000000)) || cpu_nano=0
+fi
+((cpu_nano > 0)) || die 'CLAUDE_CONTAINER_CPU_LIMIT must be a positive number of CPUs with at most 3 decimals, for example 2 or 1.5'
+[[ "$pids_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((pids_text > 0 && pids_text <= 4194304)) \
+    || die 'CLAUDE_CONTAINER_PIDS_LIMIT must be a positive integer process count up to 4194304'
+[[ "$timeout_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((timeout_text <= 2147483647)) \
+    || die 'CLAUDE_CONTAINER_RUN_TIMEOUT must be whole seconds; 0 disables the lifetime limit'
+pids_limit=$((10#$pids_text))
+run_timeout=$((10#$timeout_text))
+
+# Refuse sensitive writable workspaces before any engine or state operation.
+workspace=$(pwd -P)
+workspace_mount=$workspace
+((git_worktree == 0)) || workspace_mount=$(dirname -- "$workspace")
+[[ "${HOME:-}" == /* ]] || die 'HOME must be an absolute path'
+# Builtins only: tool prerequisites are diagnosed later. A missing home cannot
+# be a workspace, so its lexical path is sufficient then.
+physical_home=$(cd -- "$HOME" 2>/dev/null && pwd -P) || physical_home=$HOME
+unsafe_workspace=0
+case "$workspace_mount" in
+    /|/home|/root|/etc|/usr|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/srv|/mnt|/media|/proc|/sys|/dev|/run|/tmp)
+        unsafe_workspace=1 ;;
+esac
+[[ "$workspace_mount" != "$physical_home" && ! "$workspace_mount" =~ ^/mnt/[A-Za-z]$ ]] || unsafe_workspace=1
+if ((unsafe_workspace)); then
+    [[ "${CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE:-}" == 1 ]] \
+        || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1"
+    printf 'claude-container: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$workspace_mount" >&2
+fi
+
 command -v podman >/dev/null || die 'Podman is required on the host'
 command -v timeout >/dev/null && [[ $(timeout --version 2>/dev/null) == *'GNU coreutils'* ]] \
     || die 'GNU timeout is required on the host; install GNU coreutils'
@@ -259,9 +326,6 @@ if ((podman_access)); then
     [[ "$host_socket" == /* && "$host_socket" != *$'\n'* ]] || die "Podman socket $socket did not report an absolute host socket path"
 fi
 
-workspace=$(pwd -P)
-workspace_mount=$workspace
-((git_worktree == 0)) || workspace_mount=$(dirname -- "$workspace")
 image="${CLAUDE_CONTAINER_IMAGE:-localhost/claude-code:latest}"
 state_dir="${CLAUDE_CONTAINER_STATE_DIR:-}"
 
@@ -399,6 +463,8 @@ fi
 container_args=(
     --rm --interactive --read-only --read-only-tmpfs=false
     --userns=keep-id --user "$caller_uid:$caller_gid"
+    --cap-drop=all --security-opt=no-new-privileges
+    "--memory=$memory_bytes" "--cpus=$cpu_text" "--pids-limit=$pids_limit"
     --workdir "$workspace"
     --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
     --tmpfs '/run:rw,nosuid,nodev,noexec,size=16m'
@@ -409,6 +475,7 @@ container_args=(
     --volume "$workspace_mount:$workspace_mount:rw"
     "${state_mounts[@]}"
 )
+((run_timeout == 0)) || container_args+=(--timeout "$run_timeout")
 if [[ -t 0 && -t 1 ]]; then
     container_args+=(--tty)
     [[ -z "${TERM:-}" ]] || container_args+=(--env TERM)
@@ -711,8 +778,17 @@ for ((attempt=0; attempt<20; attempt++)); do
 done
 [[ -n "$container_id" ]] || die 'could not reserve a container name after 20 attempts'
 
+# Engine flags alone are not evidence: require the created configuration to
+# carry every selected budget. Setup smoke and qualification measure cgroups.
+capture_response configured_budgets timeout --kill-after=1s 10s podman inspect --type container \
+    --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id" \
+    || die 'cannot inspect agent resource budgets; agent not started'
+[[ "${configured_budgets%$'\n'}" == "$memory_bytes $cpu_nano $pids_limit" ]] \
+    || die "agent resource budgets were not applied (expected memory=$memory_bytes nano_cpus=$cpu_nano pids=$pids_limit); check rootless cgroup v2 cpu/memory/pids controller delegation; agent not started"
+
 # Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
 # for the background client; traps can forward signals while wait is active.
+started_at=$SECONDS
 if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null; then
     # Optional for legacy unrestricted installs without host Python. Only the
     # exact successful Podman 4.3 restart-check line changes level; errors pass.
@@ -730,4 +806,7 @@ else
 fi
 status=0
 wait "$client_pid" || status=$?
+if ((run_timeout > 0 && status != 0 && SECONDS - started_at >= run_timeout)); then
+    printf 'claude-container: session lifetime limit reached (%s s); exit status %s\n' "$run_timeout" "$status" >&2
+fi
 exit "$status"

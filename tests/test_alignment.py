@@ -36,7 +36,7 @@ HELPER_OPERATIONS = ('prepare', 'start', 'agent-args', 'stop')
 INLINE_LIFECYCLE = (
     r'network/control\.py', r'network/platform_check\.py', r'proxy_hardening\.py',
     r'sandbox-egress-guard', r'/opt/sandbox-egress', r'/run/sandbox-egress',
-    r'--pids-limit', r'transport/ready', r'EGRESS_PROFILE=',
+    r'--pids-limit=128', r'transport/ready', r'EGRESS_PROFILE=',
 )
 
 

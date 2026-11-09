@@ -83,8 +83,13 @@ def main():
         if len(data) > 65536:
             raise PolicyError('oversized qualification input')
         value = json.loads(data, object_pairs_hook=unique_object)
-        if (not isinstance(value, dict) or set(value) != {'schema', 'token', 'addresses', 'workspace', 'provider', 'tls', 'agent'} or
-                value['agent'] != profile.command or
+        budgets = value.get('budgets') if isinstance(value, dict) else None
+        if (not isinstance(value, dict) or
+                set(value) != {'schema', 'token', 'addresses', 'workspace', 'provider', 'tls', 'agent', 'budgets'} or
+                value['agent'] != profile.command or not isinstance(budgets, dict) or
+                set(budgets) != {'capabilities', 'no_new_privs', 'memory', 'nano_cpus', 'pids', 'timeout'} or
+                any(type(budgets[key]) is not int for key in ('memory', 'nano_cpus', 'pids', 'timeout')) or
+                budgets['capabilities'] != [] or budgets['no_new_privs'] is not True or
                 type(value['schema']) is not int or value['schema'] != 1 or
                 not isinstance(value['token'], str) or not re.fullmatch(r'[a-f0-9]{32}', value['token']) or
                 type(value['provider']) is not bool or type(value['tls']) is not bool or

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from policy import PolicyError, canonical, load, selected, trusted_path, unique_object
 from proxy_hardening import MEMORY_LIMIT, PIDS_LIMIT
+import agent_budgets
 import agent_profile
 
 REVISION = 'local-enforcement-v1'
@@ -19,7 +20,7 @@ GUARD = 'sandbox-egress-guard'
 # Shared code plus the agent profile and provider policy. The wrapper name comes
 # from the profile, so ``code_files`` binds the profile that selected it.
 SHARED_CODE = ('network/control.py', 'network/platform_check.py', 'network/agent_profile.py', 'network/session.py',
-               'network/policy.py', 'network/proxy_hardening.py', 'network/qualify.py',
+               'network/policy.py', 'network/proxy_hardening.py', 'network/agent_budgets.py', 'network/qualify.py',
                'network/qualification_records.py', 'network/qualification_runtime.py',
                'network/qualification_probe.py', 'network/qualification_peer.py',
                'network/qualification_proxy.py', 'network/relay.py', 'network/mux.py',
@@ -39,6 +40,10 @@ def decode(data):
     if len(data) > 65536:
         raise PolicyError('qualification record exceeds size limit')
     return json.loads(data, object_pairs_hook=unique_object)
+
+
+STALE = ('missing or stale qualification for the current host, engine, code, policy '
+         'or agent budgets/lifetime; rerun --container-qualify or --container-setup')
 
 
 def expected_checks(provider):
@@ -154,11 +159,17 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
             (not ca_path and security.get('ca') != '')):
         raise PolicyError('unverifiable security identity')
     code = {name: digest(trusted_path(root / name, []).read_bytes()) for name in code_files(profile)}
+    try:
+        # Agent capability, budget and lifetime settings of the launch being qualified.
+        agent = agent_budgets.agent_hardening(env, profile)
+    except agent_budgets.BudgetError as error:
+        raise PolicyError('invalid ' + profile.env(str(error)) + ' agent budget or lifetime') from None
     identity = dict(revision=REVISION, platform=value, engine_configuration=engine_configuration,
                     endpoint=endpoint, host_socket=socket,
                     security=security, code=code, runtime=runtime, proxy=proxy,
                     mode=mode, profile=selected_profile if mode == 'provider' else '', policy=policy_id,
-                    hardening=dict(capabilities=[], no_new_privs=True, pids=PIDS_LIMIT, memory=MEMORY_LIMIT))
+                    hardening=dict(capabilities=[], no_new_privs=True, pids=PIDS_LIMIT, memory=MEMORY_LIMIT,
+                                   agent=agent))
     # Active LSM policy identity cannot generally be read by an unprivileged
     # operator. Rerun the gate each launch instead of caching unverifiable state.
     return identity, not (value['selinux'] or value['apparmor'])
@@ -171,7 +182,7 @@ def validate_report(value, identity):
             type(value['reusable']) is not bool or not isinstance(value['measured_at'], str) or
             not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00', value['measured_at']) or
             value['checks'] != {name: 'passed' for name in expected_checks(identity['mode'] == 'provider')}):
-        raise PolicyError('missing, stale or incomplete qualification; rerun --container-qualify')
+        raise PolicyError(STALE)
     try:
         datetime.fromisoformat(value['measured_at'])
     except ValueError:
@@ -179,7 +190,7 @@ def validate_report(value, identity):
     return value
 
 
-def report_path(root, identity, writable):
+def report_path(root, identity, writable, missing=None):
     directory = Path(root) / 'qualification'
     if directory.is_symlink():
         raise PolicyError('qualification directory cannot be a symlink')
@@ -187,11 +198,13 @@ def report_path(root, identity, writable):
     path = directory / (digest(canonical(identity)) + '.json')
     if path.is_symlink():
         raise PolicyError('qualification report cannot be a symlink')
+    if missing and not path.exists():
+        raise PolicyError(missing)
     return trusted_path(path, writable)
 
 
 def read(root, identity, writable):
-    path = report_path(root, identity, writable)
+    path = report_path(root, identity, writable, missing=STALE)
     if path.stat().st_mode & 0o077 or path.stat().st_uid != os.getuid():
         raise PolicyError('qualification report must be private and caller-owned')
     with path.open('rb') as source:

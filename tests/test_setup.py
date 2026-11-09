@@ -163,7 +163,9 @@ class SetupTests(unittest.TestCase):
             result += [('Authentication method', value['auth'])]
         result += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
                    ('Delegate the host Podman API', 'no'), ('Enable ' + PROFILE.display_name + ' permission bypass', 'no'),
-                   ('Use parent-directory worktree scope', 'no'), ('Trust a host CA bundle', 'no'),
+                   ('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
+                   ('Agent CPU limit', ''), ('Agent process limit', ''), ('Session lifetime in seconds', ''),
+                   ('Trust a host CA bundle', 'no'),
                    ('Managed launch command path', value['command']), ('Podman launch endpoint', value['endpoint'])]
         if value['network'] == 'provider':
             result += [('Private native egress runtime directory', str(self.base / 'egress'))]
@@ -266,7 +268,7 @@ class SetupTests(unittest.TestCase):
             # Provider/account defaults remain selected through input retries;
             # requesting delegation must not silently broaden the network mode.
             answers = iter([str(self.base / 'installed'), 'invalid', '', 'yes', '', 'shared', '',
-                            'yes', '', 'no', 'no', 'no', str(self.bin / COMMAND), 'default', ''])
+                            'yes', '', 'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND), 'default', ''])
             with patch('builtins.input', side_effect=lambda prompt: next(answers)), patch('builtins.print'):
                 value, old = setup.questionnaire()
             self.assertIsNone(old)
@@ -287,7 +289,7 @@ class SetupTests(unittest.TestCase):
         # Declining returns to the mode question; nothing is substituted or saved.
         value, output = self.questionnaire_output([
             str(self.base / 'installed'), 'provider', 'no', 'offline', 'shared', '',
-            'no', 'no', 'no', 'no', str(self.bin / COMMAND), ''])
+            'no', 'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND), ''])
         self.assertEqual(value['network'], 'offline')
         self.assertEqual(output.count('Residual exfiltration:'), 1)
         self.assertEqual(output.count('Network mode ['), 2)
@@ -300,16 +302,40 @@ class SetupTests(unittest.TestCase):
     def test_delegation_conflict_switch_to_provider_requires_acknowledgement(self):
         value, output = self.questionnaire_output([
             str(self.base / 'installed'), 'offline', 'shared', '', 'yes', 'change-network', 'provider', 'yes', '',
-            'disable-delegation', 'no', 'no', 'no', str(self.bin / COMMAND), '', ''])
+            'disable-delegation', 'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND), '', ''])
         self.assertEqual((value['network'], value['auth'], value['podman']), ('provider', LOGIN_METHOD, False))
         self.assertEqual(output.count('Residual exfiltration:'), 1)
 
     def test_unrestricted_selection_has_no_provider_notice(self):
         value, output = self.questionnaire_output([
-            str(self.base / 'installed'), 'unrestricted', '', 'shared', '', 'no', 'no', 'no', 'no',
+            str(self.base / 'installed'), 'unrestricted', '', 'shared', '', 'no', 'no', 'no', '', '', '', '', 'no',
             str(self.bin / COMMAND), ''])
         self.assertEqual(value['network'], 'unrestricted')
         self.assertNotIn('Residual exfiltration', output)
+
+    def test_budget_questions_defaults_retries_and_saved_values(self):
+        value, output = self.questionnaire_output([
+            str(self.base / 'installed'), 'unrestricted', '', 'shared', '', 'no', 'no', 'no',
+            '0', 'max', '4', '8G', '0', '1.5', '-1', '1024', '1.5', '3600', 'no', str(self.bin / COMMAND), ''])
+        self.assertEqual((value['memory_limit'], value['cpu_limit'], value['pids_limit'], value['run_timeout']),
+                         ('8g', '1.5', '1024', '3600'))
+        self.assertEqual(output.count('Invalid value: use a positive integer with unit k, m or g'), 3)
+        self.assertEqual(output.count('Invalid value: use a positive number of CPUs'), 1)
+        self.assertEqual(output.count('Invalid value: use a positive integer process count'), 1)
+        self.assertEqual(output.count('Invalid value: use whole seconds'), 1)
+        self.assertIn('Agent memory limit (integer with k, m or g unit) [4g]', output)
+        self.assertIn('Session lifetime in seconds, 0 disables [0]', output)
+        self.assertIn('do not limit workspace or state storage', output)
+        _, release = self.release()
+        common.save(release / 'saved.json', self.value | value | {'installation': self.value['installation']})
+        rerun = common.load(release / 'saved.json')
+        with patch.object(setup, 'current_release', return_value=release), \
+                patch.object(common, 'load', return_value=rerun), patch.object(setup, 'load', return_value=rerun):
+            _, output = self.questionnaire_output([
+                str(self.base / 'installed'), 'unrestricted', '', 'shared', '', 'no', 'no', 'no',
+                '', '', '', '', 'no', str(self.bin / COMMAND), ''])
+        self.assertIn('Agent memory limit (integer with k, m or g unit) [8g]', output)
+        self.assertIn('Session lifetime in seconds, 0 disables [3600]', output)
 
     def test_questionnaire_cancellation_has_no_mutation(self):
         code, output = pty_run(['bash', str(ROOT / WRAPPER), '--container-setup'],
@@ -734,7 +760,11 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         _, release = self.release()
         path = release / 'setup.json'
         original = path.read_text()
-        for data in (self.value | {'api_key': 'SYNTHETIC_SECRET'}, self.value | {'schema_version': 2},
+        for data in (self.value | {'api_key': 'SYNTHETIC_SECRET'}, self.value | {'schema_version': 3},
+                     self.value | {'schema_version': 1}, self.value | {'memory_limit': '0'},
+                     self.value | {'cpu_limit': 'max'}, self.value | {'pids_limit': '-1'},
+                     self.value | {'run_timeout': ''}, self.value | {'memory_limit': '4G'},
+                     {k: v for k, v in self.value.items() if k != 'pids_limit'},
                      self.value | {'schema_version': True}, self.value | {'podman': 'yes'},
                      self.value | {'image_id': 'mutable:tag'}):
             path.write_text(json.dumps(data))
@@ -749,6 +779,33 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             common.load(path)
         path.chmod(0o600)
         self.assertEqual(common.load(path), self.value)
+
+    def test_schema_one_preferences_upgrade_with_default_budgets(self):
+        _, release = self.release()
+        path = release / 'setup.json'
+        legacy = {k: v for k, v in self.value.items() if k not in common.BUDGETS} | {'schema_version': 1}
+        path.write_text(json.dumps(legacy))
+        upgraded = common.load(path)
+        self.assertEqual(upgraded['schema_version'], 2)
+        self.assertEqual({k: upgraded[k] for k in common.BUDGETS},
+                         dict(memory_limit='4g', cpu_limit='2', pids_limit='512', run_timeout='0'))
+        for data in (legacy | {'memory_limit': '8g'}, legacy | {'unknown': 'x'},
+                     {k: v for k, v in legacy.items() if k != 'yolo'}):
+            path.write_text(json.dumps(data))
+            with self.assertRaises(common.SetupError):
+                common.load(path)
+        saved = release / 'resaved.json'
+        common.save(saved, upgraded)
+        self.assertEqual(json.loads(saved.read_text())['schema_version'], 2)
+
+    def test_saved_budgets_supplied_unless_explicitly_present(self):
+        value = self.value | {'memory_limit': '8g', 'cpu_limit': '1.5', 'pids_limit': '1024', 'run_timeout': '60'}
+        with patch.dict(os.environ, self.env | {name('PIDS_LIMIT'): '2048', name('RUN_TIMEOUT'): ''}, clear=True):
+            env = common.runtime_environment(value, self.base)
+            stripped = common.runtime_environment(value, self.base, overrides=False)
+        self.assertEqual((env[name('MEMORY_LIMIT')], env[name('CPU_LIMIT')]), ('8g', '1.5'))
+        self.assertEqual((env[name('PIDS_LIMIT')], env[name('RUN_TIMEOUT')]), ('2048', ''))
+        self.assertEqual((stripped[name('PIDS_LIMIT')], stripped[name('RUN_TIMEOUT')]), ('1024', '60'))
 
     def test_runtime_defaults_respect_present_empty_overrides_and_dynamic_socket(self):
         value = self.value | {'network': 'provider', 'auth': LOGIN_METHOD, 'endpoint': 'default',
@@ -1038,6 +1095,16 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
                 self.assertNotIn(name('MAINTENANCE'), run.call_args.args[1])
                 self.assertNotIn(CREDENTIAL, run.call_args.args[1])
                 self.assertIn('unrestricted ' + ('1' if trust else '0'), run.call_args.kwargs['input'])
+                self.assertIn(' 4294967296 2000000000 512 <<', run.call_args.kwargs['input'])
+                workspace = Path(run.call_args.kwargs['cwd'])
+                self.assertNotEqual(workspace, Path.cwd())
+                self.assertFalse(workspace.exists())
+        value = self.value | {'memory_limit': '8g', 'cpu_limit': '1.5', 'pids_limit': '1024'}
+        with patch.dict(os.environ, self.env | {name('MEMORY_LIMIT'): '1g'}, clear=True), \
+                patch.object(setup, 'run', return_value='SANDBOX_SETUP_SMOKE_OK\n') as run:
+            setup.smoke(value, release)
+            self.assertIn(' 8589934592 1500000000 1024 <<', run.call_args.kwargs['input'])
+            self.assertEqual(run.call_args.args[1][name('MEMORY_LIMIT')], '8g')
         with patch.object(setup, 'run', return_value='version-only\n'):
             with self.assertRaisesRegex(common.SetupError, 'did not confirm readiness'):
                 setup.smoke(self.value, release)

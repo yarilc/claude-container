@@ -43,6 +43,15 @@ def unix_control(names):
             peer.sendall(b'qualification-positive')
 
 
+def effective_budgets(budgets, cgroup=Path('/sys/fs/cgroup'), membership=Path('/proc/self/cgroup')):
+    # Effective agent budgets in this container's private cgroup v2 namespace.
+    assert membership.read_text() == '0::/\n', 'unsupported cgroup namespace'
+    assert int((cgroup / 'memory.max').read_text()) == budgets['memory'], 'agent memory budget is not effective'
+    assert int((cgroup / 'pids.max').read_text()) == budgets['pids'], 'agent process budget is not effective'
+    quota, period = (cgroup / 'cpu.max').read_text().split()
+    assert quota != 'max' and int(quota) * 10**9 == budgets['nano_cpus'] * int(period), 'agent CPU budget is not effective'
+
+
 if sys.argv[1:] == ['control']:
     external(True)
     unix_control((('external.sock', socket.SOCK_STREAM), ('seq.sock', socket.SOCK_SEQPACKET),
@@ -56,6 +65,7 @@ if sys.argv[1:] != ['probe']:
 status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines())
 assert all(int(status[name], 16) == 0 for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'))
 assert int(status['NoNewPrivs']) == 1 and int(status['Seccomp']) == 2
+effective_budgets(config['budgets'])
 assert os.listdir('/sys/class/net') == ['lo']
 for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy'):
     os.environ.pop(key, None)
