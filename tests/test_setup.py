@@ -700,6 +700,35 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             with self.assertRaises(common.SetupError):
                 setup.build_image(release, 'Containerfile', 'localhost/test:failure', env | {'SETUP_TEST_FAIL': 'build'})
 
+    def test_runtime_build_receives_host_ca_only_when_trusted(self):
+        _, release = self.release()
+        env = self.env | {name('MAINTENANCE'): '1'}
+        bundle = self.base / 'bundle.pem'
+        bundle.write_text('-----BEGIN CERTIFICATE-----\n')
+        for trusted in (False, True):
+            with self.subTest(trusted=trusted):
+                value = self.value | {'trust_ca': trusted, 'ca_bundle': str(bundle) if trusted else ''}
+                with patch.object(setup, 'build_image', return_value='b' * 64) as build:
+                    setup.prepare_artifacts(value, None, release, self.env, {'runtime': ''}, False, [])
+                self.assertEqual(build.call_args.args[4], str(bundle) if trusted else '')
+                self.log.unlink(missing_ok=True)
+                with patch.object(setup, 'image_identity', side_effect=['sha256:' + 'a' * 64, 'sha256:' + 'b' * 64]):
+                    setup.build_image(release, 'Containerfile', 'localhost/test:ca', env, build.call_args.args[4])
+                args = next(c for c in self.calls() if c['args'][0] == 'build')['args']
+                secrets = [args[i + 1] for i, arg in enumerate(args) if arg == '--secret']
+                self.assertEqual(secrets, ['id=build-ca,src=' + str(bundle)] if trusted else [])
+        # The toolchain and proxy builds never receive the host CA.
+        second = release.parent / 'provider-ca'
+        second.mkdir(mode=0o700)
+        setup.copy_inputs(second)
+        value = self.value | {'network': 'provider', 'endpoint': 'default', 'trust_ca': True,
+                              'ca_bundle': str(bundle), 'runtime_dir': str(self.base / 'egress')}
+        with patch.object(setup, 'run'), patch.object(setup, 'build_image', return_value='b' * 64) as build:
+            setup.prepare_artifacts(value, None, second, self.env, {'runtime': ''}, True, [])
+        recipes = {call.args[1]: call.args[4] if len(call.args) > 4 else '' for call in build.call_args_list}
+        self.assertEqual(recipes, {'Containerfile': str(bundle), 'network/guard-build.Containerfile': '',
+                                   'network/Containerfile': ''})
+
     def test_mode_specific_artifacts_and_scoped_maintenance(self):
         _, release = self.release()
         value = self.value.copy()

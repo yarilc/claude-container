@@ -768,6 +768,22 @@ if args[0]=='snapshot':
         self.assertEqual(self.run_wrapper(FAKE_IMAGE_STATUS='1').returncode, 0)
         self.assertTrue(any(c[0] == 'build' for c in self.calls()))
 
+    def test_runtime_build_receives_host_ca_only_when_trusted(self):
+        ca = self.base / 'bundle.pem'
+        ca.write_text('synthetic certificate bundle')
+        for trust in ('0', '1'):
+            for build in (('--container-build',), ()):
+                with self.subTest(trust=trust, build=build):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper(*build, CLAUDE_CONTAINER_TRUST_HOST_CA=trust,
+                                              CLAUDE_CONTAINER_CA_BUNDLE=str(ca),
+                                              **({} if build else {'FAKE_IMAGE_STATUS': '1'}))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    args = next(c for c in self.calls() if c[0] == 'build')
+                    secrets = [args[i + 1] for i, arg in enumerate(args) if arg == '--secret']
+                    self.assertEqual(secrets, [f'id=build-ca,src={ca}'] if trust == '1' else [])
+                    self.assertEqual(args[-3:], ['--file', str(ROOT / 'Containerfile'), str(ROOT)])
+
     def test_build_and_image_inspection_errors(self):
         self.assertEqual(self.run_wrapper('--container-build', FAKE_BUILD_STATUS='17').returncode, 17)
         self.assertNotEqual(self.run_wrapper(FAKE_IMAGE_STATUS='125').returncode, 0)

@@ -180,6 +180,13 @@ Review the settings and image plan before approving preparation. A separate
 refresh question allows rebuilding prepared images/guard. Builds and pulls are
 host maintenance: their network traffic, including build-time package downloads,
 is outside runtime egress filtering even when the chosen session mode is offline.
+Preparation needs outbound HTTPS (443) to the container registry (`docker.io`),
+Debian (`deb.debian.org`), Alpine (`dl-cdn.alpinelinux.org`) and npm
+(`registry.npmjs.org`); it does not need port 80. Debian packages are fetched
+over verified HTTPS, so hosts that block plain HTTP can still build. On networks
+that intercept TLS, answer yes to host CA trust and select a bundle containing the
+interception CA: setup passes it to the runtime image build as a non-persisted
+build secret. Without it, such builds fail with a certificate verification error.
 Consent grants exact maintenance authorization only to these preparation
 commands. It is not saved or enabled for subsequent ordinary launches.
 

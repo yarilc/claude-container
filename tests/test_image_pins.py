@@ -56,6 +56,47 @@ def violations(recipe, tested_cli):
     return found
 
 
+SOURCES = '/etc/apt/sources.list.d/debian.sources'
+BOOTSTRAP_CA = '/tmp/apt-bootstrap-ca.pem'
+INSECURE_APT = re.compile(r'Verify-(?:Peer|Host)\s*[= ]\s*"?(?:false|no|0)\b'
+                          r'|AllowInsecureRepositories|--allow-insecure|--allow-unauthenticated'
+                          r'|trusted=yes|\[trusted', re.IGNORECASE)
+
+
+def transport_violations(recipe):
+    """Return package-source transport violations (Debian over verified HTTPS only)."""
+    text = recipe.replace('\\\n', ' ')
+    found = []
+    if re.search(r'http://deb\.debian\.org', text):
+        found.append('plain-HTTP Debian source: http://deb.debian.org')
+    for match in INSECURE_APT.finditer(text):
+        found.append('apt TLS or signature verification disabled: ' + match[0])
+    rewrite = re.search(r"sed -i '?s\|\^URIs: http://\|URIs: https://\|'? " + re.escape(SOURCES), text)
+    update = re.search(r'apt-get\b[^&]*\bupdate\b', text)
+    if not rewrite:
+        found.append('Debian sources are not rewritten to HTTPS')
+    elif update and update.start() < rewrite.start():
+        found.append('Debian sources are rewritten to HTTPS only after apt-get update')
+    # Bootstrap trust comes only from the pinned base's Node roots and is removed in the same step.
+    bootstrap = re.search(r'rootCertificates[^&]*>\s*' + re.escape(BOOTSTRAP_CA), text)
+    if not bootstrap or (rewrite and bootstrap.start() > rewrite.start()):
+        found.append('bootstrap CA bundle is not exported from the base Node roots before the rewrite')
+    for command in re.findall(r'apt-get\b[^&]*', text):
+        if re.search(r'\b(update|install)\b', command) and 'Acquire::https::CAInfo=' + BOOTSTRAP_CA not in command:
+            found.append('apt-get fetch without the bootstrap CA: ' + command.split(' -y')[0].strip())
+    # The optional host CA arrives only as a build secret, never as a copied file.
+    if not re.search(r'RUN --mount=type=secret,id=build-ca,required=false\b', text):
+        found.append('optional build-ca secret mount is missing')
+    for match in re.finditer(r'(?im)^(?:COPY|ADD)\b[^\n]*(?:\.pem|\.crt|ca-?bundle|certs?\b)', text):
+        found.append('CA material copied into the image: ' + match[0])
+    if 'build-ca' in text and not re.search(r'cat /run/secrets/build-ca >> ' + re.escape(BOOTSTRAP_CA), text):
+        found.append('build-ca secret is not appended to the bootstrap CA bundle')
+    steps = [line for line in text.splitlines() if BOOTSTRAP_CA in line]
+    if not steps or len(steps) != 1 or 'rm -f ' + BOOTSTRAP_CA not in steps[0]:
+        found.append('bootstrap CA bundle is not removed in the step that creates it')
+    return found
+
+
 class ImagePinTests(unittest.TestCase):
     def setUp(self):
         self.recipe = (ROOT / 'Containerfile').read_text()
@@ -84,6 +125,32 @@ class ImagePinTests(unittest.TestCase):
                 self.assertTrue(violations(recipe, self.tested_cli))
         message = violations(cases['diverging cli'], self.tested_cli)
         self.assertTrue(any('2.1.317' in item and '2.1.316' in item for item in message), message)
+
+
+    def test_package_sources_use_verified_https(self):
+        self.assertEqual(transport_violations(self.recipe), [])
+
+    def test_insecure_transport_recipes_are_rejected(self):
+        rewrite = "sed -i 's|^URIs: http://|URIs: https://|' " + SOURCES
+        option = '-o Acquire::https::CAInfo=' + BOOTSTRAP_CA
+        cases = {
+            'plain http restored': self.recipe.replace(rewrite, 'true'),
+            'peer verification disabled': self.recipe.replace(option, option + ' -o Acquire::https::Verify-Peer=false', 1),
+            'host verification disabled': self.recipe.replace(option, option + ' -o Acquire::https::Verify-Host=false', 1),
+            'insecure repositories': self.recipe.replace(option, option + ' -o Acquire::AllowInsecureRepositories=true', 1),
+            'rewrite after update': self.recipe.replace('    && ' + rewrite + ' \\\n', '').replace(
+                '    && npm install', '    && ' + rewrite + ' \\\n    && npm install', 1),
+            'literal http source': self.recipe.replace(rewrite, rewrite + ' && echo http://deb.debian.org/debian'),
+            'fetch without bootstrap ca': self.recipe.replace(option + ' update', 'update', 1),
+            'bootstrap ca kept': self.recipe.replace('    && rm -f ' + BOOTSTRAP_CA + ' \\\n', ''),
+            'secret mount required': self.recipe.replace('id=build-ca,required=false', 'id=build-ca,required=true'),
+            'secret not appended': self.recipe.replace('cat /run/secrets/build-ca >> ', 'true ', 1),
+            'bundle copied': self.recipe.replace('WORKDIR /workspace', 'COPY bundle.pem /etc/ssl/certs/host.pem\nWORKDIR /workspace'),
+        }
+        for name, recipe in cases.items():
+            with self.subTest(name=name):
+                self.assertNotEqual(recipe, self.recipe)
+                self.assertTrue(transport_violations(recipe))
 
 
 if __name__ == '__main__':

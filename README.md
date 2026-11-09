@@ -350,7 +350,9 @@ The proxy image must be a full immutable image ID or registry digest. A missing
 registry digest can be pulled only under exact maintenance authorization; missing
 local image IDs require operator preparation. Maintenance authorization is not
 forwarded to the agent. Runtime filtering does not constrain host image pulls,
-build RUN commands, or other operator maintenance tools.
+build RUN commands, or other operator maintenance tools. Image preparation needs
+outbound HTTPS (443) to the container, Debian, Alpine and npm registries, but not
+port 80: the runtime image fetches Debian packages only over verified HTTPS.
 
 Provider mode requires all four policy/profile/runtime/image variables above.
 Runtime storage must be caller-owned `0700`, outside writable agent mounts, and
@@ -618,6 +620,15 @@ the wrapper stops before starting the container.
 ```bash
 CLAUDE_CONTAINER_TRUST_HOST_CA=1 CLAUDE_CONTAINER_CA_BUNDLE=/path/to/ca.pem ./claude-container.sh
 ```
+
+The same bundle also verifies the runtime image build's Debian package
+downloads, which use HTTPS only. With host CA trust enabled, `--container-build`,
+a missing-image build and setup preparation pass it as the build secret
+`build-ca`: it is mounted only for the package installation step and is not stored
+in the image. Without host CA trust, the build trusts only the root certificates
+of the pinned base image. On a network that intercepts TLS (a corporate proxy that
+re-signs certificates), enable host CA trust with a bundle that contains the
+interception CA, or the build fails with a certificate verification error.
 
 Migration: earlier versions always mounted the host certificate directory and
 set CA variables. Those sessions no longer trust the host CA by default. Set

@@ -22,5 +22,15 @@ for path in /tmp /run /var/tmp; do
         [[ ",$options," == *",$flag,"* ]]
     done
 done
+# Debian package sources stay on verified HTTPS; the build-time trust bootstrap is gone.
+sources=/etc/apt/sources.list.d/debian.sources
+uris=$(grep -E '^URIs:' "$sources")
+[[ -n "$uris" ]]
+if grep -Ev '^URIs:([[:space:]]+https://[^[:space:]]+)+[[:space:]]*$' <<< "$uris"; then
+    printf 'Debian package source is not HTTPS.\n' >&2
+    exit 1
+fi
+[[ ! -e /tmp/apt-bootstrap-ca.pem ]]
+[[ -s /etc/ssl/certs/ca-certificates.crt ]]
 touch /tmp/claude-image-smoke
 printf 'Image smoke checks passed.\n'

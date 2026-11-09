@@ -399,14 +399,17 @@ def image_identity(name, env):
     return identity
 
 
-def build_image(release, recipe, tag, env):
+def build_image(release, recipe, tag, env, ca_bundle=''):
     # Pull the recipe's exact base before --pull=never builds. No pin substitutions.
     recipe_path = release / recipe
     bases = re.findall(r'^FROM\s+(\S+)', recipe_path.read_text(), re.MULTILINE)
     for base in bases:
         if not image_identity(base, env):
             run(['podman', 'pull', base], env, timeout=None)
-    run(['podman', 'build', '--pull=never', '--tag', tag, '--file', recipe_path,
+    # The opted-in host CA bundle verifies build-time package fetches as a build
+    # secret; it is mounted only for the RUN step and never stored in a layer.
+    secret = ['--secret', 'id=build-ca,src=' + ca_bundle] if ca_bundle else []
+    run(['podman', 'build', '--pull=never', *secret, '--tag', tag, '--file', recipe_path,
          recipe_path.parent], env, timeout=None)
     identity = image_identity(tag, env)
     if not identity:
@@ -538,7 +541,8 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
         run(['podman', 'tag', runtime, candidate_tag], maintenance)
     else:
         changes.append('Runtime build requested; intermediate build images may remain under ' + candidate_tag)
-        runtime = build_image(release, 'Containerfile', candidate_tag, maintenance)
+        runtime = build_image(release, 'Containerfile', candidate_tag, maintenance,
+                              value['ca_bundle'] if value['trust_ca'] else '')
     changes.append('Prepared runtime image tag: ' + candidate_tag)
     value['image'], value['image_id'] = candidate_tag, runtime
     if value['network'] == 'unrestricted':

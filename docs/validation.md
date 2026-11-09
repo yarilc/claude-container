@@ -1,5 +1,47 @@
 # Validation record
 
+## HTTPS package sources and host-CA build trust: 2026-11-09
+
+Change: `openspec/changes/https-image-package-sources/`.
+
+- **Recipe:** the runtime `Containerfile` rewrites the Debian deb822 sources
+  to `https://deb.debian.org` before `apt-get update`. Fetches are verified
+  against a temporary bundle built from the pinned base's Node.js roots, plus
+  the optional `build-ca` build secret. The bundle is removed in the same
+  step. Pins are unchanged: Claude Code 2.1.316, OpenSpec 1.16.0, and base
+  `node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`.
+- **Host CA trust:** when it is enabled, setup (runtime build only) and the
+  wrapper's `--container-build` and missing-image builds pass the selected
+  bundle as `--secret id=build-ca,src=<bundle>`. `.containerignore` admits
+  `podman-build-secret*`, because remote Podman clients ship secrets inside
+  the build context under that name.
+- **Motivation:** an operator Linux host (Podman 5.8) blocked outbound port
+  80, so the build timed out on `http://deb.debian.org`, while HTTPS to
+  Debian and npm returned 200. The maintainer's WSL host intercepts HTTPS to
+  `deb.debian.org` (`CN = Cato Networks Root CA`), so Node's roots alone fail
+  there.
+
+Measured on WSL2 x86_64 with Podman client 4.3.1 and server 4.9.3 (rootless),
+from an unrestricted session with the host socket delegated. No credentials or
+model requests were used.
+
+| Check | Result |
+| --- | --- |
+| `test_image_pins.py` | Passed: 4 tests, including 11 mutated transport and secret recipes rejected |
+| Build without secret, initial recipe (TLS-intercepted host) | Failed closed, as expected: `Certificate verification failed … issuer is unknown`; no image tagged |
+| Build with `build-ca` secret through the remote client, before the `.containerignore` exception | Failed: `rename … podman-build-secret… no such file or directory`; fixed by admitting `podman-build-secret*` |
+| Build with `build-ca` secret (test tag `localhost/claude-code:https-sources-test`, not `:latest`) | Passed: all fetches from `https://deb.debian.org`; image `6310a9ad30b3` reports Claude Code 2.1.316 and OpenSpec 1.16.0 |
+| Image contents | Both `URIs:` are `https://`; `/tmp/apt-bootstrap-ca.pem` absent; `/run/secrets` empty; Debian `ca-certificates.crt` present (148 roots); no file containing "Cato Networks" in the filesystem; no CA material in image history |
+| `tests/image-smoke.sh` (read-only root, `noexec` tmpfs, all capabilities dropped, uid 1000) | Passed |
+| Build without secret, final recipe (`--no-cache`, TLS-intercepted host) | Failed closed, as expected: exit 100 with certificate verification errors; no image tagged |
+| `test_setup.py` (branch versus `main`, same runner) | 64 versus 63 tests; the same 2 environment errors on both (smoke tests needing a real engine); new host-CA build test passed |
+| `test_wrapper.py` (branch versus `main`, same runner) | 72 versus 70 tests; the same 22 environment failures on both (proxy hardening and effective budgets need a real engine); `main` also had a timing failure in `test_lifetime_notice_preserves_status` that passed on the branch |
+| Operator setup on the port-80-blocked Linux host | Pending: to be run by the operator with refresh approved |
+
+Restricted installations must rerun `--container-setup` (or qualification),
+because the runtime image identity changes. On TLS-intercepting networks,
+answer yes to host CA trust with a bundle that contains the interception CA.
+
 ## Session hardening baseline (B01–B05): 2026-11-08
 
 Change: `openspec/changes/harden-session-baseline/`.
@@ -60,6 +102,9 @@ The runtime image inputs change only through explicit maintenance:
 4. Rebuild with exact `CLAUDE_CONTAINER_MAINTENANCE=1`, for example
    `CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 ./claude-container.sh --container-build`,
    and confirm `claude --version` and `openspec --version` in the image.
+   On a TLS-intercepting network, also set `CLAUDE_CONTAINER_TRUST_HOST_CA=1`
+   (with `CLAUDE_CONTAINER_CA_BUNDLE` when needed), so that the bundle reaches
+   the build as the `build-ca` secret.
 5. Rerun `--container-setup` (or `--container-qualify` for a manual protected
    installation), because the runtime image identity changes.
 6. Add a dated entry to this record with the versions, digest and results.

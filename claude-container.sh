@@ -431,16 +431,22 @@ if [[ "$network_mode" != unrestricted ]]; then
     fi
 fi
 
+# The opted-in host CA bundle also verifies the runtime build's package fetches.
+# It is a build secret: mounted only for its RUN step and never stored in a layer.
+build_secret=()
+if [[ -n "$ca_bundle" ]]; then
+    build_secret=(--secret "id=build-ca,src=$ca_bundle")
+fi
 if ((build_image)); then
     [[ "${CLAUDE_CONTAINER_MAINTENANCE:-}" == 1 ]] || die 'image refresh requires exact CLAUDE_CONTAINER_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering'
-    podman build --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
+    podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
 elif podman image exists "$image"; then
     :
 else
     image_status=$?
     [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
     [[ "${CLAUDE_CONTAINER_MAINTENANCE:-}" == 1 ]] || die 'image is absent; prepare it with exact CLAUDE_CONTAINER_MAINTENANCE=1 (build traffic is outside runtime filtering)'
-    podman build --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
+    podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
 fi
 if [[ "$network_mode" == provider ]]; then
     if podman image exists "$CLAUDE_CONTAINER_EGRESS_IMAGE"; then
