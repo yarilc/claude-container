@@ -320,6 +320,8 @@ if ((podman_access)); then
     socket_info=${socket_info%$'\n'}
     [[ "$socket_info" != *$'\n'* ]] || die "invalid Podman socket response: $socket"
     read -r socket_rootless host_socket <<< "$socket_info"
+    # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
+    host_socket=${host_socket#unix://}
     [[ "$socket_rootless" == true ]] || die "Podman socket must serve a rootless engine: $socket"
     # A wrapper already inside a container sees a remapped Unix socket. Bind
     # sources are resolved by the service, so use its host-side socket path.

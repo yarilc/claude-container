@@ -92,7 +92,8 @@ def fingerprint(root, env, run, platform, token):
         'cgroupVersion', 'cgroupManager', 'cgroupControllers', 'ociRuntime')}
     if any(item is None for item in engine_configuration.values()):
         raise PolicyError('unverifiable engine/backend configuration')
-    socket = run(['podman', 'info', '--format', '{{.Host.RemoteSocket.Path}}'])
+    # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
+    socket = run(['podman', 'info', '--format', '{{.Host.RemoteSocket.Path}}']).removeprefix('unix://')
     if not socket.startswith('/') or '\n' in socket or '\r' in socket:
         raise PolicyError('unverifiable host socket identity')
     abi_output = run([str(root / 'network/bin' / GUARD), '--probe'])

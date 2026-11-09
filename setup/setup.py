@@ -305,6 +305,8 @@ def verify_socket(url, env):
         raise SetupError('The selected Podman Unix socket is not accessible.')
     output = record(['podman', '--remote', '--url', url, 'info', '--format', '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}'], env)
     rootless, separator, host_path = output.partition(' ')
+    # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
+    host_path = host_path.removeprefix('unix://')
     if rootless != 'true' or not separator or not host_path.startswith('/'):
         raise SetupError('The exact Podman socket must serve a rootless engine and report an absolute host socket path.')
 

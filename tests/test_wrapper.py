@@ -1201,6 +1201,19 @@ if args[0]=='snapshot':
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(next(c for c in self.calls() if c[0] == '--remote')[2], f'unix://{self.socket_path}')
 
+    def test_podman5_unix_url_host_socket_is_bound_as_path(self):
+        # Podman 5 reports Host.RemoteSocket.Path as a unix:// URL.
+        for reported, accepted in (('unix:///host/podman.sock', True), ('unix://relative.sock', False)):
+            with self.subTest(reported=reported):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', FAKE_HOST_SOCKET=reported)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                if accepted:
+                    self.assertIn('/host/podman.sock:/run/podman/podman.sock:rw', self.create())
+                    self.assertNotIn('unix:///host/podman.sock:', self.create())
+                else:
+                    self.assertIn('absolute host socket path', result.stderr)
+
     def test_socket_fallback_and_invalid_sources(self):
         default = f'/run/user/{os.getuid()}/podman/podman.sock'
         result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', CLAUDE_CONTAINER_PODMAN_SOCKET='')

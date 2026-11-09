@@ -6,6 +6,7 @@ image=${CLAUDE_CONTAINER_IMAGE:-localhost/claude-code:latest}
 rootless=$(podman info --format '{{.Host.Security.Rootless}}')
 [[ "$rootless" == true ]] || { printf 'A rootless engine is required.\n' >&2; exit 1; }
 socket=$(podman info --format '{{.Host.RemoteSocket.Path}}')
+socket=${socket#unix://}
 [[ "$socket" == /* ]] || { printf 'Start the rootless Unix Podman service first.\n' >&2; exit 1; }
 pattern=test_runtime.py
 guard_environment=()

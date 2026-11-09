@@ -442,11 +442,15 @@ class SetupTests(unittest.TestCase):
         endpoint = Path(temporary.name) / 'podman.sock'
         with socket.socket(socket.AF_UNIX) as bound:
             bound.bind(str(endpoint))
-            for response in ('false /host/socket', 'true relative', 'true /host/socket\r', 'true /host/socket\n\n'):
+            for response in ('false /host/socket', 'true relative', 'true /host/socket\r', 'true /host/socket\n\n',
+                             'true unix://relative', 'true unix:///host/socket\r'):
                 with patch.object(setup, 'run', return_value=response):
                     with self.assertRaises(common.SetupError):
                         setup.verify_socket('unix://' + str(endpoint), self.env)
             setup.verify_socket('unix://' + str(endpoint), self.env)
+            # Podman 5 reports the host socket as a unix:// URL.
+            with patch.object(setup, 'run', return_value='true unix:///host/socket'):
+                setup.verify_socket('unix://' + str(endpoint), self.env)
 
     def test_manifest_copies_complete_native_inputs_without_credentials(self):
         root, release = self.release()
