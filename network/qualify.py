@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ACTIVE_GATE = None
 sys.path.insert(0, str(ROOT / 'network'))
 from policy import PolicyError, canonical, load, trusted_path
+import agent_budgets
 import agent_profile
 import qualification_records as records
 
@@ -185,11 +186,14 @@ class Gate:
         for path in (project, home, runtime):
             path.mkdir(mode=0o700)
         config = dict(schema=1, token=self.token, addresses=addresses, workspace=str(project),
-                      provider=identity['mode'] == 'provider', tls=tls, agent=PROFILE.command)
+                      provider=identity['mode'] == 'provider', tls=tls, agent=PROFILE.command,
+                      budgets=identity['hardening']['agent'])
         input_path = phase / 'input.json'
         input_path.write_bytes(canonical(config)); input_path.chmod(0o600)
-        env = {key: value for key, value in self.env.items() if key in ('PATH', 'CONTAINER_HOST')}
         name = PROFILE.env
+        # The probe container must receive exactly the budgets being qualified.
+        kept = ('PATH', 'CONTAINER_HOST', *(name(suffix) for suffix in agent_budgets.SUFFIXES))
+        env = {key: value for key, value in self.env.items() if key in kept}
         env.update({'HOME': str(home), name('NETWORK'): identity['mode'],
                     name('IMAGE'): identity['runtime'], name('PODMAN'): '0',
                     name('QUALIFICATION_INPUT'): str(input_path),

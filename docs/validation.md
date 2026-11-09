@@ -1,5 +1,72 @@
 # Validation record
 
+## Session hardening baseline (B01–B05): 2026-11-08
+
+Change: `openspec/changes/harden-session-baseline/`.
+
+- **B01, privileges:** every agent container, in all modes including shell
+  and Podman delegation, uses `--cap-drop=all` and
+  `--security-opt=no-new-privileges`.
+- **B02, budgets:** every agent container gets `--memory`, `--cpus` and
+  `--pids-limit` (defaults 4 GiB, 2 CPUs, 512 processes). Each launch checks the
+  created configuration; setup smoke and restricted qualification measure the
+  effective cgroup v2 values.
+- **B03, workspace roots:** sensitive physical workspace roots are refused
+  before engine operations unless exact
+  `CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` is set.
+- **B04, lifetime:** optional `CLAUDE_CONTAINER_RUN_TIMEOUT` sets the engine
+  container lifetime; the exit status is preserved and a notice is printed.
+- **B05, pins:** Claude Code 2.1.316, OpenSpec 1.16.0 and the base image digest
+  are pinned in the `Containerfile`; `DISABLE_AUTOUPDATER=1` is set in the image.
+- **Setup:** budgets and lifetime are setup questions saved in schema 2
+  preferences; smoke, qualification and login use a private temporary workspace.
+- **Qualification:** the identity's `hardening.agent` entry binds the
+  capability settings, budgets and lifetime.
+
+Measured on 2026-11-08/09 on WSL2 6.6.87.2 x86_64, Podman client 4.3.1 and
+server 4.9.3 (rootless, Netavark, cgroup v2), from an unrestricted session with
+the host socket delegated (`tests/run-runtime.sh` runner). No credentials or
+model requests were used.
+
+| Check | Result |
+| --- | --- |
+| Baseline `hardening-probe.sh main` (unrestricted) | `CapBnd=00000000800405fb`, `NoNewPrivs=0`, `memory.max=max`, `pids.max=2048`, `cpu.max=max`; Claude, Git, OpenSpec, `bwrap` and delegated Podman (info, child container) work |
+| `hardening-probe.sh WORKTREE` (unrestricted) | All capability sets 0, `NoNewPrivs=1`, `memory.max=4294967296`, `pids.max=512`, `cpu.max=200000 100000`; the same tools, `bwrap` and delegated Podman still work. No incompatibility found |
+| Pinned image rebuild (`--container-build`, maintenance) | Base `node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da` from local storage, no pull; image `7cd81e8ccd06` reports Claude Code 2.1.316, OpenSpec 1.16.0, `DISABLE_AUTOUPDATER=1` |
+| `podman create --timeout` | `podman run` and `podman start --attach` both return 255 after the limit; container `ExitCode=-1` |
+| `test_image_pins.py` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --wrapper` | Initial run: 67/70; a CA test forbade every `--security-opt`, and the home guard used `readlink` before the tool prerequisite check. After fixes: passed, 70 tests |
+| `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
+| `bash tests/run-runtime.sh` | Passed: 16 tests, including effective budgets in both state modes with and without delegation, enforced process budget, lifetime limit and refused home workspace |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 14 tests |
+| `bash tests/run-runtime.sh --qualification` | Initial run: 4 failures, because the fixed input validator rejected the new `budgets` field; then 1 failure on the missing-report message. After fixes: passed, 18 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Initial run: 2 failures; the scratch workspace was under the runner's private `/tmp`, which the engine cannot bind. Moved under `~/.cache`: passed, 2 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 19 tests (1 skipped) |
+| `bash tests/run-runtime.sh --network` | Passed: 20 tests in 838 s, including offline/provider effective budgets and lifetime expiry with owned proxy cleanup |
+| Operator `--container-setup` on the real installation (2026-11-09) | Passed: provider installation rebuilt the runtime, toolchain and proxy images and reported `Sandbox qualification: locally-qualified` and `Sandbox: ready`; no login or model request. The next session launched from it measured `CapEff`/`CapBnd` 0, `NoNewPrivs` 1, `memory.max` 4294967296, `pids.max` 512 and `cpu.max` `200000 100000` |
+
+## Updating pinned image inputs
+
+The runtime image inputs change only through explicit maintenance:
+
+1. Edit `CLAUDE_CODE_VERSION`, `OPENSPEC_VERSION` or the base image digest in
+   the `Containerfile`. Capture a base digest with
+   `podman pull docker.io/library/node:22-bookworm-slim` followed by
+   `podman image inspect --format '{{index .RepoDigests 0}}' docker.io/library/node:22-bookworm-slim`.
+2. For a new Claude Code version, revalidate the provider endpoint inventory
+   and update `tested.cli` (and the policy revision when hosts change) in
+   `agent/policies/default.json` in the same change.
+3. Run `python3 -m unittest discover -s tests -p test_image_pins.py`.
+4. Rebuild with exact `CLAUDE_CONTAINER_MAINTENANCE=1`, for example
+   `CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 ./claude-container.sh --container-build`,
+   and confirm `claude --version` and `openspec --version` in the image.
+5. Rerun `--container-setup` (or `--container-qualify` for a manual protected
+   installation), because the runtime image identity changes.
+6. Add a dated entry to this record with the versions, digest and results.
+
+Sessions never update these inputs: the root filesystem is read-only and the
+image disables the Claude Code auto-updater.
+
 ## Residual exfiltration disclosure and account profile reduction (N21): 2026-11-08
 
 Change: `openspec/changes/disclose-residual-exfiltration/`.

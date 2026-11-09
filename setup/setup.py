@@ -10,6 +10,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import uuid
 import importlib.util
 
@@ -19,7 +20,7 @@ try:
 except ValueError as error:
     print('sandbox-egress: setup incomplete: ' + str(error), file=sys.stderr)
     sys.exit(1)
-from common import (IMAGE_ID, MANIFEST, PROFILE, SetupError, absolute, defaults, endpoint_url, installation_directory,
+from common import (BUDGETS, IMAGE_ID, MANIFEST, PROFILE, SetupError, absolute, defaults, endpoint_url, installation_directory,
                     load, overlap, prepare_state, private, protect_mounts, runtime_environment,
                     save, source_identity, trusted, validate, writable_mounts)
 
@@ -34,6 +35,13 @@ PROXY_IMAGE = PROFILE.image('proxy', 'local')
 PREFIX = PROFILE.message_prefix
 NAME = PROFILE.display_name
 GUARD = 'sandbox-egress-guard'
+import agent_budgets  # noqa: E402  (protected network code beside common.py's path entry)
+BUDGET_QUESTIONS = (
+    ('memory_limit', 'Agent memory limit (integer with k, m or g unit)'),
+    ('cpu_limit', 'Agent CPU limit (CPUs, up to 3 decimals)'),
+    ('pids_limit', 'Agent process limit'),
+    ('run_timeout', 'Session lifetime in seconds, 0 disables'),
+)
 
 
 def ask(label, default='', choices=None):
@@ -142,6 +150,16 @@ def questionnaire():
     value['yolo'] = yes('Enable ' + NAME + ' permission bypass (YOLO)?', value['yolo'])
     print('Worktree mode mounts the entire current directory parent read/write, including sibling projects.')
     value['worktree'] = yes('Use parent-directory worktree scope by default?', value['worktree'])
+    print('Agent containers always run with memory, CPU and process budgets; they do not limit workspace or state storage.')
+    print('Managed launches use these values unless the corresponding variable is exported; restricted changes require requalification.')
+    for name, label in BUDGET_QUESTIONS:
+        suffix = BUDGETS[name]
+        while True:
+            try:
+                value[name] = agent_budgets.canonical(suffix, ask(label, value[name]))
+                break
+            except agent_budgets.BudgetError:
+                print('Invalid value: use ' + agent_budgets.FORMATS[suffix] + '.')
     print('Host CA trust mounts only one read-only CA bundle and changes TLS trust.')
     value['trust_ca'] = yes('Trust a host CA bundle?', value['trust_ca'])
     value['ca_bundle'] = ''
@@ -169,14 +187,14 @@ def questionnaire():
     return value, old
 
 
-def run(command, env, *, capture=False, input=None, timeout=20, terminal=False):
+def run(command, env, *, capture=False, input=None, timeout=20, terminal=False, cwd=None):
     command = list(map(str, command))
     # Login retains its controlling terminal. Other operator commands receive
     # their own process group, so cancellation cannot kill the setup itself.
     grouped = not terminal
     process = None
     try:
-        process = subprocess.Popen(command, env=env, start_new_session=grouped,
+        process = subprocess.Popen(command, env=env, start_new_session=grouped, cwd=cwd,
                                    stdin=subprocess.PIPE if input is not None else None,
                                    stdout=subprocess.PIPE if capture else None,
                                    stderr=subprocess.PIPE if capture else None)
@@ -556,12 +574,37 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
         value['proxy_image'] = ''
 
 
+@contextmanager
+def scratch_workspace():
+    # Setup containers never mount the caller's current directory, which may be
+    # a refused sensitive workspace such as the home directory. The extra level
+    # keeps the worktree-mode parent private too.
+    # It lives under the caller's cache directory: bind sources must exist at
+    # the same path for the engine, which a private /tmp may not provide.
+    cache = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache')
+    cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.' + PROFILE.name + '-setup-', dir=cache) as base:
+        workspace = Path(base) / 'workspace'
+        workspace.mkdir(mode=0o700)
+        yield workspace
+
+
+def expected_budgets(value):
+    record = agent_budgets.normalize({suffix: value[name] for name, suffix in BUDGETS.items()})
+    return [str(record[key]) for key in ('memory', 'nano_cpus', 'pids')]
+
+
 def smoke(value, release):
+    with scratch_workspace() as workspace:
+        smoke_in(value, release, workspace)
+
+
+def smoke_in(value, release, workspace):
     env = runtime_environment(value, release, overrides=False)
-    protect_mounts(value, env)
+    protect_mounts(value, env, workspace=workspace)
     if value['network'] != 'unrestricted':
         output = run(['bash', str(release / PROFILE.wrapper), '--container-qualify'],
-                     env, capture=True, timeout=360)
+                     env, capture=True, timeout=360, cwd=workspace)
         if output.splitlines().count('SANDBOX_QUALIFICATION_OK') != 1:
             raise SetupError('Installed sandbox qualification did not confirm readiness.')
         statuses=[line.split('=',1)[1] for line in output.splitlines()
@@ -573,13 +616,13 @@ def smoke(value, release):
             print('This installation passed local enforcement checks; its combination is not release-measured. SELinux/AppArmor compatibility is not guaranteed.')
     script = (release / 'setup/smoke.py').read_text()
     smoke_args = [value['network'], '1' if value['trust_ca'] else '0', PROFILE.home,
-                  PROFILE.config_dir_env, PROFILE.command]
+                  PROFILE.config_dir_env, PROFILE.command, *expected_budgets(value)]
     program = ('set -Eeuo pipefail\npython3 - ' + ' '.join(map(shlex.quote, smoke_args))
                + " <<'SANDBOX_SETUP_SMOKE'\n" + script + '\nSANDBOX_SETUP_SMOKE\n')
     args = ['bash', str(release / PROFILE.wrapper), '--container-shell']
     if value['worktree']:
         args.append('--container-git-worktree')
-    output = run(args, env, capture=True, input=program, timeout=90)
+    output = run(args, env, capture=True, input=program, timeout=90, cwd=workspace)
     if output.splitlines().count('SANDBOX_SETUP_SMOKE_OK') != 1:
         raise SetupError('Installed sandbox smoke check did not confirm readiness.')
 
@@ -600,7 +643,9 @@ def authenticate(value, release):
                 args = ['bash', release / PROFILE.wrapper]
                 if value['worktree']:
                     args.append('--container-git-worktree')
-                run([*args, *login], runtime_environment(value, release, overrides=False), timeout=None, terminal=True)
+                with scratch_workspace() as workspace:
+                    run([*args, *login], runtime_environment(value, release, overrides=False),
+                        timeout=None, terminal=True, cwd=workspace)
                 status = 'verified (' + NAME + ' ' + method + ' login succeeded; no model request tested)'
             except (SetupError, KeyboardInterrupt):
                 print('Login did not complete; the installed sandbox is still ready.')
@@ -645,7 +690,8 @@ def main():
             images['proxy'] = image_identity(previous['proxy_image'] if previous and previous['proxy_image'] else PROXY_IMAGE, env)
         print('\nSetup plan:')
         for key in ('network', 'auth', 'installation', 'command', 'state_dir', 'config_dir', 'endpoint',
-                    'podman', 'yolo', 'worktree', 'trust_ca', 'ca_bundle'):
+                    'podman', 'yolo', 'worktree', 'memory_limit', 'cpu_limit', 'pids_limit',
+                    'run_timeout', 'trust_ca', 'ca_bundle'):
             print(f'  {key}: {value[key]}')
         if previous and Path(previous['command']).resolve() != Path(value['command']).resolve():
             print('  retire previous managed command after successful activation: ' + previous['command'])

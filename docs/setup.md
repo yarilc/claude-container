@@ -30,6 +30,26 @@ Setup is never started automatically. An explicit empty network override on a
 managed invocation also receives this refusal; remove the override to use the
 saved choice. Offline mode cannot reach the Claude API.
 
+After the worktree question, setup asks for the agent budgets and lifetime:
+`Agent memory limit` (default `4g`), `Agent CPU limit` (default `2`),
+`Agent process limit` (default `512`) and `Session lifetime in seconds, 0
+disables` (default `0`). Invalid answers are explained and asked again; `0`,
+`-1`, `max` and unitless memory are rejected, so a budget cannot be disabled.
+The setup plan lists the values. They are saved in schema 2 preferences and
+supplied by the managed launcher as `CLAUDE_CONTAINER_MEMORY_LIMIT`,
+`CLAUDE_CONTAINER_CPU_LIMIT`, `CLAUDE_CONTAINER_PIDS_LIMIT` and
+`CLAUDE_CONTAINER_RUN_TIMEOUT` unless those are exported. Smoke and
+qualification use the saved values. To change a budget, rerun setup; an
+exported different value makes restricted launches stop until
+`--container-qualify` is run with the same environment. Preferences saved by an
+earlier release (schema 1) are read with the default budgets proposed.
+
+Setup smoke, qualification and optional login run in a private temporary
+workspace, never in the directory from which setup was started. Ordinary
+launches refuse sensitive workspace roots such as `/`, your home, system
+directories and WSL drive roots unless exact
+`CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` is set.
+
 Operators can still invoke a manually prepared wrapper with explicit `offline`,
 `provider` or `unrestricted` mode. All existing prerequisites, protected paths,
 qualification and authority checks apply. Image maintenance additionally
@@ -97,9 +117,12 @@ Fix those host prerequisites separately. Setup never installs host packages,
 uses sudo, edits subordinate-ID mappings, enables lingering, changes WSL init,
 disables security policy or silently selects unrestricted networking.
 
-Restricted agents and their provider proxies drop all capabilities and enable
-no-new-privileges. Provider setup also requires delegated rootless cgroup v2
-`memory` and `pids` controllers: each proxy receives 256 MiB and 128 processes.
+Every agent container, in every mode, and every provider proxy drops all
+capabilities and enables no-new-privileges. Setup smoke verifies zero capability
+sets, no-new-privileges and the effective agent `memory.max`, `pids.max` and
+`cpu.max` in every mode, so rootless cgroup v2 `cpu`, `memory` and `pids`
+controllers must be delegated. Provider proxies additionally receive 256 MiB and
+128 processes.
 The installed wrapper verifies the effective limits and proxy hardening before
 its smoke agent starts. An unavailable controller, ignored limit or incompatible
 image makes setup incomplete and preserves the previous working release.

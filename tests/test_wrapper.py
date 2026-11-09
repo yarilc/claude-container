@@ -78,6 +78,10 @@ elif args[0] == 'create':
         sys.exit(125)
     token = args[args.index('--label') + 1].split('=', 1)[1]
     state.write_text(token)
+    from decimal import Decimal
+    flag = lambda name: next(a.split('=', 1)[1] for a in args if a.startswith(name + '='))
+    pathlib.Path(str(log) + '.budgets').write_text(' '.join((flag('--memory'),
+        str(int(Decimal(flag('--cpus')) * 10**9)), flag('--pids-limit'))))
     pause = os.environ.get('FAKE_CREATE_PAUSE')
     if pause != 'before':
         pathlib.Path(args[args.index('--cidfile') + 1]).write_text('a' * 64 + '\n')
@@ -89,6 +93,14 @@ elif args[0] == 'create':
     print('a' * 64)
     sys.exit(int(os.environ.get('FAKE_CREATED_STATUS', '0')))
 elif args[0] == 'inspect':
+    if '{{.HostConfig.Memory}}' in args[-2]:
+        # Report the created configuration unless a test overrides it.
+        budgets = pathlib.Path(str(log) + '.budgets')
+        if 'FAKE_AGENT_BUDGETS' in os.environ:
+            print(os.environ['FAKE_AGENT_BUDGETS'])
+        elif budgets.exists():
+            print(budgets.read_text())
+        sys.exit(0)
     if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64 and args[-2] == '{{json .HostConfig}}':
         print(os.environ.get('FAKE_PROXY_CONFIG', '{"PidsLimit":128,"Memory":268435456}'))
         sys.exit(0)
@@ -130,6 +142,21 @@ elif args[0] == 'start':
         print('stdin:' + sys.stdin.read())
     sys.exit(int(os.environ.get('FAKE_EXIT', '0')))
 '''
+
+
+# Shared accept/reject table for the Bash wrapper and network/agent_budgets.py.
+BUDGET_REJECTIONS = {
+    'MEMORY_LIMIT': ('', ' ', '0', '0g', '-1', '-1g', 'max', '4', '4t', '4gb', '1.5g', '04g', 'abc', '2000000g'),
+    'CPU_LIMIT': ('', '0', '0.0', '0.0000', '-1', 'max', '1.5555', '1.', '.5', '1025', 'two', ' 2'),
+    'PIDS_LIMIT': ('', '0', '-1', 'max', '4194305', '01', '1.5', 'x'),
+    'RUN_TIMEOUT': ('-1', '1.5', 'x', '01', '2147483648', ' 5'),
+}
+BUDGET_ACCEPTED = {
+    'MEMORY_LIMIT': ('1k', '4g', '4G', '512m', '1048576k', '1048576g'),
+    'CPU_LIMIT': ('0.001', '2', '1.5', '1024', '02', '3.25'),
+    'PIDS_LIMIT': ('1', '512', '4194304'),
+    'RUN_TIMEOUT': ('0', '1', '2147483647'),
+}
 
 
 class AccountInventoryTests(unittest.TestCase):
@@ -481,26 +508,152 @@ if args[0]=='snapshot':
                     CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR=str(runtime),
                     CLAUDE_CONTAINER_EGRESS_IMAGE='d' * 64)
 
-    def test_restricted_hardening_all_modes_and_unrestricted_unchanged(self):
+    def test_hardening_and_budgets_in_every_mode(self):
         values = self.restricted_fixture()
-        for mode in ('offline', 'provider', 'unrestricted'):
-            for state in ('', str(self.state)):
-                for flags in ((), ('--container-shell',)):
-                    with self.subTest(mode=mode, state=state, flags=flags):
-                        self.log.unlink(missing_ok=True)
-                        result = self.run_wrapper(*flags, **(values | {
-                            'CLAUDE_CONTAINER_NETWORK': mode, 'CLAUDE_CONTAINER_STATE_DIR': state}))
-                        self.assertEqual(result.returncode, 0, result.stderr)
-                        creates = [c for c in self.calls() if c[0] == 'create']
-                        self.assertEqual(len(creates), 2 if mode == 'provider' else 1)
-                        for create in creates:
-                            for option in ('--cap-drop=all', '--security-opt=no-new-privileges'):
-                                self.assertEqual(option in create, mode != 'unrestricted')
-                            self.assertIn('--userns=keep-id', create)
-                            self.assertIn(f'{os.getuid()}:{os.getgid()}', create)
-                            proxy = any(a.startswith('io.claude-container.egress=') for a in create)
-                            self.assertEqual('--pids-limit=128' in create, proxy)
-                            self.assertEqual('--memory=256m' in create, proxy)
+        cases = [(mode, state, flags, {}) for mode in ('offline', 'provider', 'unrestricted')
+                 for state in ('', str(self.state)) for flags in ((), ('--container-shell',))]
+        cases += [('unrestricted', str(self.state), flags, {'CLAUDE_CONTAINER_PODMAN': '1'})
+                  for flags in ((), ('--container-shell',))]
+        for mode, state, flags, extra in cases:
+            with self.subTest(mode=mode, state=state, flags=flags, extra=extra):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*flags, **(values | extra | {
+                    'CLAUDE_CONTAINER_NETWORK': mode, 'CLAUDE_CONTAINER_STATE_DIR': state}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                creates = [c for c in self.calls() if c[0] == 'create']
+                self.assertEqual(len(creates), 2 if mode == 'provider' else 1)
+                for create in creates:
+                    for option in ('--cap-drop=all', '--security-opt=no-new-privileges', '--userns=keep-id'):
+                        self.assertIn(option, create)
+                    self.assertIn(f'{os.getuid()}:{os.getgid()}', create)
+                    proxy = any(a.startswith('io.claude-container.egress=') for a in create)
+                    self.assertEqual('--pids-limit=128' in create, proxy)
+                    self.assertEqual('--memory=256m' in create, proxy)
+                    agent = ('--memory=4294967296', '--cpus=2', '--pids-limit=512')
+                    for option in agent:
+                        self.assertEqual(option in create, not proxy)
+                    self.assertFalse(any(a == '--timeout' for a in create))
+                agent_inspect = [c for c in self.calls() if c[0] == 'inspect' and '{{.HostConfig.Memory}}' in c[-2]]
+                self.assertEqual(len(agent_inspect), 1)
+                self.assertEqual(agent_inspect[0][-1], OWNED_ID)
+                if '--container-shell' not in flags:
+                    self.assertNotIn('lifetime limit', result.stderr)
+
+    def test_budget_overrides_and_rejections_precede_engine(self):
+        result = self.run_wrapper(CLAUDE_CONTAINER_MEMORY_LIMIT='8G', CLAUDE_CONTAINER_CPU_LIMIT='1.5',
+                                  CLAUDE_CONTAINER_PIDS_LIMIT='1024', CLAUDE_CONTAINER_RUN_TIMEOUT='60')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        create = self.create()
+        for option in ('--memory=8589934592', '--cpus=1.5', '--pids-limit=1024'):
+            self.assertIn(option, create)
+        self.assertEqual(create[create.index('--timeout') + 1], '60')
+        for value in ('', '0', None):
+            with self.subTest(timeout=value):
+                self.log.unlink(missing_ok=True)
+                env = {} if value is None else {'CLAUDE_CONTAINER_RUN_TIMEOUT': value}
+                self.assertEqual(self.run_wrapper(**env).returncode, 0)
+                self.assertNotIn('--timeout', self.create())
+        for name, cases in BUDGET_REJECTIONS.items():
+            for value in cases:
+                with self.subTest(name=name, value=value):
+                    self.log.unlink(missing_ok=True)
+                    fresh = self.base / 'rejected-state'
+                    result = self.run_wrapper(**{'CLAUDE_CONTAINER_' + name: value,
+                                                 'CLAUDE_CONTAINER_STATE_DIR': str(fresh)})
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('CLAUDE_CONTAINER_' + name + ' must be', result.stderr)
+                    self.assertFalse(self.calls())
+                    self.assertFalse(fresh.exists())
+
+    def test_budget_rules_match_shared_python_module(self):
+        import sys
+        sys.path.insert(0, str(ROOT / 'network'))
+        import agent_budgets
+        keys = {'MEMORY_LIMIT': 'memory', 'CPU_LIMIT': 'nano_cpus', 'PIDS_LIMIT': 'pids', 'RUN_TIMEOUT': 'timeout'}
+        for name, values in BUDGET_REJECTIONS.items():
+            for value in values:
+                with self.subTest(rejected=name, value=value), self.assertRaises(agent_budgets.BudgetError):
+                    agent_budgets.normalize({name: value})
+        for name, values in BUDGET_ACCEPTED.items():
+            for value in values:
+                with self.subTest(accepted=name, value=value):
+                    self.log.unlink(missing_ok=True)
+                    expected = agent_budgets.normalize({name: value})
+                    result = self.run_wrapper(**{'CLAUDE_CONTAINER_' + name: value})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    create = self.create()
+                    timeout = int(create[create.index('--timeout') + 1]) if '--timeout' in create else 0
+                    configured = Path(str(self.log) + '.budgets').read_text().split()
+                    actual = dict(memory=int(configured[0]), nano_cpus=int(configured[1]),
+                                  pids=int(configured[2]), timeout=timeout)
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(actual[keys[name]], expected[keys[name]])
+
+    def test_ignored_budgets_stop_before_start_and_remove_owned_container(self):
+        for reported in ('0 0 0', '4294967296 2000000000 0', '4294967296 0 512', '0 2000000000 512',
+                         '4294967296 2000000000 513', ''):
+            with self.subTest(reported=reported):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_AGENT_BUDGETS=reported)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('agent resource budgets were not applied', result.stderr)
+                self.assertIn('controller delegation', result.stderr)
+                self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                self.assertTrue(any(c[0] == 'rm' and c[-1] == OWNED_ID for c in self.calls()))
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper(FAKE_FAIL='inspect')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('cannot inspect agent resource budgets', result.stderr)
+        self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+
+    def test_lifetime_notice_preserves_status(self):
+        result = self.run_wrapper(CLAUDE_CONTAINER_RUN_TIMEOUT='1', FAKE_START_DELAY='1.2', FAKE_EXIT='137')
+        self.assertEqual(result.returncode, 137)
+        self.assertIn('session lifetime limit reached (1 s); exit status 137', result.stderr)
+        for env in ({'FAKE_EXIT': '3'}, {'FAKE_START_DELAY': '1.2', 'FAKE_EXIT': '0'}):
+            with self.subTest(env=env):
+                result = self.run_wrapper(CLAUDE_CONTAINER_RUN_TIMEOUT='1', **env)
+                self.assertEqual(result.returncode, int(env['FAKE_EXIT']))
+                self.assertNotIn('lifetime limit', result.stderr)
+
+    def test_sensitive_workspaces_refused_before_engine(self):
+        home = Path(self.env['HOME'])
+        home.mkdir()
+        (home / 'project').mkdir()
+        etc_link = self.base / 'etc-link'
+        etc_link.symlink_to('/etc', target_is_directory=True)
+        refused = [(home, ()), (home / 'project', ('--container-git-worktree',)), (etc_link, ()),
+                   (Path('/'), ()), (Path('/tmp'), ())]
+        if Path('/mnt').is_dir():
+            refused.append((Path('/mnt'), ()))
+        for cwd, flags in refused:
+            for override in (None, 'true', 'yes', '0', ' 1'):
+                with self.subTest(cwd=str(cwd), flags=flags, override=override):
+                    self.log.unlink(missing_ok=True)
+                    env = {} if override is None else {'CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE': override}
+                    result = self.run_wrapper(*flags, cwd=cwd, **env)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn('refusing sensitive workspace', result.stderr)
+                    self.assertIn('project subdirectory', result.stderr)
+                    self.assertFalse(self.calls())
+                    self.assertFalse(self.state.exists())
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper(cwd=home, CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'WARNING: sensitive workspace explicitly exposed read/write: {home}', result.stderr)
+        self.assertIn(f'{home}:{home}:rw', self.create())
+        self.log.unlink(missing_ok=True)
+        self.assertEqual(self.run_wrapper(cwd=home / 'project').returncode, 0)
+        self.assertNotIn('WARNING', self.run_wrapper(cwd=home / 'project').stderr)
+
+    def test_wsl_drive_roots_refused_but_subdirectories_accepted(self):
+        drives = [p for p in Path('/mnt').glob('?') if p.is_dir()] if Path('/mnt').is_dir() else []
+        if not drives:
+            self.skipTest('no single-letter drive root under /mnt')
+        result = self.run_wrapper(cwd=drives[0])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('refusing sensitive workspace ' + str(drives[0]), result.stderr)
+        self.assertFalse(self.calls())
 
     def test_proxy_hardening_failure_never_starts_agent(self):
         values = self.restricted_fixture() | {'CLAUDE_CONTAINER_NETWORK': 'provider'}
@@ -1133,7 +1286,9 @@ if args[0]=='snapshot':
                 self.assertEqual(f'{ca}:/claude-home/ca/bundle.pem:ro' in create, trust != '0')
                 self.assertIn('/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777', create)
                 self.assertIn('/run:rw,nosuid,nodev,noexec,size=16m', create)
-                self.assertFalse(any(x.startswith(('--privileged', '--cap-add', '--security-opt')) for x in create))
+                self.assertFalse(any(x.startswith(('--privileged', '--cap-add')) for x in create))
+                self.assertEqual([x for x in create if x.startswith('--security-opt')],
+                                 ['--security-opt=no-new-privileges'])
                 self.assertFalse(any(x.endswith((':z', ':Z')) for x in create))
         self.log.unlink()
         self.assertNotEqual(self.run_wrapper(CLAUDE_CONTAINER_TRUST_HOST_CA='1',

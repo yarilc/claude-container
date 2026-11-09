@@ -77,7 +77,9 @@ class SetupRuntime(unittest.TestCase):
             answers += [('Authentication method', 'account')]
         answers += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
                     ('Delegate the host Podman API', 'no'), ('Enable Claude permission bypass', 'no'),
-                    ('Use parent-directory worktree scope', 'no'), ('Trust a host CA bundle', 'yes' if ca else 'no')]
+                    ('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
+                    ('Agent CPU limit', ''), ('Agent process limit', ''), ('Session lifetime in seconds', ''),
+                    ('Trust a host CA bundle', 'yes' if ca else 'no')]
         if ca:
             answers += [('CA bundle file', '/etc/ssl/certs/ca-certificates.crt')]
         answers += [('Managed launch command path', str(self.command)),

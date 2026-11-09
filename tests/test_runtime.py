@@ -78,6 +78,68 @@ class RuntimeTests(unittest.TestCase):
                                                    CLAUDE_CONTAINER_STATE_DIR=isolated,
                                                    CLAUDE_CONTAINER_PODMAN=service))
 
+    def test_effective_hardening_and_budgets_in_every_unrestricted_variant(self):
+        script = '''python3 - "$@" <<'CHECK'
+import pathlib, sys
+memory, nano, pids = map(int, sys.argv[1:4])
+status = dict(line.split(':', 1) for line in pathlib.Path('/proc/self/status').read_text().splitlines())
+assert all(int(status[k], 16) == 0 for k in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')), status
+assert int(status['NoNewPrivs']) == 1
+root = pathlib.Path('/sys/fs/cgroup')
+assert pathlib.Path('/proc/self/cgroup').read_text() == '0::/\\n'
+assert int((root / 'memory.max').read_text()) == memory
+assert int((root / 'pids.max').read_text()) == pids
+quota, period = (root / 'cpu.max').read_text().split()
+assert int(quota) * 10**9 == nano * int(period)
+print('EFFECTIVE_HARDENING_OK')
+CHECK
+git --version >/dev/null && openspec --version >/dev/null && claude --version >/dev/null
+'''
+        cases = ((dict(), (4 << 30, 2 * 10**9, 512)),
+                 (dict(CLAUDE_CONTAINER_MEMORY_LIMIT='1536m', CLAUDE_CONTAINER_CPU_LIMIT='1.5',
+                       CLAUDE_CONTAINER_PIDS_LIMIT='256'), (1536 << 20, 1500000000, 256)))
+        for env, expected in cases:
+            for isolated in ('', str(self.state)):
+                for service in ('0', '1'):
+                    with self.subTest(env=env, isolated=isolated, service=service):
+                        arguments = 'set -- ' + ' '.join(map(str, expected)) + '\n'
+                        result = self.shell(arguments + script, CLAUDE_CONTAINER_STATE_DIR=isolated,
+                                            CLAUDE_CONTAINER_PODMAN=service, **env)
+                        self.assert_success(result)
+                        self.assertIn('EFFECTIVE_HARDENING_OK', result.stdout)
+        # Delegated children still work without capabilities in the agent.
+        result = self.shell(f'podman run --rm --pull=never --entrypoint true {shlex.quote(IMAGE)}\n'
+                            'echo DELEGATED_CHILD_OK\n', CLAUDE_CONTAINER_PODMAN='1')
+        self.assert_success(result)
+        self.assertIn('DELEGATED_CHILD_OK', result.stdout)
+        # A process budget is enforced, not just reported.
+        result = self.shell('python3 - <<\'CHECK\'\nimport subprocess\nchildren = []\ntry:\n'
+                            '    for _ in range(80):\n        children.append(subprocess.Popen(["sleep", "30"]))\n'
+                            'except (BlockingIOError, OSError):\n    print("PIDS_BUDGET_ENFORCED")\n'
+                            'finally:\n    [child.kill() for child in children]\nCHECK\n',
+                            CLAUDE_CONTAINER_PIDS_LIMIT='32')
+        self.assert_success(result)
+        self.assertIn('PIDS_BUDGET_ENFORCED', result.stdout)
+
+    def test_session_lifetime_limit_and_early_exit(self):
+        started = time.monotonic()
+        result = self.shell('sleep 60\n', CLAUDE_CONTAINER_RUN_TIMEOUT='3')
+        self.assertLess(time.monotonic() - started, 45)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'session lifetime limit reached (3 s); exit status {result.returncode}', result.stderr)
+        self.assertNotIn(self.project.name, subprocess.run(['podman', 'ps', '--all', '--format', '{{.Names}}'],
+                         env=self.env, capture_output=True, text=True).stdout.replace(' ', '-'))
+        result = self.shell('exit 7\n', CLAUDE_CONTAINER_RUN_TIMEOUT='30')
+        self.assertEqual(result.returncode, 7)
+        self.assertNotIn('lifetime limit', result.stderr)
+
+    def test_sensitive_workspace_refused_before_engine(self):
+        result = subprocess.run([str(WRAPPER), '--container-shell'], cwd=self.host_home, env=self.env,
+                                input='true\n', text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('refusing sensitive workspace ' + str(self.host_home), result.stderr)
+        self.assertFalse(self.state.exists())
+
     def test_explicit_temporary_mounts_and_lifecycle(self):
         script = '''python3 - <<'CHECK'
 import errno, json, os, pathlib, shutil, stat, subprocess
