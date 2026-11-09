@@ -35,6 +35,18 @@ def external(allowed):
                         raise AssertionError('external transport escaped')
 
 
+def kernel_rejects_ipv6():
+    # Hosts without a kernel IPv6 stack: IPv6 denial is evidenced by the kernel
+    # refusing the family, never by a skipped check or an unrelated error.
+    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        try:
+            socket.socket(socket.AF_INET6, kind).close()
+        except OSError as error:
+            assert error.errno == errno.EAFNOSUPPORT, error
+        else:
+            raise AssertionError('IPv6 sockets exist on a host qualified without IPv6')
+
+
 def unix_control(names):
     for name, kind in names:
         with socket.socket(socket.AF_UNIX, kind) as peer:
@@ -54,6 +66,8 @@ def effective_budgets(budgets, cgroup=Path('/sys/fs/cgroup'), membership=Path('/
 
 if sys.argv[1:] == ['control']:
     external(True)
+    if not config['ipv6']:
+        kernel_rejects_ipv6()
     unix_control((('external.sock', socket.SOCK_STREAM), ('seq.sock', socket.SOCK_SEQPACKET),
                   ('dgram.sock', socket.SOCK_DGRAM)))
     print('qualification-controls-ok', flush=True)
@@ -70,6 +84,8 @@ assert os.listdir('/sys/class/net') == ['lo']
 for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy'):
     os.environ.pop(key, None)
 external(False)
+if not config['ipv6']:
+    kernel_rejects_ipv6()
 
 # Broad syscall/IPC assertions use the production binary and contain no mocks.
 exec(compile(Path('/opt/sandbox-egress/qualification_runtime.py').read_text(),

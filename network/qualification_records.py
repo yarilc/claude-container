@@ -1,5 +1,6 @@
 """Strict protected qualification records and immutable enforcement identities."""
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -48,6 +49,37 @@ STALE = ('missing or stale qualification for the current host, engine, code, pol
 
 def expected_checks(provider):
     return list(CHECKS + (PROVIDER_CHECKS if provider else ()))
+
+
+def ipv6_state(sysctl='/proc/sys/net/ipv6'):
+    """Engine-host IPv6 state: present, or absent only when the kernel has no IPv6 stack."""
+    # Runs inside the server-side identity probe container; keep it self-contained.
+    import errno
+    import os
+    import socket
+    present = os.path.isdir(sysctl)
+    try:
+        socket.socket(socket.AF_INET6, socket.SOCK_DGRAM).close()
+    except OSError as error:
+        if error.errno == errno.EAFNOSUPPORT and not present:
+            return 'absent'
+        raise RuntimeError('unverifiable IPv6 state') from None
+    if not present:
+        raise RuntimeError('unverifiable IPv6 state')
+    return 'present'
+
+
+def validate_security(security, ca_path):
+    if (type(security) is not dict or set(security) != {'boot', 'seccomp', 'netavark', 'ca', 'ipv6'} or
+            not isinstance(security['boot'], str) or not re.fullmatch(r'[a-f0-9-]{36}', security['boot']) or
+            not all(isinstance(security[key], str) for key in ('seccomp', 'netavark', 'ca', 'ipv6')) or
+            not re.fullmatch(r'[a-f0-9]{64}', security['seccomp']) or
+            not re.fullmatch(r'[a-f0-9]{64}', security['netavark']) or
+            (ca_path and not re.fullmatch(r'[a-f0-9]{64}', security['ca'])) or
+            (not ca_path and security['ca'] != '') or
+            security['ipv6'] not in ('present', 'absent')):
+        raise PolicyError('unverifiable security identity')
+    return security
 
 
 def evidence_status(value, identity):
@@ -131,9 +163,10 @@ def fingerprint(root, env, run, platform, token):
         if not Path(ca_path).is_file():
             raise PolicyError('unverifiable selected CA bundle')
         ca_path = str(Path(ca_path).resolve())
-    security_probe = """import hashlib,json
+    security_probe = inspect.getsource(ipv6_state) + """
+import hashlib,json
 from pathlib import Path
-print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'ipv6':ipv6_state(),
 'seccomp':hashlib.sha256(Path('/qualification-seccomp').read_bytes()).hexdigest(),
 'netavark':hashlib.sha256(Path('/qualification-netavark').read_bytes()).hexdigest(),
 'ca':hashlib.sha256(Path('/qualification-ca').read_bytes()).hexdigest() if Path('/qualification-ca').exists() else ''}))
@@ -152,13 +185,9 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
         '--volume', profile_path + ':/qualification-seccomp:ro', *ca_mount,
         '--mount', 'type=bind,src=' + candidate + ',dst=/qualification-netavark,ro=true',
         '--entrypoint', 'python3', runtime, '-I', '-c', security_probe])
-    security = decode(raw.encode())
-    if (not re.fullmatch(r'[a-f0-9-]{36}', security.get('boot', '')) or
-            not re.fullmatch(r'[a-f0-9]{64}', security.get('seccomp', '')) or
-            not re.fullmatch(r'[a-f0-9]{64}', security.get('netavark', '')) or
-            (ca_path and not re.fullmatch(r'[a-f0-9]{64}', security.get('ca', ''))) or
-            (not ca_path and security.get('ca') != '')):
-        raise PolicyError('unverifiable security identity')
+    # The IPv6 state is bound into the identity: a host that later boots with the
+    # other state needs requalification.
+    security = validate_security(decode(raw.encode()), ca_path)
     code = {name: digest(trusted_path(root / name, []).read_bytes()) for name in code_files(profile)}
     try:
         # Agent capability, budget and lifetime settings of the launch being qualified.

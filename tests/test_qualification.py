@@ -65,6 +65,157 @@ class QualificationContracts(unittest.TestCase):
             with self.assertRaises(ValueError):
                 records.decode(data)
 
+    def test_ipv6_state_requires_consistent_kernel_evidence(self):
+        import errno
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        present, missing = directory.name, directory.name + '/missing'
+        unsupported = OSError(errno.EAFNOSUPPORT, 'Address family not supported by protocol')
+        with patch('socket.socket'):
+            self.assertEqual(records.ipv6_state(present), 'present')
+        with patch('socket.socket', side_effect=unsupported):
+            self.assertEqual(records.ipv6_state(missing), 'absent')
+            with self.assertRaisesRegex(RuntimeError, 'unverifiable'):
+                records.ipv6_state(present)
+        with patch('socket.socket', side_effect=OSError(errno.EPERM, 'denied')):
+            for path in (present, missing):
+                with self.subTest(path=path), self.assertRaisesRegex(RuntimeError, 'unverifiable'):
+                    records.ipv6_state(path)
+        with patch('socket.socket'), self.assertRaisesRegex(RuntimeError, 'unverifiable'):
+            records.ipv6_state(missing)
+
+    def test_security_identity_binds_the_ipv6_state(self):
+        security = dict(boot='0'*8 + '-0000-0000-0000-' + '0'*12, seccomp='e'*64, netavark='f'*64, ca='')
+        for state in ('present', 'absent'):
+            records.validate_security(dict(security, ipv6=state), '')
+        for value in (dict(security), dict(security, ipv6=''), dict(security, ipv6='disabled'),
+                      dict(security, ipv6=True), dict(security, ipv6='absent', extra='x')):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                records.validate_security(value, '')
+        # A report issued for one IPv6 state is stale for the other.
+        identity = self.identity(); identity['security'] = dict(security, ipv6='absent')
+        report = dict(self.report(), identity=identity, fingerprint=records.digest(records.canonical(identity)))
+        records.validate_report(report, identity)
+        changed = copy.deepcopy(identity); changed['security']['ipv6'] = 'present'
+        with self.assertRaises(ValueError):
+            records.validate_report(report, changed)
+
+    def test_gate_fixtures_follow_the_host_ipv6_state(self):
+        base = tempfile.TemporaryDirectory(); self.addCleanup(base.cleanup)
+        temporary = tempfile.TemporaryDirectory
+        def run_gate(state, inspected):
+            gate = qualify.Gate({}); calls = []
+            def engine(*args, **_):
+                calls.append(args)
+                if args[0] == 'logs':
+                    return 'qualification-peer-ready'
+                if args[0] == 'inspect':
+                    return json.dumps({gate_network(gate): inspected})
+                return 'f' * 64
+            identity = dict(self.identity(), mode='offline', security=dict(ipv6=state))
+            with patch.object(qualify, 'trusted_path'), \
+                    patch.object(qualify.tempfile, 'TemporaryDirectory',
+                                 lambda **_: temporary(dir=base.name)), \
+                    patch.object(gate, 'engine', side_effect=engine), patch.object(gate, 'case') as case:
+                gate.qualify(identity)
+            return calls, case.call_args_list
+        def gate_network(gate):
+            return PROFILE.name + '-qualification-' + gate.token
+        dual = {'IPAddress': '10.89.0.2', 'GlobalIPv6Address': 'fd00::2'}
+        ipv4 = {'IPAddress': '10.89.0.2', 'GlobalIPv6Address': ''}
+        calls, cases = run_gate('present', dual)
+        create = next(c for c in calls if c[:2] == ('network', 'create'))
+        self.assertIn('--ipv6', create)
+        self.assertEqual(next(c for c in calls if c[0] == 'create')[-1], 'dual')
+        self.assertTrue(all(call.args[3] == ['10.89.0.2', 'fd00::2'] for call in cases))
+        calls, cases = run_gate('absent', ipv4)
+        create = next(c for c in calls if c[:2] == ('network', 'create'))
+        self.assertNotIn('--ipv6', create)
+        self.assertEqual(next(c for c in calls if c[0] == 'create')[-1], 'ipv4')
+        self.assertEqual(len(cases), 2)
+        self.assertTrue(all(call.args[3] == ['10.89.0.2'] for call in cases))
+        for argv in ([], ['both'], ['ipv4', 'dual']):
+            with self.subTest(argv=argv):
+                result = subprocess.run([sys.executable, '-I', str(ROOT / 'network/qualification_peer.py'), *argv],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('fixed peer family selection required', result.stderr)
+        # Fixture identity contradicting the detected state fails without a fallback.
+        for state, inspected in (('absent', dual), ('present', ipv4), ('absent', {'IPAddress': ''})):
+            with self.subTest(state=state, inspected=inspected), \
+                    self.assertRaisesRegex(qualify.GateError, 'contradicts the host IPv6 state'):
+                run_gate(state, inspected)
+
+    def test_fixed_input_addresses_follow_the_ipv6_field(self):
+        import control
+        workspace = '/qualification/project'
+        base = dict(schema=1, token='a' * 32, workspace=workspace, provider=False, tls=False, agent=PROFILE.command,
+                    budgets=dict(capabilities=[], no_new_privs=True, memory=1, nano_cpus=1, pids=1, timeout=0))
+        accept = (dict(base, ipv6=True, addresses=['10.89.0.2', 'fd00::2']),
+                  dict(base, ipv6=False, addresses=['10.89.0.2']))
+        for value in accept:
+            with self.subTest(value=value):
+                self.assertTrue(control.fixed_qualification_input(value, PROFILE.command, 'offline', workspace))
+        reject = (dict(base, addresses=['10.89.0.2']),
+                  dict(base, ipv6=True, addresses=['10.89.0.2']),
+                  dict(base, ipv6=False, addresses=['10.89.0.2', 'fd00::2']),
+                  dict(base, ipv6=False, addresses=['fd00::2']),
+                  dict(base, ipv6=True, addresses=['fd00::2', '10.89.0.2']),
+                  dict(base, ipv6='false', addresses=['10.89.0.2']),
+                  dict(base, ipv6=False, addresses=['not-an-address']),
+                  dict(base, ipv6=False, addresses=[167772162]),
+                  dict(base, ipv6=False, addresses='10.89.0.2'))
+        for value in reject:
+            with self.subTest(value=value):
+                self.assertFalse(control.fixed_qualification_input(value, PROFILE.command, 'offline', workspace))
+        self.assertFalse(control.fixed_qualification_input(accept[1], PROFILE.command, 'offline', None))
+
+    def protected_function(self, path, name):
+        # The probe programs run only inside containers; load one function by name.
+        import ast
+        import errno
+        import socket
+        tree = ast.parse((ROOT / path).read_text())
+        node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+        namespace = dict(errno=errno, socket=socket)
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), namespace)
+        return namespace[name]
+
+    def test_probe_ipv6_absence_evidence_is_kernel_rejection_only(self):
+        import errno
+        rejects = self.protected_function('network/qualification_probe.py', 'kernel_rejects_ipv6')
+        with patch('socket.socket', side_effect=OSError(errno.EAFNOSUPPORT, 'unsupported')):
+            rejects()
+        for outcome in (OSError(errno.EPERM, 'denied'), OSError(errno.EACCES, 'denied'), None):
+            with self.subTest(outcome=outcome), self.assertRaises(AssertionError), \
+                    patch('socket.socket', side_effect=outcome):
+                rejects()
+
+    def test_runtime_accepts_missing_ipv6_family_only_without_host_ipv6(self):
+        import errno
+        import socket
+        route = self.protected_function('network/qualification_runtime.py', 'no_direct_route')
+        class Unreachable:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def settimeout(self, _): pass
+            def connect(self, _): raise OSError(errno.ENETUNREACH, 'unreachable')
+        def real(*_):
+            return Unreachable()
+        def without_ipv6(family=socket.AF_INET, *args):
+            if family == socket.AF_INET6:
+                raise OSError(errno.EAFNOSUPPORT, 'unsupported')
+            return real(family, *args)
+        with patch('socket.socket', side_effect=without_ipv6):
+            route(False)
+            with self.assertRaises(AssertionError):
+                route(True)
+        def denied(family=socket.AF_INET, *args):
+            if family == socket.AF_INET6:
+                raise OSError(errno.EPERM, 'denied')
+            return real(family, *args)
+        with patch('socket.socket', side_effect=denied), self.assertRaises(AssertionError):
+            route(False)
+
     def test_agent_hardening_follows_the_effective_environment(self):
         import agent_budgets
         default = agent_budgets.agent_hardening({}, PROFILE)
@@ -333,7 +484,7 @@ class QualificationRuntime(unittest.TestCase):
         result=self.command('--container-qualify-probe')
         self.assertNotEqual(result.returncode,0)
         self.assertFalse((self.project/'agent-started').exists())
-        data=dict(schema=1,token='a'*32,workspace=str(self.project),addresses=['127.0.0.1','::1'],provider=True,tls=False)
+        data=dict(schema=1,token='a'*32,workspace=str(self.project),addresses=['127.0.0.1','::1'],ipv6=True,provider=True,tls=False)
         path=self.install/'bad-input.json'
         path.write_text(json.dumps(data | {'command':'touch agent-started'}))
         self.env[name('QUALIFICATION_INPUT')]=str(path)

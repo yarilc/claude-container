@@ -132,7 +132,9 @@ per-session checks. Qualification uses controlled positive/negative IP/IPC,
 alternate-transport and provider TLS evidence in the actual production path;
 an unavailable required control is blocking. Reports bind the actual host/boot,
 engine/backend/security artifacts, code, immutable images, selected policy/profile,
-CA trust and hardening. Changed inputs invalidate reuse; unobservable active LSM
+CA trust, hardening and the engine host's IPv6 state. On kernels booted without
+IPv6, kernel rejection of `AF_INET6` replaces the IPv6 positive control; any
+contradictory evidence blocks. Changed inputs invalidate reuse; unobservable active LSM
 policy identity causes a fresh gate each launch. Local qualification does not
 claim exhaustive platform acceptance. Authenticated
 account login/reuse/refresh has scoped manual evidence; optional real-key API

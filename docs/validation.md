@@ -1,5 +1,44 @@
 # Validation record
 
+## Qualification on kernels without IPv6: 2026-11-09
+
+Change: `openspec/changes/qualify-ipv6-disabled-kernels/`.
+
+- **Trigger:** the Rocky 9 lab host (kernel 5.14.0-687.12.1.el9_8 booted with
+  `ipv6.disable=1`, Landlock ABI 6, Podman 5.8) built every image and the
+  guard. Qualification then failed at `network create --internal --ipv6`:
+  "netavark: set sysctl net/ipv6/conf/podman1/forwarding: No such file or
+  directory". The kernel setting cannot be changed on that host.
+- **Behavior:**
+  - The identity probe on the engine host records `security.ipv6` as
+    `present` or `absent`. **absent** means no `/proc/sys/net/ipv6` and
+    `EAFNOSUPPORT` on `AF_INET6`; anything else is unverifiable. The state is
+    bound into the report.
+  - When IPv6 is absent, the fixture network and peer are IPv4-only, the
+    fixed input carries `ipv6: false` with one IPv4 address, and the control
+    and guarded probes require `EAFNOSUPPORT` for `AF_INET6`.
+  - Contradictory fixture evidence fails the gate.
+  - The provider proxy skips upstream addresses whose family the kernel
+    lacks.
+
+Measured on WSL2 x86_64 (IPv6 present, TLS-intercepted network), with Podman
+client 4.3.1 and server 4.9.3 (rootless, Netavark), from an unrestricted
+session with the host socket delegated. No credentials or model requests were
+used.
+
+| Check | Result |
+| --- | --- |
+| `test_qualification.py` (contracts) | Passed: 24 tests (6 new: IPv6 state detection, identity binding and staleness, fixtures for both states including contradictions, fixed input shapes, probe and runtime kernel-rejection evidence) |
+| `test_network_policy.py` | Passed: 15 tests; the new family fall-through test fails on the unpatched proxy with `EAFNOSUPPORT` |
+| `test_tls_proxy.py`, `test_alignment.py`, `test_image_pins.py` | Passed: 12, 9 and 5 tests |
+| `test_session.py`, `test_setup.py`, `test_wrapper.py` (branch versus `main`, same runner) | No new failures; the same environment failures on both (7, 2 and 22) |
+| `bash tests/run-runtime.sh --qualification` (IPv6 present) | Passed: 24 tests in 150 s, including 7 real qualification gates through the dual-stack path, with toolchain `localhost/claude-guard-toolchain:development` (`b00a8c07fd15`, built with the `build-ca` secret) |
+| Lab host without IPv6: `--container-setup` (provider, refresh) | Pending: to be run by the operator |
+
+Existing qualification reports become stale (new identity field and code
+digests), and the proxy image changes. Rerun `--container-setup` with
+refresh on restricted installations.
+
 ## HTTPS package sources and host-CA build trust: 2026-11-09
 
 Change: `openspec/changes/https-image-package-sources/`.
@@ -10,9 +49,11 @@ Change: `openspec/changes/https-image-package-sources/`.
   the optional `build-ca` build secret. The bundle is removed in the same
   step. Pins are unchanged: Claude Code 2.1.316, OpenSpec 1.16.0, and base
   `node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`.
-- **Host CA trust:** when it is enabled, setup (runtime build only) and the
-  wrapper's `--container-build` and missing-image builds pass the selected
-  bundle as `--secret id=build-ca,src=<bundle>`. `.containerignore` admits
+- **Host CA trust:** when it is enabled, setup (runtime and guard toolchain
+  builds, never the proxy build) and the wrapper's `--container-build` and
+  missing-image builds pass the selected bundle as
+  `--secret id=build-ca,src=<bundle>`. The toolchain's `apk` verifies against
+  Alpine's roots plus the secret. Both `.containerignore` files admit
   `podman-build-secret*`, because remote Podman clients ship secrets inside
   the build context under that name.
 - **Motivation:** an operator Linux host (Podman 5.8) blocked outbound port
@@ -36,7 +77,10 @@ model requests were used.
 | Build without secret, final recipe (`--no-cache`, TLS-intercepted host) | Failed closed, as expected: exit 100 with certificate verification errors; no image tagged |
 | `test_setup.py` (branch versus `main`, same runner) | 64 versus 63 tests; the same 2 environment errors on both (smoke tests needing a real engine); new host-CA build test passed |
 | `test_wrapper.py` (branch versus `main`, same runner) | 72 versus 70 tests; the same 22 environment failures on both (proxy hardening and effective budgets need a real engine); `main` also had a timing failure in `test_lifetime_notice_preserves_status` that passed on the branch |
-| Operator setup on the port-80-blocked Linux host | Pending: to be run by the operator with refresh approved |
+| Guard toolchain with `build-ca` secret (TLS-intercepted host) | Passed: `apk` verified through Cato; image `b00a8c07fd15` has gcc 13.2.1, no `/tmp/apk-bootstrap-ca.pem`, empty `/run/secrets`, and no file containing "Cato Networks" |
+| Guard toolchain without secret, `--no-cache` (TLS-intercepted host) | Failed closed, as expected: `certificate verify failed`; no image tagged |
+| `test_image_pins.py` toolchain recipe check | Passed, with 6 mutated recipes rejected |
+| Operator setup on the port-80-blocked Linux host (2026-11-09) | Partial: runtime, toolchain and proxy images built over HTTPS and the guard compiled; qualification then failed on that kernel's missing IPv6 (see the IPv6 entry above). Rerun pending |
 
 Restricted installations must rerun `--container-setup` (or qualification),
 because the runtime image identity changes. On TLS-intercepting networks,
