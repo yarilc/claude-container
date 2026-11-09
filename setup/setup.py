@@ -563,7 +563,8 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
         if not toolchain:
             changes.append('Toolchain build requested: ' + PROFILE.image('toolchain', 'setup-' + release.name))
             toolchain = build_image(release, 'network/guard-build.Containerfile',
-                                    PROFILE.image('toolchain', 'setup-' + release.name), maintenance)
+                                    PROFILE.image('toolchain', 'setup-' + release.name), maintenance,
+                                    value['ca_bundle'] if value['trust_ca'] else '')
         value['toolchain_image'] = toolchain
         run(['bash', release / 'network/build-guard.sh', release / 'network/bin'],
             maintenance | {'SANDBOX_GUARD_TOOLCHAIN': toolchain,

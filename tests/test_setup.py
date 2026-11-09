@@ -717,7 +717,7 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
                 args = next(c for c in self.calls() if c['args'][0] == 'build')['args']
                 secrets = [args[i + 1] for i, arg in enumerate(args) if arg == '--secret']
                 self.assertEqual(secrets, ['id=build-ca,src=' + str(bundle)] if trusted else [])
-        # The toolchain and proxy builds never receive the host CA.
+        # The toolchain build takes the same opt-in CA; the proxy build never receives it.
         second = release.parent / 'provider-ca'
         second.mkdir(mode=0o700)
         setup.copy_inputs(second)
@@ -726,8 +726,15 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         with patch.object(setup, 'run'), patch.object(setup, 'build_image', return_value='b' * 64) as build:
             setup.prepare_artifacts(value, None, second, self.env, {'runtime': ''}, True, [])
         recipes = {call.args[1]: call.args[4] if len(call.args) > 4 else '' for call in build.call_args_list}
-        self.assertEqual(recipes, {'Containerfile': str(bundle), 'network/guard-build.Containerfile': '',
+        self.assertEqual(recipes, {'Containerfile': str(bundle), 'network/guard-build.Containerfile': str(bundle),
                                    'network/Containerfile': ''})
+        third = release.parent / 'provider-no-ca'
+        third.mkdir(mode=0o700)
+        setup.copy_inputs(third)
+        value = value | {'trust_ca': False, 'ca_bundle': ''}
+        with patch.object(setup, 'run'), patch.object(setup, 'build_image', return_value='b' * 64) as build:
+            setup.prepare_artifacts(value, None, third, self.env, {'runtime': ''}, True, [])
+        self.assertEqual({call.args[4] if len(call.args) > 4 else '' for call in build.call_args_list}, {''})
 
     def test_mode_specific_artifacts_and_scoped_maintenance(self):
         _, release = self.release()

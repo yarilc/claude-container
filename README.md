@@ -625,7 +625,8 @@ The same bundle also verifies the runtime image build's Debian package
 downloads, which use HTTPS only. With host CA trust enabled, `--container-build`,
 a missing-image build and setup preparation pass it as the build secret
 `build-ca`: it is mounted only for the package installation step and is not stored
-in the image. Without host CA trust, the build trusts only the root certificates
+in the image. Setup gives it to the guard toolchain build as well, for its Alpine
+package downloads. Without host CA trust, the build trusts only the root certificates
 of the pinned base image. On a network that intercepts TLS (a corporate proxy that
 re-signs certificates), enable host CA trust with a bundle that contains the
 interception CA, or the build fails with a certificate verification error.

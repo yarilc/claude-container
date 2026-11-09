@@ -34,9 +34,7 @@ running them offline:
 - Build-time HTTP proxy forwarding, configurable apt/npm mirrors, or a build
   CA separate from host CA trust. Each of these is a separate trust and UX
   decision for a later change.
-- Passing the CA to the toolchain or proxy builds. Their package fetches are
-  unchanged and have worked so far.
-- Changing the toolchain or proxy recipes, which do not need it.
+- Passing the CA to the proxy build, which fetches nothing.
 - Porting to the sibling wrappers. Their recipes are per-agent files.
 
 ## Decisions
@@ -115,6 +113,26 @@ Local builds read the secret directly.
   the build context.
 - Alternative: a build argument carrying the PEM. Rejected. Build arguments
   are recorded in image history.
+
+### The guard toolchain build takes the same opt-in CA
+
+A 2026-11-09 attempt to build `network/guard-build.Containerfile` on the
+maintainer's WSL host failed with `apk`: "certificate verify failed" through
+Cato. A restricted setup there would therefore stop at the toolchain even
+with host CA trust enabled.
+
+The recipe's `RUN` gains the same optional `build-ca` secret mount:
+1. Copy `/etc/ssl/certs/ca-certificates.crt` (Alpine's bundle) into
+   `/tmp/apk-bootstrap-ca.pem`.
+2. Append the secret when it is present.
+3. Run `apk add` with `SSL_CERT_FILE` pointing at that bundle. This was
+   probed: `apk` honors it through OpenSSL.
+4. Remove the bundle in the same step.
+
+The pinned package versions are unchanged. Setup passes the secret to the
+toolchain build under the same `trust_ca` condition as the runtime build.
+`network/.containerignore` admits `podman-build-secret*`. These are shared
+files, so they are propagated to the sibling wrappers.
 
 ### Keep HTTPS sources in the built image
 

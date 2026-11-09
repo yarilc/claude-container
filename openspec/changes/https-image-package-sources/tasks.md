@@ -45,7 +45,7 @@
   bundle. Verify the image-pin suite passes and the mutated cases fail.
 - [x] 3.2 In `setup/setup.py`, pass `--secret id=build-ca,src=<ca_bundle>` to
   the runtime `Containerfile` build only when `trust_ca` is enabled, never to
-  the toolchain or proxy builds. Verify with new `tests/test_setup.py` cases
+  the proxy build (task 5.2 extends it to the toolchain build). Verify with new `tests/test_setup.py` cases
   covering trust on and off.
 - [x] 3.3 In `claude-container.sh`, pass the same secret to both
   `--container-build` and missing-image `podman build` paths only under host
@@ -60,6 +60,23 @@
   image smoke checks pass, and no CA material remains under `/tmp` or
   `/run/secrets`. Then build without the secret and verify that it fails
   closed with a certificate error.
+
+## 5. Host CA trust for the guard toolchain build
+
+- [x] 5.1 In `network/guard-build.Containerfile`, add the optional `build-ca`
+  secret mount. Build `/tmp/apk-bootstrap-ca.pem` from Alpine's bundle plus
+  the secret, run `apk add` with `SSL_CERT_FILE` pointing at it, and remove
+  it in the same step, keeping the package pins. Admit
+  `podman-build-secret*` in `network/.containerignore`. Verify with a static
+  test that the toolchain recipe keeps its pins, mounts the secret only as
+  an optional `type=secret`, and removes the bundle.
+- [x] 5.2 In `setup/setup.py`, pass the host CA to the toolchain build under
+  `trust_ca` (still never to the proxy build). Update the `tests/test_setup.py`
+  host-CA case and verify it passes.
+- [x] 5.3 On this TLS-intercepted WSL host, build the toolchain with the
+  secret. Verify that the build succeeds and that the image contains no
+  bootstrap bundle and no "Cato" material. Then build without the secret and
+  verify that it fails closed with a certificate error.
 
 ## 4. Integration and validation record
 

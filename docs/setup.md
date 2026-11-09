@@ -185,8 +185,8 @@ Debian (`deb.debian.org`), Alpine (`dl-cdn.alpinelinux.org`) and npm
 (`registry.npmjs.org`); it does not need port 80. Debian packages are fetched
 over verified HTTPS, so hosts that block plain HTTP can still build. On networks
 that intercept TLS, answer yes to host CA trust and select a bundle containing the
-interception CA: setup passes it to the runtime image build as a non-persisted
-build secret. Without it, such builds fail with a certificate verification error.
+interception CA: setup passes it to the runtime image and guard toolchain builds
+as a non-persisted build secret. Without it, such builds fail with a certificate verification error.
 Consent grants exact maintenance authorization only to these preparation
 commands. It is not saved or enabled for subsequent ordinary launches.
 

@@ -33,10 +33,15 @@ host CA trust already captures.
   maintenance procedure: rebuild, a dated validation entry, and
   requalification of restricted installations, because the runtime image
   identity changes.
-- Not changed: the guard toolchain recipe already uses HTTPS Alpine
-  repositories with a bundled CA, and the provider proxy recipe has no
-  package-fetch step. This change adds no build-time proxy forwarding and no
-  configurable mirror.
+- The guard toolchain recipe already uses HTTPS Alpine repositories, but its
+  bundled CA fails on TLS-intercepting networks (observed: `apk` certificate
+  verification failed through Cato). With host CA trust enabled, setup also
+  passes the `build-ca` secret to the toolchain build. There, `apk` verifies
+  against Alpine's bundle plus the secret, and the temporary bundle is
+  removed in the same step. `network/.containerignore` admits
+  `podman-build-secret*`.
+- Not changed: the provider proxy recipe has no package-fetch step. This
+  change adds no build-time proxy forwarding and no configurable mirror.
 
 ## Capabilities
 
@@ -45,6 +50,10 @@ host CA trust already captures.
 None.
 
 ### Modified Capabilities
+
+- `container-setup`: with host CA trust enabled, setup image preparation also
+  verifies the guard toolchain's package fetches against the selected bundle,
+  as a non-persisted build secret.
 
 - `runtime-image`: the pinned recipe also guarantees that Debian package
   sources use verified HTTPS during the build and in the built image,
