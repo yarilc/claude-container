@@ -85,12 +85,12 @@
   `SANDBOX_TEST_TMPDIR` on executable native storage outside the workspace.
   Verify that there are no new failures compared to `main`, and record any
   environment-only failures as such.
-- [ ] 4.2 On a host with outbound port 80 blocked, run `--container-setup`
+- [x] 4.2 On a host with outbound port 80 blocked, run `--container-setup`
   in provider mode with refresh approved. Verify that the build, guard,
   proxy and qualification complete, and that a managed provider launch
   reaches readiness. If no such host can be exercised, record this as
   operator-reported or unavailable.
-- [ ] 4.3 Add a dated entry to `docs/validation.md`. It records the recipe
+- [x] 4.3 Add a dated entry to `docs/validation.md`. It records the recipe
   change, the unchanged pins and digest, the new runtime image ID, the
   smoke, pin and suite results, the port-80-blocked host outcome, and the
   requirement that restricted installations rerun setup or qualification.

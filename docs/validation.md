@@ -35,7 +35,7 @@ crun 1.14.1. No credentials or model requests were used.
 | Wrapper `--container-shell` with a TTY (unrestricted, isolated state) | Passed: stdin is `/dev/pts/0`; `/dev` stays `ro,nosuid,noexec` on Podman 4.9; `/dev/shm` is read-only; `/tmp` and `/var/tmp` refuse direct execution |
 | `test_wrapper.py`, `test_session.py`, `test_alignment.py` (changed tree versus `HEAD`, same runner) | No new failures; the same environment failures on both. The new test checks the `/dev` layout in offline, provider and unrestricted modes, in shell, worktree and delegated launches and with a TTY, and that the proxy keeps `--read-only-tmpfs=false` |
 | `bash tests/run-runtime.sh --qualification` | Passed: 26 tests in 193 s; the gate and proxy containers are unchanged |
-| Lab host interactive login after `--container-setup` | Pending: to be run by the operator |
+| Lab host interactive login after `--container-setup` | Passed (operator, 2026-11-10; Podman 5.8.0, crun 1.27): the login attached a terminal and reported `Login successful`, and setup recorded `Authentication: verified`. The operator then confirmed that Claude Code works in provider mode (operator-reported; no model request was made by the test suites). The only egress diagnostic was one `transport-closed` record with no host, from the session closing |
 
 ## Engine default `/run/secrets` mask: 2026-11-10
 
@@ -182,7 +182,7 @@ model requests were used.
 | Guard toolchain with `build-ca` secret (TLS-intercepted host) | Passed: `apk` verified through Cato; image `b00a8c07fd15` has gcc 13.2.1, no `/tmp/apk-bootstrap-ca.pem`, empty `/run/secrets`, and no file containing "Cato Networks" |
 | Guard toolchain without secret, `--no-cache` (TLS-intercepted host) | Failed closed, as expected: `certificate verify failed`; no image tagged |
 | `test_image_pins.py` toolchain recipe check | Passed, with 6 mutated recipes rejected |
-| Operator setup on the port-80-blocked Linux host (2026-11-09) | Partial: runtime, toolchain and proxy images built over HTTPS and the guard compiled; qualification then failed on that kernel's missing IPv6 (see the IPv6 entry above). Rerun on 2026-11-10: setup and qualification passed (`Sandbox: ready`); the interactive provider launch is pending the read-only `/dev` change |
+| Operator setup on the port-80-blocked Linux host (2026-11-09) | Partial: runtime, toolchain and proxy images built over HTTPS and the guard compiled; qualification then failed on that kernel's missing IPv6 (see the IPv6 entry above). Rerun on 2026-11-10: setup and qualification passed (`Sandbox: ready`). After the read-only `/dev` change, the managed provider launch reached the agent, account login succeeded and Claude Code worked (operator-reported) |
 
 Restricted installations must rerun `--container-setup` (or qualification),
 because the runtime image identity changes. On TLS-intercepting networks,

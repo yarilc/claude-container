@@ -32,7 +32,7 @@
 
 ## 4. Lab host
 
-- [ ] 4.1 Have the operator rerun `--container-setup` and accept login.
+- [x] 4.1 Have the operator rerun `--container-setup` and accept login.
   Verify that the login session attaches a terminal and that the launch
   reaches the agent. Record the result in `docs/validation.md`.
 
