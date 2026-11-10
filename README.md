@@ -809,6 +809,10 @@ Provider policies are in `agent/policies/`. Inside containers the sandbox uses
 neutral paths: `/opt/sandbox-egress`, `/run/sandbox-egress`,
 `/tmp/sandbox-runtime` and the `sandbox-egress-guard` binary.
 
+Each sibling pins its copy to an annotated `sandbox-ref-N` tag of this
+repository. A shared change gets a new tag and reaches the siblings through
+`tools/propagate.py`, as described in [docs/propagation.md](docs/propagation.md).
+
 The profile and policy are protected installation inputs and part of the
 qualification identity. After upgrading from a release that used
 `network/policies/` or `claude-egress-guard`, rerun `--container-setup` (or
