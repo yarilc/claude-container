@@ -1744,3 +1744,22 @@ single-component `config_home` such as `.claude` or `.codex`. OpenCode's
 | `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
 | `python3 -m unittest tests.test_alignment` | Passed |
 | OpenCode `--setup` with this test | Passed: 63 tests (before the fix: `FileNotFoundError` in both checks) |
+
+## Optional agent installation files (`sandbox-ref-6`): 2026-11-10
+
+The Pi port showed that the installation manifest covered only the wrapper,
+`network/`, `setup/` and `agent/`. Pi's wrapper also reads `.version`, so a
+guided-setup installation and the qualification test installation lacked a
+file the wrapper needs. The profile schema gains an optional `install.files`
+list (at most eight distinct relative paths outside `network/`, `setup/` and
+`agent/`, and not the wrapper, `Containerfile` or `.containerignore`).
+`setup/common.py` adds them to its manifest, and the qualification identity
+binds them as installed code. The shared qualification test installation
+also copies `Containerfile`, `.containerignore` and the declared files.
+Claude declares none, so its installation is unchanged.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_agent_profile tests.test_alignment` | Passed, including the new invalid `install.files` mutations |
+| `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 18 tests |

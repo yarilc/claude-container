@@ -74,11 +74,26 @@ class ProfileSchemaTests(unittest.TestCase):
             lambda v: v['auth'][method].update(login_args=['$(touch /tmp/x)']),
             lambda v: v['auth'][method].update(credential_env='lower'),
             lambda v: v['auth'].update(duplicate=dict(v['auth'][method])),
+            lambda v: v['install'].update(files='.version'),
+            lambda v: v['install'].update(files=['../escape']),
+            lambda v: v['install'].update(files=['/absolute']),
+            lambda v: v['install'].update(files=['network/relay.py']),
+            lambda v: v['install'].update(files=['agent/profile.json']),
+            lambda v: v['install'].update(files=['Containerfile']),
+            lambda v: v['install'].update(files=['.version', '.version']),
+            lambda v: v['install'].update(unknown=True),
         ):
             value = copy.deepcopy(self.value)
             mutate(value)
             with self.subTest(value=value), self.assertRaises(agent_profile.ProfileError):
                 agent_profile.validate(value)
+
+    def test_optional_install_files(self):
+        self.assertEqual(agent_profile.validate(self.value).install_files,
+                         tuple(self.value['install'].get('files', ())))
+        value = copy.deepcopy(self.value)
+        value['install']['files'] = ['.version', 'docs/agent-version']
+        self.assertEqual(agent_profile.validate(value).install_files, ('.version', 'docs/agent-version'))
 
     def test_malformed_duplicate_oversized_and_missing_files(self):
         with tempfile.TemporaryDirectory() as directory:

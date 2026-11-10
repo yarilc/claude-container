@@ -211,7 +211,8 @@ and Pi. Ports copy `network/`, `setup/` and the shared tests unchanged. Each
 wrapper keeps the following per-agent items:
 - its own `agent/profile.json` (variable prefix, images, labels, native home,
   command, configuration variable, authentication methods and their required
-  hosts);
+  hosts, and optional `install.files`: extra agent files, such as a version
+  pin, that setup installs next to the wrapper and that qualification binds);
 - its own provider policies in `agent/policies/`;
 - its wrapper and agent image.
 
