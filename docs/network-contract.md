@@ -212,7 +212,9 @@ wrapper keeps the following per-agent items:
 - its own `agent/profile.json` (variable prefix, images, labels, native home,
   command, configuration variable, authentication methods and their required
   hosts, and optional `install.files`: extra agent files, such as a version
-  pin, that setup installs next to the wrapper and that qualification binds);
+  pin, that setup installs next to the wrapper and that qualification binds,
+  and optional `install.runtime_build`: `wrapper` makes setup build the runtime
+  image with the installed wrapper's build-only `--container-build`);
 - its own provider policies in `agent/policies/`;
 - its wrapper and agent image.
 

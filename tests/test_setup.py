@@ -700,6 +700,33 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             with self.assertRaises(common.SetupError):
                 setup.build_image(release, 'Containerfile', 'localhost/test:failure', env | {'SETUP_TEST_FAIL': 'build'})
 
+    def test_runtime_build_follows_the_profile(self):
+        _, release = self.release()
+        env = self.env | {name('MAINTENANCE'): '1'}
+        identity = 'sha256:' + 'c' * 64
+        with patch.object(setup.PROFILE, 'runtime_build', 'recipe'), \
+                patch.object(setup, 'build_image', return_value=identity) as build, \
+                patch.object(setup, 'run') as run:
+            self.assertEqual(setup.build_runtime(release, 'localhost/test:recipe', env), identity)
+        build.assert_called_once_with(release, 'Containerfile', 'localhost/test:recipe', env)
+        run.assert_not_called()
+        with patch.object(setup.PROFILE, 'runtime_build', 'wrapper'), \
+                patch.object(setup, 'build_image') as build, \
+                patch.object(setup, 'run') as run, \
+                patch.object(setup, 'image_identity', return_value=identity) as inspect:
+            self.assertEqual(setup.build_runtime(release, 'localhost/test:wrapper', env), identity)
+        build.assert_not_called()
+        command, used = run.call_args.args
+        self.assertEqual(command, ['bash', release / PROFILE.wrapper, '--container-build'])
+        self.assertEqual(used, env | {name('NETWORK'): 'unrestricted', name('IMAGE'): 'localhost/test:wrapper'})
+        self.assertEqual(used[name('MAINTENANCE')], '1')
+        self.assertEqual(run.call_args.kwargs['input'], '')
+        inspect.assert_called_once_with('localhost/test:wrapper', env)
+        with patch.object(setup.PROFILE, 'runtime_build', 'wrapper'), patch.object(setup, 'run'), \
+                patch.object(setup, 'image_identity', return_value=''):
+            with self.assertRaisesRegex(common.SetupError, 'unavailable after preparation'):
+                setup.build_runtime(release, 'localhost/test:missing', env)
+
     def test_mode_specific_artifacts_and_scoped_maintenance(self):
         _, release = self.release()
         value = self.value.copy()

@@ -412,6 +412,19 @@ def build_image(release, recipe, tag, env):
     return identity
 
 
+def build_runtime(release, tag, env):
+    # A wrapper-built runtime keeps the agent's own build arguments and labels.
+    if PROFILE.runtime_build == 'recipe':
+        return build_image(release, 'Containerfile', tag, env)
+    # The build-only operation starts no session; the mode only admits it.
+    run(['bash', release / PROFILE.wrapper, '--container-build'],
+        env | {PROFILE.env('NETWORK'): 'unrestricted', PROFILE.env('IMAGE'): tag}, input='', timeout=None)
+    identity = image_identity(tag, env)
+    if not identity:
+        raise SetupError('Built image is unavailable after preparation.')
+    return identity
+
+
 def copy_inputs(release):
     for name in MANIFEST:
         target = release / name
@@ -536,7 +549,7 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
         run(['podman', 'tag', runtime, candidate_tag], maintenance)
     else:
         changes.append('Runtime build requested; intermediate build images may remain under ' + candidate_tag)
-        runtime = build_image(release, 'Containerfile', candidate_tag, maintenance)
+        runtime = build_runtime(release, candidate_tag, maintenance)
     changes.append('Prepared runtime image tag: ' + candidate_tag)
     value['image'], value['image_id'] = candidate_tag, runtime
     if value['network'] == 'unrestricted':
