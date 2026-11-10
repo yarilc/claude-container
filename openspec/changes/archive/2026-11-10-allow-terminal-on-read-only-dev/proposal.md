@@ -38,8 +38,9 @@ None.
 ### Modified Capabilities
 
 - `container-isolation`: the ephemeral constrained temporary storage
-  requirement now covers the agent `/dev` and `/dev/shm` mounts instead of
-  requiring automatic read-only tmpfs provisioning to be disabled.
+  requirement no longer requires automatic read-only tmpfs provisioning to
+  be disabled. A new terminal-compatible device mounts requirement covers the
+  agent `/dev`, `/dev/pts` and `/dev/shm` mounts.
 
 ## Impact
 

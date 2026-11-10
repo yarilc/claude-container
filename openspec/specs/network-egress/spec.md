@@ -469,18 +469,37 @@ Each restricted installation SHALL pass a bounded credential-free gate through i
 - **THEN** no successful qualification report is issued
 - **AND** ordinary restricted startup remains blocked
 
+#### Scenario: Host kernel without IPv6
+- **WHEN** the engine host has no IPv6 support, observed as a missing `/proc/sys/net/ipv6` and `EAFNOSUPPORT` on `AF_INET6` socket creation
+- **THEN** the gate uses an IPv4-only positive-control network and peer
+- **AND** the IPv6 denial is evidenced by `EAFNOSUPPORT` on `AF_INET6` socket creation in both the unconfined control and the guarded probe
+- **AND** every other required check, including the IPv4 positive controls and denials, runs unchanged
+
+#### Scenario: Inconsistent IPv6 evidence
+- **WHEN** the detected IPv6 state is neither clearly present nor clearly absent, or the fixture network, peer addresses, control or guarded probe contradict it
+- **THEN** qualification fails without a report and without falling back to the other path
+
+#### Scenario: IPv6 state is bound to the report
+- **WHEN** a report was issued for one IPv6 state and the host later runs with the other state
+- **THEN** the report is stale and restricted startup requires requalification
+
 ### Requirement: Session proxies have enforced resource budgets
-Each Internet-facing session proxy SHALL have an explicit limit of 128 processes and 256 MiB memory, enforced by the engine and host cgroups. Startup SHALL fail before agent execution if either limit is unavailable or not applied. These budgets SHALL coexist with existing multiplex, TLS inspection and lifecycle bounds without broadening runtime access.
+Each Internet-facing session proxy SHALL have a limit of 128 processes and 256 MiB memory, enforced by the engine and host cgroups, for each budget whose cgroup v2 controller (`pids`, `memory`) the verified rootless engine reports as available. Startup SHALL fail before agent execution if an enforced limit is not applied, or if an unenforced limit is unexpectedly present. These budgets SHALL coexist with existing multiplex, TLS inspection and lifecycle bounds without broadening runtime access.
 
 #### Scenario: Proxy readiness with applied limits
-- **WHEN** a provider session prepares its proxy
+- **WHEN** a provider session prepares its proxy on an engine reporting the `pids` and `memory` controllers
 - **THEN** both configured budgets are verified as effective before the agent starts
 - **AND** matching-SNI TLS, streaming, concurrent tunnels, readiness and protected logs operate within the budgets
 
 #### Scenario: Rootless resource control unavailable
-- **WHEN** the engine rejects a limit, silently ignores it or cannot establish its effective value
+- **WHEN** the engine rejects or silently ignores a limit whose controller it reports as available, or its effective value cannot be established
 - **THEN** provider preparation fails and cleans up only owned resources
-- **AND** it never removes the limit or substitutes an unrestricted connection
+- **AND** it never substitutes an unrestricted connection
+
+#### Scenario: Controller not delegated for the proxy
+- **WHEN** the verified engine does not report the `memory` controller
+- **THEN** the proxy is created without a memory limit, and its process limit is still applied and verified when `pids` is reported
+- **AND** the session prints a notice naming the unenforced proxy budget
 
 #### Scenario: Proxy exceeds a resource budget
 - **WHEN** a proxy reaches its process or memory budget or is terminated because of exhaustion
@@ -618,3 +637,30 @@ An account-profile host reduction SHALL count as accepted only after operator-ru
 - **WHEN** any check fails or a denial names a removed host
 - **THEN** the measured denials are recorded
 - **AND** the account profile is restored to its previous host set under a new revision instead of being broadened automatically at runtime
+
+### Requirement: Provider upstream connection tolerates unsupported address families
+When an approved name resolves to several validated addresses, the provider proxy SHALL skip any address whose family the kernel does not support and try the next one. It SHALL never connect to an unvalidated address or resolve the name a second time. When no address yields a connection, it SHALL reject the tunnel.
+
+#### Scenario: AAAA records on a kernel without IPv6
+- **WHEN** an approved host resolves to IPv6 and IPv4 public addresses and the proxy runs on a kernel without IPv6
+- **THEN** the proxy connects through a validated IPv4 address
+- **AND** the IPv6 addresses do not abort the tunnel
+
+#### Scenario: Only unsupported families
+- **WHEN** every validated address has a family the kernel does not support
+- **THEN** the tunnel is rejected as upstream-unavailable before any client bytes are forwarded
+
+### Requirement: Private runtime hierarchies admit only verified read-only masks
+Before agent code runs, the restricted bootstrap SHALL reject every nested mount below `/tmp`, `/run` and `/var/tmp`, except the engine metadata file `/run/.containerenv`, the provider runtime `/run/sandbox-egress` and `/run/secrets` when it is a `tmpfs` whose per-mount options are read-only. A writable or non-tmpfs `/run/secrets` SHALL be rejected like any other nested mount.
+
+#### Scenario: Read-only secrets mask
+- **WHEN** a restricted session starts with the read-only tmpfs mask at `/run/secrets`
+- **THEN** the bootstrap accepts the layout and the agent starts
+
+#### Scenario: Writable secrets mount
+- **WHEN** `/run/secrets` is a writable mount, for example the engine default without the mask
+- **THEN** startup stops with the nested private IPC mount diagnostic before agent code runs
+
+#### Scenario: Other nested mount
+- **WHEN** any other host or tmpfs mount appears below `/tmp`, `/run` or `/var/tmp`, read-only or not
+- **THEN** startup stops before agent code runs

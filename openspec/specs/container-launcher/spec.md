@@ -286,6 +286,7 @@ README, wrapper help and setup guidance SHALL identify `--container-setup` as th
 The qualification identity of a restricted installation SHALL include:
 - the agent capability and no-new-privileges settings;
 - the selected memory, CPU and process budgets;
+- the set of agent and proxy budgets actually enforced, as determined by the controllers the engine reports;
 - the session lifetime setting.
 
 A launch whose effective settings differ from the qualified identity SHALL stop with requalification guidance.
@@ -297,6 +298,10 @@ A launch whose effective settings differ from the qualified identity SHALL stop 
 #### Scenario: Qualification with matching settings
 - **WHEN** the operator qualifies and launches with the same budgets and lifetime
 - **THEN** the qualification check accepts the report
+
+#### Scenario: Controller delegation changed after qualification
+- **WHEN** an installation was qualified while `cpu` was not delegated and the engine later reports `cpu`
+- **THEN** the qualification check reports mismatched evidence and requires requalification
 
 ### Requirement: Hardening controls are documented
 Wrapper help and the README SHALL document:
@@ -311,3 +316,15 @@ Help SHALL remain side effect free.
 - **WHEN** the operator runs `--container-help`
 - **THEN** the output lists `CLAUDE_CONTAINER_MEMORY_LIMIT`, `CLAUDE_CONTAINER_CPU_LIMIT`, `CLAUDE_CONTAINER_PIDS_LIMIT`, `CLAUDE_CONTAINER_RUN_TIMEOUT` and `CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE` with their defaults
 - **AND** no engine query or state creation occurs
+
+### Requirement: Unenforced budgets are announced
+Each launch, setup plan and setup smoke SHALL print one notice per unenforced budget, naming the budget, its container (agent or proxy) and the missing cgroup controller. They SHALL NOT ask for confirmation. When every budget is enforced, no notice SHALL be printed.
+
+#### Scenario: CPU controller missing
+- **WHEN** a session starts on an engine reporting only `memory` and `pids`
+- **THEN** stderr shows a notice that the agent CPU budget is not enforced because the `cpu` controller is not delegated to the rootless engine
+- **AND** the session starts without waiting for input
+
+#### Scenario: All controllers delegated
+- **WHEN** the engine reports `cpu`, `memory` and `pids`
+- **THEN** no budget notice is printed
