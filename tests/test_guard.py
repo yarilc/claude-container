@@ -210,6 +210,9 @@ class GuardTests(unittest.TestCase):
                    '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777',
                    '--tmpfs', '/run:rw,nosuid,nodev,noexec,size=16m',
                    '--tmpfs', '/var/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777',
+                   # Wrappers always mount a writable native home; agents may write there at startup.
+                   # notmpcopyup keeps it empty instead of copying image content such as caches.
+                   '--tmpfs', f'{PROFILE.home}:rw,nosuid,nodev,exec,notmpcopyup,size=64m,mode=1777',
                    '--volume', f'{self.binary}:/usr/local/bin/guard:ro',
                    '--volume', f'{self.fixture}:/workspace:rw',
                    '--volume', f'{ROOT / "network/resolv.conf"}:/etc/resolv.conf:ro',
