@@ -33,6 +33,7 @@ MANIFEST = (
     'network/qualification_probe.py', 'network/qualification_runtime.py',
     'network/qualification_peer.py', 'network/qualification_proxy.py',
     'network/release_acceptance.json',
+    *PROFILE.install_files,
 )
 GUARD_INPUTS = ('network/guard.c', 'network/guard_landlock.h',
                 'network/guard_seccomp.h', 'network/build-guard.sh',

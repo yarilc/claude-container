@@ -73,6 +73,8 @@ class Profile:
         self.identifiers = tuple(value['identifiers'])
         self.images = dict(value['images'])
         self.state_name = value['install']['state_name']
+        # Agent-specific installation inputs read by the wrapper (for example a version file).
+        self.install_files = tuple(value['install'].get('files', ()))
         native = value['native']
         self.home = native['home']
         self.command = native['command']
@@ -134,8 +136,13 @@ def validate(value):
     images = [string(item, IMAGE, 'images.' + key) for key, item in value['images'].items()]
     if len(set(images)) != len(images):
         fail('images must be distinct')
-    fields(value['install'], ('state_name',), where='install')
+    fields(value['install'], ('state_name',), ('files',), where='install')
     string(value['install']['state_name'], NAME, 'install.state_name')
+    files = strings(value['install'].get('files', []), RELATIVE, 'install.files', minimum=0, maximum=8)
+    if len(set(files)) != len(files) or any(
+            '..' in path.split('/') or path.split('/')[0] in ('network', 'setup', 'agent')
+            or path in (value['wrapper'], 'Containerfile', '.containerignore') for path in files):
+        fail('install.files must be distinct agent files outside network/, setup/ and agent/')
     native = value['native']
     fields(native, ('home', 'command', 'config_dir_env', 'approval_bypass_env', 'config_home', 'shared_dirs'),
            where='native')

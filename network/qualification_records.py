@@ -29,7 +29,7 @@ SHARED_CODE = ('network/control.py', 'network/platform_check.py', 'network/agent
 
 
 def code_files(profile):
-    return (profile.wrapper, *SHARED_CODE)
+    return (profile.wrapper, *profile.install_files, *SHARED_CODE)
 
 
 def digest(data):
