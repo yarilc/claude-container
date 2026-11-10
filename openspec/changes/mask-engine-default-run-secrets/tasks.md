@@ -10,6 +10,10 @@
 - [x] 1.2 In `network/session.py`, add the same mask to the proxy create
   arguments. Verify with `tests/test_session.py` that the proxy create
   includes it.
+- [x] 1.3 In `network/qualify.py` `Gate.common()`, add the same mask to
+  every qualification gate container: the gate runs the guard too. Verify
+  with a `tests/test_qualification.py` contract case and
+  `bash tests/run-runtime.sh --qualification`.
 
 ## 2. Guard
 
@@ -38,5 +42,5 @@
 
 ## Workflow follow-up
 
-- Propagate `network/guard.c` and `network/session.py` to the sibling
+- Propagate `network/guard.c`, `network/session.py` and `network/qualify.py` to the sibling
   wrappers.

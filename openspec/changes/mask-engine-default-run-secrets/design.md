@@ -40,7 +40,8 @@ here the container's `userdata` on the host.
 
 The wrapper adds `--mount type=tmpfs,destination=/run/secrets,ro=true` to
 the common agent arguments (every mode, shell and worktree included).
-`network/session.py` adds the same to the proxy. Podman then omits its
+`network/session.py` adds the same to the proxy, and `network/qualify.py`
+to every qualification gate container, which also runs the guard. Podman then omits its
 default secrets mount.
 
 - Alternative: allow the default `/run/secrets` in the guard. Rejected. It is

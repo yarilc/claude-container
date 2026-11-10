@@ -105,6 +105,11 @@ class QualificationContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             records.validate_report(report, changed)
 
+    def test_gate_containers_mask_engine_default_secrets(self):
+        args = qualify.Gate({}).common('image', 'network')
+        index = args.index('type=tmpfs,destination=/run/secrets,ro=true')
+        self.assertEqual(args[index - 1], '--mount')
+
     def test_gate_fixtures_follow_the_host_ipv6_state(self):
         base = tempfile.TemporaryDirectory(); self.addCleanup(base.cleanup)
         temporary = tempfile.TemporaryDirectory

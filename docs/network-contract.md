@@ -88,7 +88,7 @@ Never replace/weaken the OCI profile or retry unrestricted automatically.
 The bootstrap also rejects every nested mount below the private `/tmp`, `/run`
 and `/var/tmp` roots, except the engine's `/run/.containerenv` file, the
 provider's verified `/run/sandbox-egress`, and `/run/secrets` only as a
-read-only tmpfs. The wrapper and proxy mount that empty read-only tmpfs at
+read-only tmpfs. The wrapper, proxy and qualification gate mount that empty read-only tmpfs at
 `/run/secrets` so engine default mounts there (RHEL `mounts.conf` subscription
 secrets) are skipped; a writable `/run/secrets` still stops startup.
 

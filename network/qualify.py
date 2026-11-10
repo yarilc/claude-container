@@ -117,8 +117,11 @@ class Gate:
             self.engine('network', 'rm', name, timeout=4)
 
     def common(self, image, network='none'):
+        # Same empty read-only /run/secrets mask as agent launches: engine default
+        # mounts (RHEL mounts.conf) would otherwise fail the guard's mount check.
         return ['--pull=never', '--network=' + network, '--read-only', '--cap-drop=all',
                 '--security-opt=no-new-privileges', '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
+                '--mount', 'type=tmpfs,destination=/run/secrets,ro=true',
                 '--label', PROFILE.label('qualification') + '=' + self.token]
 
     @contextmanager

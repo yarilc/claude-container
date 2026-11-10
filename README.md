@@ -649,7 +649,7 @@ instead; the container's working directory remains the original current
 directory. Preserving absolute paths is required because bind mounts requested
 by child containers are resolved by the host Podman service.
 
-Every agent container and provider proxy also gets an empty read-only tmpfs at
+Every agent container, provider proxy and qualification gate container gets an empty read-only tmpfs at
 `/run/secrets`. On RHEL and Rocky hosts Podman's `mounts.conf` would otherwise
 mount the host subscription secrets there, writable; with the mask Podman skips
 that mount, the agent sees no host subscription material, and the restricted
