@@ -234,6 +234,9 @@ Port checklist for a wrapper:
    `start` by process group.
 5. Adapt the agent-specific tests, then run the shared and runtime suites.
 
+Later shared changes reach the ported wrappers through a new `sandbox-ref-N`
+tag and `tools/propagate.py`; see [propagation](propagation.md).
+
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
 | Claude (this repository) | WSL ABI-3/additive-filter contract specified here | Mandatory bootstrap and multiplexed proxy integrated | See versioned guard, IP/IPC and wrapper evidence | Account login/reuse/refresh passed; real-key API optional/unavailable |

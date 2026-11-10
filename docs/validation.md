@@ -1818,3 +1818,19 @@ arguments and API-key methods are unchanged.
 | `bash tests/run-runtime.sh --setup` | Passed: 65 tests, including the new empty-`login_args` case; the existing login case now compares the arguments after the wrapper path |
 | `bash tests/run-runtime.sh --qualification` | Passed: 18 tests |
 | Shared suites | Run unchanged by Codex, OpenCode and Pi `--shared` on adoption |
+
+## Reference propagation tool (`add-reference-propagation`): 2026-11-10
+
+Wave 4 replaces the ad hoc adoption scripts of Wave 3 with `tools/propagate.py`
+and `docs/propagation.md`. The tool is reference-only (not a shared file), so no
+new tag was created; `network/`, `setup/` and the shared tests are unchanged.
+
+| Check | Result |
+| --- | --- |
+| `tests/test_propagate.py` | Passed: 5 tests on disposable git repositories (dry run, apply, preconditions, scope, history files, whole-word tags, checklist, same-tag run) |
+| `tests/test_alignment.py`, `tests/test_agent_profile.py` | Passed |
+| `bash tests/run-runtime.sh --setup` | Passed: 65 tests (unchanged) |
+| Replay of `sandbox-ref-8` to `sandbox-ref-9` on clones of Codex, OpenCode and Pi at their pre-adoption commits | The dry-run plan named the same four files and the same documents as the Wave 3 adoptions. After `--apply`, each clone's tree equals its real adoption commit except `docs/validation.md`, which is written by hand; Codex's `tests/test_reference_copy.py` passed |
+| Partial scope: Antigravity clone at `51a88d8` (egress only) | `network/agent_profile.py` and `tests/test_agent_profile.py` planned; `setup/setup.py` and `tests/test_setup.py` reported as not adopted |
+| Same-tag run (`sandbox-ref-9` to `sandbox-ref-9`) on clones of the four current wrappers | No files and no documents to change |
+| `openspec validate add-reference-propagation --strict`, markdownlint on `docs/propagation.md`, `git diff --check` | Valid, no findings, clean |

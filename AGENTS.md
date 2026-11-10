@@ -45,9 +45,11 @@ These files are per agent:
   `test_setup_runtime.py`, `run-runtime.sh` and `image-smoke.sh`.
 
 When a shared component needs a new agent-specific value, extend the profile
-schema in `network/agent_profile.py` here first. Then propagate the shared
-files to the sibling wrappers. `tests/test_alignment.py` enforces the literal
-scan and wrapper/profile consistency.
+schema in `network/agent_profile.py` here first. Then tag the result and
+propagate the shared files to the sibling wrappers with `tools/propagate.py`
+(dry run first, then `--apply`), following `docs/propagation.md`; never edit a
+shared file in a sibling. `tests/test_alignment.py` enforces the literal scan
+and wrapper/profile consistency, and `tests/test_propagate.py` covers the tool.
 - `docs/setup.md` documents guided installation, maintenance consent and rollback.
 - `docs/network-contract.md` defines the shared mode and rollout contract;
   sibling wrappers remain independently unassessed.
