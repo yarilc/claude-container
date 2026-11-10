@@ -762,12 +762,13 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         value = self.value.copy()
         original = value['image']
         for refresh, runtime in ((False, ''), (True, 'a' * 64)):
-            with patch.object(setup, 'build_image', return_value='b' * 64) as build:
+            # The runtime dispatch point covers both recipe and wrapper builds.
+            with patch.object(setup, 'build_runtime', return_value='b' * 64) as build:
                 setup.prepare_artifacts(value, None, release, self.env, {'runtime': runtime}, refresh, [])
                 build.assert_called_once()
-                self.assertNotEqual(build.call_args.args[2], original)
+                self.assertNotEqual(build.call_args.args[1], original)
                 self.assertEqual(value['image_id'], 'b' * 64)
-        with patch.object(setup, 'build_image', side_effect=common.SetupError('build failed')):
+        with patch.object(setup, 'build_runtime', side_effect=common.SetupError('build failed')):
             with self.assertRaises(common.SetupError):
                 setup.prepare_artifacts(self.value.copy(), None, release, self.env, {'runtime': ''}, False, [])
 
