@@ -214,7 +214,9 @@ wrapper keeps the following per-agent items:
   hosts, and optional `install.files`: extra agent files, such as a version
   pin, that setup installs next to the wrapper and that qualification binds,
   and optional `install.runtime_build`: `wrapper` makes setup build the runtime
-  image with the installed wrapper's build-only `--container-build`);
+  image with the installed wrapper's build-only `--container-build`; an
+  account method's `login_args` may be empty when the agent has no login
+  command, and setup then offers sign-in inside the interactive agent);
 - its own provider policies in `agent/policies/`;
 - its wrapper and agent image.
 
@@ -235,10 +237,10 @@ Port checklist for a wrapper:
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
 | Claude (this repository) | WSL ABI-3/additive-filter contract specified here | Mandatory bootstrap and multiplexed proxy integrated | See versioned guard, IP/IPC and wrapper evidence | Account login/reuse/refresh passed; real-key API optional/unavailable |
-| Codex | Ported from `sandbox-ref-8`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Pending operator device-code login, refresh and API-key checks; synthetic Responses API streaming and tool call passed |
-| Antigravity | Pending (profile-based port planned) | Not assessed | Not assessed | Not assessed |
-| OpenCode | Ported from `sandbox-ref-8`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator API-key checks for the four profiles; synthetic Chat Completions streaming and tool call passed |
-| Pi | Ported from `sandbox-ref-8`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator API-key checks for the four profiles; synthetic Chat Completions streaming and tool call passed |
+| Codex | Ported from `sandbox-ref-9`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Pending operator device-code login, refresh and API-key checks; synthetic Responses API streaming and tool call passed |
+| Antigravity | Ported from `sandbox-ref-9`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator Google account sign-in, refresh and Gemini API-key checks; synthetic Gemini streaming and tool call passed |
+| OpenCode | Ported from `sandbox-ref-9`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator API-key checks for the four profiles; synthetic Chat Completions streaming and tool call passed |
+| Pi | Ported from `sandbox-ref-9`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Pending operator API-key checks for the four profiles; synthetic Chat Completions streaming and tool call passed |
 
 For each wrapper, record mode/default parity, operator policy authority, separate
 maintenance permission, authentication/feature inventories, delegation rejection,
