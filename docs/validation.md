@@ -1763,3 +1763,23 @@ Claude declares none, so its installation is unchanged.
 | `python3 -m unittest tests.test_agent_profile tests.test_alignment` | Passed, including the new invalid `install.files` mutations |
 | `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
 | `bash tests/run-runtime.sh --qualification` | Passed: 18 tests |
+
+## Wrapper-built runtime image (`sandbox-ref-7`): 2026-11-10
+
+The Pi port showed that setup's direct `podman build` of `Containerfile`
+cannot build an image the Pi wrapper accepts: the Pi recipe needs the
+`PI_VERSION` and `INSTALL_BUN` build arguments and a `build-inputs-hash` label
+that only the wrapper computes. The profile gains an optional
+`install.runtime_build`, either `recipe` (the default, unchanged) or
+`wrapper`. With `wrapper`, setup runs the installed release's
+`<wrapper> --container-build` alone, under maintenance, with the candidate
+image tag and an explicit `unrestricted` mode that only admits the build-only
+operation, then inspects the candidate identity. The toolchain and proxy
+images keep the recipe path. Claude declares nothing, so its setup is
+unchanged.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_agent_profile tests.test_alignment` | Passed, including the invalid `install.runtime_build` values |
+| `bash tests/run-runtime.sh --setup` | Passed: 64 tests, including the recipe and wrapper dispatch |
+| `bash tests/run-runtime.sh --qualification` | Passed: 18 tests |
