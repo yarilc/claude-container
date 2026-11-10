@@ -85,6 +85,12 @@ Unix, VSOCK and Netlink. Permit only connected AF_UNIX stream/seqpacket pairs;
 deny retargetable datagram/raw pairs, compat/x32 syscall ABIs, io_uring operations
 and pidfd_getfd. A failed rule/filter installation stops before agent code.
 Never replace/weaken the OCI profile or retry unrestricted automatically.
+The bootstrap also rejects every nested mount below the private `/tmp`, `/run`
+and `/var/tmp` roots, except the engine's `/run/.containerenv` file, the
+provider's verified `/run/sandbox-egress`, and `/run/secrets` only as a
+read-only tmpfs. The wrapper and proxy mount that empty read-only tmpfs at
+`/run/secrets` so engine default mounts there (RHEL `mounts.conf` subscription
+secrets) are skipped; a writable `/run/secrets` still stops startup.
 
 Provider mode retains exactly one bootstrap-verified preconnected data channel
 to its protected session proxy; offline retains none. A versioned bounded

@@ -517,6 +517,10 @@ container_args=(
     --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
     --tmpfs '/run:rw,nosuid,nodev,noexec,size=16m'
     --tmpfs '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
+    # Mask engine default mounts at /run/secrets (RHEL subscription secrets from
+    # mounts.conf): Podman skips its own mount there, leaving an empty read-only
+    # tmpfs that the guard accepts and that exposes no host material.
+    --mount type=tmpfs,destination=/run/secrets,ro=true
     --env HOME=/claude-home
     --env EDITOR=nano --env VISUAL=nano
     --env CLAUDE_CONFIG_DIR=/claude-home/.claude

@@ -635,6 +635,20 @@ if args[0]=='snapshot':
         self.assertEqual(result.returncode, 1)
         self.assertIn('cannot query the rootless cgroup controllers', result.stderr)
 
+    def test_engine_default_secrets_are_masked_in_every_mode(self):
+        mask = 'type=tmpfs,destination=/run/secrets,ro=true'
+        for args, env in (((), {}), (('--container-shell',), {}), (('--container-git-worktree',), {}),
+                          ((), {'CLAUDE_CONTAINER_PODMAN': '1'})):
+            with self.subTest(args=args, env=env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*args, **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = self.create()
+                index = create.index(mask)
+                self.assertEqual(create[index - 1], '--mount')
+                self.assertEqual(create.count(mask), 1)
+                self.assertFalse(any(':/run/secrets' in arg for arg in create))
+
     def test_ignored_budgets_stop_before_start_and_remove_owned_container(self):
         for reported in ('0 0 0', '4294967296 2000000000 0', '4294967296 0 512', '0 2000000000 512',
                          '4294967296 2000000000 513', ''):

@@ -191,6 +191,8 @@ def start(args):
              '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
              '--cap-drop=all', '--security-opt=no-new-privileges',
              *[flag for flag in budgets if flag],
+             # Mask engine default /run/secrets mounts (e.g. RHEL subscription secrets).
+             '--mount', 'type=tmpfs,destination=/run/secrets,ro=true',
              '--volume', f'{session}/config:/config:ro',
              '--volume', f'{session}/transport:/transport:rw',
              '--volume', f'{session}/logs:/logs:rw',

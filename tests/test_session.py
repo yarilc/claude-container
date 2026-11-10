@@ -262,6 +262,7 @@ class SessionHelper(unittest.TestCase):
         self.assertNotIn('budget not enforced', result.stderr)
         create = calls[1]
         self.assertEqual(create[create.index('--name') + 1], PROFILE.state_name + '-' + self.session.name)
+        self.assertEqual(create[create.index('type=tmpfs,destination=/run/secrets,ro=true') - 1], '--mount')
         for option in ('--cap-drop=all', '--security-opt=no-new-privileges', '--pids-limit=128',
                        '--memory=256m', '--read-only', PROFILE.label('egress') + '=' + self.session.name,
                        'EGRESS_PROFILE=fixture', 'EGRESS_SESSION=' + self.session.name):

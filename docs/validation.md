@@ -1,5 +1,32 @@
 # Validation record
 
+## Engine default `/run/secrets` mask: 2026-11-10
+
+Change: `openspec/changes/mask-engine-default-run-secrets/`.
+
+- **Trigger:** on the Rocky 9 lab host, `/usr/share/containers/mounts.conf`
+  maps `/usr/share/rhel/secrets:/run/secrets`. Every container received a
+  writable tmpfs there, and the guard stopped restricted startup with
+  "nested private IPC mount validation failed (errno=1)".
+- **Operator probe on the lab host:** with
+  `--mount type=tmpfs,destination=/run/secrets,ro=true`, Podman skipped its
+  default mount. `mountinfo` showed one `/run/secrets ro,... tmpfs`, and the
+  directory was empty.
+- **Change:**
+  - every agent container and provider proxy gets that mask;
+  - `guard.c` parses the per-mount options and filesystem type, and admits
+    `/run/secrets` only as a read-only tmpfs.
+
+Measured on WSL2 x86_64 (no default secrets mount), with Podman client 4.3.1
+and server 4.9.3. No credentials or model requests were used.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --guard` (guard compiled from the changed source) | Passed: 20 tests (1 skipped). The read-only tmpfs mask is accepted, with an empty `/run/secrets`. A writable tmpfs at `/run/secrets`, a read-only host bind at `/run/secrets`, and read-only tmpfs mounts at `/run/other-secrets` and `/tmp/secrets` are rejected before exec. The existing `/tmp/untrusted-nested` rejection still holds |
+| `test_wrapper.py`, `test_session.py`, `test_alignment.py` (branch versus `main`, same runner) | No new failures. The new tests check the mask in default, shell, worktree and delegated launches, and in the proxy create |
+| `bash tests/run-runtime.sh --qualification` | Passed: 25 tests in 147 s, with the mask present |
+| Lab host `--container-setup` (provider, refresh) | Pending: to be run by the operator |
+
 ## Budgets follow delegated cgroup controllers: 2026-11-09
 
 Change: `openspec/changes/adapt-budgets-to-delegated-controllers/`.
