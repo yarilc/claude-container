@@ -1695,3 +1695,18 @@ a successful login or CLI exit alone does not prove refresh. Do not edit/import
 real tokens to manufacture a refresh result. Record unavailable/unsupported flows
 without weakening TLS, namespaces, seccomp or endpoint policy. SSO hosts require
 a separate explicit profile revision and are not automatically enabled.
+
+## Guard test home mount (`sandbox-ref-3`): 2026-11-10
+
+`tests/test_guard.py` started the production guard container with a read-only
+root and no writable native home. Claude and Codex never write there for
+`--version`, but OpenCode 1.18.3 creates `$HOME/.local` at startup and failed
+with `EROFS`. Real launches are unaffected: every wrapper mounts a writable
+home. The test now mounts an empty `notmpcopyup` tmpfs at the profile home, as
+the wrappers do. A copying tmpfs failed with "no space left on device",
+because it copied the npm cache from the Claude image into 64 MiB.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --guard`, before the change | Passed: 19 tests, 1 skipped |
+| `bash tests/run-runtime.sh --guard`, after the change | Passed: 19 tests, 1 skipped |
