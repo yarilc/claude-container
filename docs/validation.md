@@ -1797,3 +1797,24 @@ for both values. No setup code changed.
 | --- | --- |
 | `bash tests/run-runtime.sh --setup` | Passed: 64 tests |
 | Pi `--setup` with this test | The test passes (before the fix: `build_image` called 0 times) |
+
+## Interactive account sign-in from setup (`sandbox-ref-9`): 2026-11-10
+
+`agy` (Antigravity CLI 1.5.3) has no login subcommand: Google sign-in happens
+only in its interactive TUI. A profile account method may now declare empty
+`login_args`. Setup then offers `Run <name> <method> sign-in now? It opens
+<name> interactively; exit it when signed in.`, runs the installed wrapper with
+no agent arguments on the terminal in the scratch workspace (plus
+`--container-git-worktree` when saved), and reports `verified (<name> <method>
+interactive sign-in session exited successfully; no model request tested)`. The
+status describes the session exit, not a confirmed sign-in. When the offer is
+declined or the session fails, setup prints `Next authentication action:
+<command> (sign in inside the interactive session, ...)`. Methods with
+arguments and API-key methods are unchanged.
+
+| Check | Result |
+| --- | --- |
+| `tests/test_agent_profile.py`, `tests/test_alignment.py` | Passed; `[]` is accepted, nine arguments, duplicates and a string are rejected |
+| `bash tests/run-runtime.sh --setup` | Passed: 65 tests, including the new empty-`login_args` case; the existing login case now compares the arguments after the wrapper path |
+| `bash tests/run-runtime.sh --qualification` | Passed: 18 tests |
+| Shared suites | Run unchanged by Codex, OpenCode and Pi `--shared` on adoption |
