@@ -1783,3 +1783,17 @@ unchanged.
 | `python3 -m unittest tests.test_agent_profile tests.test_alignment` | Passed, including the invalid `install.runtime_build` values |
 | `bash tests/run-runtime.sh --setup` | Passed: 64 tests, including the recipe and wrapper dispatch |
 | `bash tests/run-runtime.sh --qualification` | Passed: 18 tests |
+
+## Setup test with a wrapper-built runtime (`sandbox-ref-8`): 2026-11-10
+
+`test_fresh_and_refresh_builds_keep_previous_runtime_tag` patched
+`build_image`, which `prepare_artifacts` no longer calls directly since
+`sandbox-ref-7`; it reached the patch only through the default `recipe` path.
+With a profile declaring `install.runtime_build: "wrapper"` (Pi) the test
+failed. It now patches the runtime dispatch point `build_runtime`, so it holds
+for both values. No setup code changed.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --setup` | Passed: 64 tests |
+| Pi `--setup` with this test | The test passes (before the fix: `build_image` called 0 times) |
