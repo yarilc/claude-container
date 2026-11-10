@@ -28,9 +28,12 @@ CONFIG_HOME = PROFILE.config_home
 CONFIG_ENV = PROFILE.config_dir_env
 YOLO_ENV = PROFILE.approval_bypass_env
 MAINTENANCE = name('MAINTENANCE')
-LOGIN_METHOD = next(method for method, item in PROFILE.auth.items() if 'login_args' in item)
+# Setup proposes the profile's first method. Profiles may have only API-key
+# methods, so the interactive login method is optional.
+PROVIDER_METHOD = next(iter(PROFILE.auth))
+LOGIN_METHOD = next((method for method, item in PROFILE.auth.items() if 'login_args' in item), None)
 KEY_METHOD = next(method for method, item in PROFILE.auth.items() if 'credential_env' in item)
-LOGIN_ARGS = PROFILE.auth[LOGIN_METHOD]['login_args']
+LOGIN_ARGS = PROFILE.auth[LOGIN_METHOD]['login_args'] if LOGIN_METHOD else None
 CREDENTIAL = PROFILE.auth[KEY_METHOD]['credential_env']
 
 spec = importlib.util.spec_from_file_location('sandbox_setup', ROOT / 'setup/setup.py')
@@ -138,7 +141,7 @@ class SetupTests(unittest.TestCase):
         fake.write_text(FAKE_PODMAN)
         fake.chmod(0o700)
         self.value = common.defaults(self.base / 'installed')
-        self.value.update(network='unrestricted', auth=LOGIN_METHOD, endpoint='local',
+        self.value.update(network='unrestricted', auth=PROVIDER_METHOD, endpoint='local',
                           command=str(self.bin / COMMAND))
 
     def calls(self):
@@ -274,7 +277,7 @@ class SetupTests(unittest.TestCase):
             self.assertIsNone(old)
             self.assertEqual(value['network'], 'provider')
             self.assertFalse(value['podman'])
-            self.assertEqual(value['auth'], LOGIN_METHOD)
+            self.assertEqual(value['auth'], PROVIDER_METHOD)
 
     def questionnaire_output(self, inputs):
         answers, printed = iter(inputs), []
@@ -303,7 +306,7 @@ class SetupTests(unittest.TestCase):
         value, output = self.questionnaire_output([
             str(self.base / 'installed'), 'offline', 'shared', '', 'yes', 'change-network', 'provider', 'yes', '',
             'disable-delegation', 'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND), '', ''])
-        self.assertEqual((value['network'], value['auth'], value['podman']), ('provider', LOGIN_METHOD, False))
+        self.assertEqual((value['network'], value['auth'], value['podman']), ('provider', PROVIDER_METHOD, False))
         self.assertEqual(output.count('Residual exfiltration:'), 1)
 
     def test_unrestricted_selection_has_no_provider_notice(self):
@@ -469,7 +472,7 @@ class SetupTests(unittest.TestCase):
         with patch.dict(os.environ, self.env, clear=True):
             env = common.runtime_environment(provider, release, overrides=False)
         self.assertEqual(env[name('NETWORK_POLICY')], str(release / 'agent/policies/default.json'))
-        self.assertEqual(env[name('NETWORK_PROFILE')], PROFILE.policy_profile(LOGIN_METHOD))
+        self.assertEqual(env[name('NETWORK_PROFILE')], PROFILE.policy_profile(PROVIDER_METHOD))
         command = Path(self.value['command'])
         setup.activate(root, release, command)
         profile = release / 'agent/profile.json'
@@ -808,7 +811,7 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         self.assertEqual((stripped[name('PIDS_LIMIT')], stripped[name('RUN_TIMEOUT')]), ('1024', '60'))
 
     def test_runtime_defaults_respect_present_empty_overrides_and_dynamic_socket(self):
-        value = self.value | {'network': 'provider', 'auth': LOGIN_METHOD, 'endpoint': 'default',
+        value = self.value | {'network': 'provider', 'auth': PROVIDER_METHOD, 'endpoint': 'default',
                               'state_dir': str(self.base / 'state'), 'proxy_image': 'b' * 64}
         with patch.dict(os.environ, self.env | {'XDG_RUNTIME_DIR': '/new/session',
                          name('STATE_DIR'): '', YOLO_ENV: '',
@@ -817,7 +820,7 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             self.assertEqual(env[name('STATE_DIR')], '')
             self.assertEqual(env[YOLO_ENV], '')
             self.assertEqual(env['CONTAINER_HOST'], 'unix:///new/session/podman/podman.sock')
-            self.assertEqual(env[name('NETWORK_PROFILE')], PROFILE.policy_profile(LOGIN_METHOD))
+            self.assertEqual(env[name('NETWORK_PROFILE')], PROFILE.policy_profile(PROVIDER_METHOD))
             prepared = common.runtime_environment(value, self.base, overrides=False)
             self.assertEqual(prepared[name('STATE_DIR')], value['state_dir'])
             self.assertNotIn(name('MAINTENANCE'), prepared)
@@ -851,7 +854,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         command = Path(self.value['command'])
         setup.activate(root, release, command)
         for mode in ('offline', 'provider', 'unrestricted'):
-            saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else LOGIN_METHOD,
+            saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else PROVIDER_METHOD,
                                  'endpoint': 'default' if mode != 'unrestricted' else 'local',
                                  'state_dir': str(self.base / 'state'),
                                  'runtime_dir': str(self.base / 'egress'),
@@ -1058,7 +1061,7 @@ exec python3 -c 'import json,os,sys; print(json.dumps({"argv":sys.argv[1:],"stdi
         setup.activate(root, release, command)
         for mode in ('unrestricted', 'offline'):
             with self.subTest(mode=mode):
-                saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else LOGIN_METHOD,
+                saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else PROVIDER_METHOD,
                                       'endpoint': 'default' if mode == 'offline' else 'local'}
                 (release / 'setup.json').write_text(json.dumps(saved))
                 code, output = pty_run([str(command), '--container-setup'],
@@ -1134,15 +1137,16 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
 
     def test_authentication_is_optional_direct_terminal_and_no_automatic_model_call(self):
         _, release = self.release()
-        for failure in (None, common.SetupError('login failed'), KeyboardInterrupt()):
+        # The login checks apply only to profiles with an interactive login method.
+        for failure in ((None, common.SetupError('login failed'), KeyboardInterrupt()) if LOGIN_METHOD else ()):
             with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'yes', return_value=True), patch.object(setup, 'run', side_effect=failure) as run, patch('builtins.print'):
-                status = setup.authenticate(self.value, release)
+                status = setup.authenticate(self.value | {'auth': LOGIN_METHOD}, release)
                 self.assertEqual(run.call_args.args[0][-len(LOGIN_ARGS):], LOGIN_ARGS)
                 self.assertNotIn('capture', run.call_args.kwargs)
                 self.assertNotIn(CREDENTIAL, run.call_args.args[1])
                 self.assertIn('verified' if failure is None else 'pending', status)
         for mode, auth, expected in (('offline', 'none', 'not applicable'), ('provider', KEY_METHOD, 'pending'),
-                                     ('provider', LOGIN_METHOD, 'pending')):
+                                     *((('provider', LOGIN_METHOD, 'pending'),) if LOGIN_METHOD else ())):
             with patch.object(setup, 'yes', return_value=False), patch.object(setup, 'run') as run, patch('builtins.print'):
                 value = self.value | {'network': mode, 'auth': auth}
                 self.assertEqual(setup.authenticate(value, release), expected)
