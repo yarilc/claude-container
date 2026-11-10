@@ -539,6 +539,7 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             common.trusted(unsafe / 'installation', missing=True)
         state = self.base / 'state'
         state.mkdir(mode=0o700)
+        (state / CONFIG_HOME).parent.mkdir(parents=True, exist_ok=True)
         (state / CONFIG_HOME).symlink_to(self.base / 'outside')
         with self.assertRaises(common.SetupError):
             common.writable_mounts(self.env | {name('STATE_DIR'): str(state)})
@@ -1154,6 +1155,7 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
 
     def test_existing_shared_openspec_permissions_are_preserved(self):
         config = self.home / CONFIG_HOME
+        config.parent.mkdir(parents=True, exist_ok=True)
         config.mkdir(mode=0o700)
         openspec = self.home / '.config/openspec'
         openspec.mkdir(mode=0o755, parents=True)

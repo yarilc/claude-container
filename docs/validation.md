@@ -1730,3 +1730,17 @@ are unchanged.
 | `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
 | `python3 -m unittest tests.test_alignment` | Passed |
 | Scratch copy whose `account` method uses `credential_env` instead of `login_args`, `--setup` | Passed: 63 tests; the `sandbox-ref-3` version of the test fails there with `StopIteration` |
+
+## Setup test with a nested configuration home (`sandbox-ref-5`): 2026-11-10
+
+Two checks in `tests/test_setup.py` created `<home>/<config_home>` or
+`<state>/<config_home>` without its parent directories. That works only for a
+single-component `config_home` such as `.claude` or `.codex`. OpenCode's
+`config_home` is `.config/opencode`. The test now creates the parent first;
+`setup/common.py` already handled nested paths.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
+| `python3 -m unittest tests.test_alignment` | Passed |
+| OpenCode `--setup` with this test | Passed: 63 tests (before the fix: `FileNotFoundError` in both checks) |
