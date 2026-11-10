@@ -649,6 +649,32 @@ if args[0]=='snapshot':
                 self.assertEqual(create.count(mask), 1)
                 self.assertFalse(any(':/run/secrets' in arg for arg in create))
 
+    def assert_agent_dev_layout(self, create):
+        self.assertIn('--read-only', create)
+        self.assertNotIn('--read-only-tmpfs=false', create)
+        self.assertIn('/dev:rw,nosuid,noexec,mode=755,size=65536k', create)
+        mounts = [create[i + 1] for i, arg in enumerate(create) if arg == '--mount']
+        self.assertIn('type=devpts,destination=/dev/pts', mounts)
+        self.assertIn('type=tmpfs,destination=/dev/shm,ro=true', mounts)
+
+    def test_agent_dev_layout_attaches_terminals_in_every_mode(self):
+        values = self.restricted_fixture()
+        cases = [(mode, flags, {}) for mode in ('offline', 'provider', 'unrestricted')
+                 for flags in ((), ('--container-shell',), ('--container-git-worktree',))]
+        cases.append(('unrestricted', (), {'CLAUDE_CONTAINER_PODMAN': '1'}))
+        for mode, flags, extra in cases:
+            with self.subTest(mode=mode, flags=flags, extra=extra):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*flags, **(values | extra | {'CLAUDE_CONTAINER_NETWORK': mode}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for create in (c for c in self.calls() if c[0] == 'create'):
+                    if any(a.startswith('io.claude-container.egress=') for a in create):
+                        # The proxy never attaches a terminal and keeps /dev read-only.
+                        self.assertIn('--read-only-tmpfs=false', create)
+                        self.assertFalse(any(a.startswith('/dev') or 'destination=/dev' in a for a in create))
+                    else:
+                        self.assert_agent_dev_layout(create)
+
     def test_ignored_budgets_stop_before_start_and_remove_owned_container(self):
         for reported in ('0 0 0', '4294967296 2000000000 0', '4294967296 0 512', '0 2000000000 512',
                          '4294967296 2000000000 513', ''):
@@ -790,6 +816,7 @@ if args[0]=='snapshot':
         try:
             self.assertEqual(proc.wait(timeout=10), 0)
             self.assertIn('--tty', self.create())
+            self.assert_agent_dev_layout(self.create())
         finally:
             os.close(master)
             if proc.poll() is None:
@@ -1344,12 +1371,13 @@ if args[0]=='snapshot':
                             self.assertEqual('--dangerously-skip-permissions' in create, yolo == '1' and not shell)
                             self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, service == '1')
                             self.assertEqual('--unsetenv' in create, service != '1')
-                            self.assertIn('--read-only-tmpfs=false', create)
+                            self.assertNotIn('--read-only-tmpfs=false', create)
                             mounts = [create[i+1] for i, arg in enumerate(create) if arg == '--tmpfs']
                             self.assertEqual(mounts, [
                                 '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777',
                                 '/run:rw,nosuid,nodev,noexec,size=16m',
-                                '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'])
+                                '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777',
+                                '/dev:rw,nosuid,noexec,mode=755,size=65536k'])
                             self.assertIn(f'{self.project.parent}:{self.project.parent}:rw', create)
 
     def test_disabled_delegation_preserves_host_launch_endpoint(self):

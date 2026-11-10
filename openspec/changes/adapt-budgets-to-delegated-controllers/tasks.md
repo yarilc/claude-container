@@ -69,7 +69,7 @@
 - [x] 5.3 On this WSL host (all controllers delegated), run
   `bash tests/run-runtime.sh --qualification`. Verify that it passes with
   every budget enforced and that no notice is printed.
-- [ ] 5.4 On the lab host, have the operator rerun `--container-setup`
+- [x] 5.4 On the lab host, have the operator rerun `--container-setup`
   (provider, refresh). Verify that it reaches `Sandbox: ready` with the CPU
   notice. Then add a dated `docs/validation.md` entry, and close the open
   operator tasks of `https-image-package-sources` (4.2, 4.3) and

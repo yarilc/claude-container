@@ -707,9 +707,15 @@ shared state, unset `CLAUDE_CONTAINER_STATE_DIR` and restore any previous
 ### Authority and security policies
 
 The root filesystem is read-only; selected workspace/state mounts are writable.
-Automatic read-only tmpfs provisioning is disabled. `/tmp`, `/run`, and
-`/var/tmp` are explicit ephemeral tmpfs mounts with `nosuid,nodev,noexec` and
-limits of 256 MiB, 16 MiB, and 256 MiB respectively. `/tmp` and `/var/tmp` have
+`/tmp`, `/run`, and `/var/tmp` are explicit ephemeral tmpfs mounts with
+`nosuid,nodev,noexec` and limits of 256 MiB, 16 MiB, and 256 MiB respectively.
+Every target of Podman's automatic read-only tmpfs provisioning is mounted
+explicitly. `/dev` is a 64 MiB `nosuid,noexec` tmpfs with an explicit `devpts`
+at `/dev/pts`, and `/dev/shm` is an empty read-only tmpfs. With
+`--read-only-tmpfs=false`, Podman 5 would mount `/dev` read-only, and newer
+crun releases cannot attach a terminal there. On Podman 5, `/dev` is therefore
+writable by the agent but not executable, and no device can be created
+without capabilities. On Podman 4.9, `/dev` stays read-only. `/tmp` and `/var/tmp` have
 sticky mode `1777`. Their contents disappear when the container is removed.
 `/var/tmp` is now explicitly bounded and prevents direct execution, so tools
 must not depend on executable temporary files there. No writable `/var/log`

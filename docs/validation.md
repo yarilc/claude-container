@@ -1,5 +1,42 @@
 # Validation record
 
+## Terminal attach with an engine-forced read-only `/dev`: 2026-11-10
+
+Change: `openspec/changes/allow-terminal-on-read-only-dev/`.
+
+- **Trigger:** on the lab host, the first interactive launch (account login)
+  failed with `crun: unlink /dev/console: Read-only file system`. With
+  `--read-only --read-only-tmpfs=false`, Podman 5.8 mounts `/dev` read-only,
+  and crun 1.27 replaces `/dev/console` to attach a terminal.
+  Non-interactive launches and the qualification gate were unaffected.
+- **Operator probes on the lab host** (Podman 5.8.0, crun 1.27; TTY start
+  with `create -t` then `start --attach`):
+
+| Arguments | TTY start | `/dev` | `/dev/shm` |
+| --- | --- | --- | --- |
+| `--read-only --read-only-tmpfs=false` (previous) | Failed: unlink `/dev/console` | ro | ro |
+| `--read-only` | Started | rw, executable | rw, noexec |
+| `=false` plus a user `/dev` tmpfs | Failed: create, no `/dev/pts` | forced ro | ro |
+| `--read-only`, user `/dev` tmpfs, no `devpts` | Failed: open `/dev/ptmx` | rw, noexec | ro mask |
+| `--read-only`, user `/dev` tmpfs, `devpts`, ro `/dev/shm` (adopted) | Started; `/dev/console` links to `/dev/pts/0` | rw, noexec | ro mask |
+
+- **Change:** agent containers keep automatic provisioning and override each
+  of its targets: explicit `/tmp`, `/run` and `/var/tmp`, a
+  `rw,nosuid,noexec` `/dev` tmpfs (64 MiB), an explicit `devpts`, and an
+  empty read-only `/dev/shm`. The proxy and the qualification gate keep
+  `--read-only-tmpfs=false`. On Podman 5, `/dev` is agent-writable but not
+  executable.
+
+Measured on WSL2 x86_64, with Podman client 4.3.1, server 4.9.3 and
+crun 1.14.1. No credentials or model requests were used.
+
+| Check | Result |
+| --- | --- |
+| Wrapper `--container-shell` with a TTY (unrestricted, isolated state) | Passed: stdin is `/dev/pts/0`; `/dev` stays `ro,nosuid,noexec` on Podman 4.9; `/dev/shm` is read-only; `/tmp` and `/var/tmp` refuse direct execution |
+| `test_wrapper.py`, `test_session.py`, `test_alignment.py` (changed tree versus `HEAD`, same runner) | No new failures; the same environment failures on both. The new test checks the `/dev` layout in offline, provider and unrestricted modes, in shell, worktree and delegated launches and with a TTY, and that the proxy keeps `--read-only-tmpfs=false` |
+| `bash tests/run-runtime.sh --qualification` | Passed: 26 tests in 193 s; the gate and proxy containers are unchanged |
+| Lab host interactive login after `--container-setup` | Pending: to be run by the operator |
+
 ## Engine default `/run/secrets` mask: 2026-11-10
 
 Change: `openspec/changes/mask-engine-default-run-secrets/`.
@@ -25,7 +62,7 @@ and server 4.9.3. No credentials or model requests were used.
 | `bash tests/run-runtime.sh --guard` (guard compiled from the changed source) | Passed: 20 tests (1 skipped). The read-only tmpfs mask is accepted, with an empty `/run/secrets`. A writable tmpfs at `/run/secrets`, a read-only host bind at `/run/secrets`, and read-only tmpfs mounts at `/run/other-secrets` and `/tmp/secrets` are rejected before exec. The existing `/tmp/untrusted-nested` rejection still holds |
 | `test_wrapper.py`, `test_session.py`, `test_alignment.py` (branch versus `main`, same runner) | No new failures. The new tests check the mask in default, shell, worktree and delegated launches, and in the proxy create |
 | `bash tests/run-runtime.sh --qualification` | Passed: 25 tests in 147 s, with the mask present |
-| Lab host `--container-setup` (provider, refresh) | Pending: to be run by the operator |
+| Lab host `--container-setup` (provider, refresh) | Passed (operator, 2026-11-10; Rocky 9, `ipv6.disable=1`, Podman 5.8.0, crun 1.27, Landlock ABI 6): images built, guard compiled, qualification `locally-qualified`, `Sandbox: ready`; the gate containers needed the same mask (`qualify.py`). The first interactive launch then failed on `/dev/console` (see the read-only `/dev` entry) |
 
 ## Budgets follow delegated cgroup controllers: 2026-11-09
 
@@ -60,7 +97,7 @@ delegated. No credentials or model requests were used.
 | `test_setup.py` | 66 tests; the same 2 environment errors as `main`; new smoke-budget and setup-plan notice tests passed |
 | `test_network_policy.py`, `test_alignment.py`, `test_image_pins.py`, `test_tls_proxy.py` | Passed |
 | `bash tests/run-runtime.sh --qualification` (all controllers delegated) | Passed: 25 tests in 166 s, including 7 real qualification gates; no budget notice printed |
-| Lab host without `cpu` delegation: `--container-setup` (provider, refresh) | Pending: to be run by the operator |
+| Lab host without `cpu` delegation: `--container-setup` (provider, refresh) | Passed (operator, 2026-11-10; Rocky 9, `ipv6.disable=1`, Podman 5.8.0, crun 1.27, Landlock ABI 6): images built, guard compiled, qualification `locally-qualified`, `Sandbox: ready`; the CPU-budget notice was printed |
 
 Existing qualification reports become stale (new identity fields).
 Restricted installations rerun `--container-setup`.
@@ -98,7 +135,7 @@ used.
 | `test_tls_proxy.py`, `test_alignment.py`, `test_image_pins.py` | Passed: 12, 9 and 5 tests |
 | `test_session.py`, `test_setup.py`, `test_wrapper.py` (branch versus `main`, same runner) | No new failures; the same environment failures on both (7, 2 and 22) |
 | `bash tests/run-runtime.sh --qualification` (IPv6 present) | Passed: 24 tests in 150 s, including 7 real qualification gates through the dual-stack path, with toolchain `localhost/claude-guard-toolchain:development` (`b00a8c07fd15`, built with the `build-ca` secret) |
-| Lab host without IPv6: `--container-setup` (provider, refresh) | Pending: to be run by the operator |
+| Lab host without IPv6: `--container-setup` (provider, refresh) | Passed (operator, 2026-11-10; Rocky 9, `ipv6.disable=1`, Podman 5.8.0, crun 1.27, Landlock ABI 6): images built, guard compiled, qualification `locally-qualified`, `Sandbox: ready` through the IPv4-only gate |
 
 Existing qualification reports become stale (new identity field and code
 digests), and the proxy image changes. Rerun `--container-setup` with
@@ -145,7 +182,7 @@ model requests were used.
 | Guard toolchain with `build-ca` secret (TLS-intercepted host) | Passed: `apk` verified through Cato; image `b00a8c07fd15` has gcc 13.2.1, no `/tmp/apk-bootstrap-ca.pem`, empty `/run/secrets`, and no file containing "Cato Networks" |
 | Guard toolchain without secret, `--no-cache` (TLS-intercepted host) | Failed closed, as expected: `certificate verify failed`; no image tagged |
 | `test_image_pins.py` toolchain recipe check | Passed, with 6 mutated recipes rejected |
-| Operator setup on the port-80-blocked Linux host (2026-11-09) | Partial: runtime, toolchain and proxy images built over HTTPS and the guard compiled; qualification then failed on that kernel's missing IPv6 (see the IPv6 entry above). Rerun pending |
+| Operator setup on the port-80-blocked Linux host (2026-11-09) | Partial: runtime, toolchain and proxy images built over HTTPS and the guard compiled; qualification then failed on that kernel's missing IPv6 (see the IPv6 entry above). Rerun on 2026-11-10: setup and qualification passed (`Sandbox: ready`); the interactive provider launch is pending the read-only `/dev` change |
 
 Restricted installations must rerun `--container-setup` (or qualification),
 because the runtime image identity changes. On TLS-intercepting networks,

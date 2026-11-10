@@ -35,7 +35,7 @@
   `test_guard.py` against `main`, plus
   `bash tests/run-runtime.sh --qualification` on this host. Verify that
   there are no new failures and that qualification passes with the mask.
-- [ ] 3.3 On the lab host, have the operator rerun `--container-setup`
+- [x] 3.3 On the lab host, have the operator rerun `--container-setup`
   (provider, refresh). Verify that the setup reaches `Sandbox: ready`, then
   record the results in `docs/validation.md` and close the pending operator
   tasks of the earlier changes.

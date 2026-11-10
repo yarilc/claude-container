@@ -509,7 +509,7 @@ if [[ "$network_mode" != unrestricted ]]; then
 fi
 
 container_args=(
-    --rm --interactive --read-only --read-only-tmpfs=false
+    --rm --interactive --read-only
     --userns=keep-id --user "$caller_uid:$caller_gid"
     --cap-drop=all --security-opt=no-new-privileges
     "${budget_args[@]}"
@@ -521,6 +521,13 @@ container_args=(
     # mounts.conf): Podman skips its own mount there, leaving an empty read-only
     # tmpfs that the guard accepts and that exposes no host material.
     --mount type=tmpfs,destination=/run/secrets,ro=true
+    # Podman forces /dev read-only with --read-only-tmpfs=false, and crun >= 1.27
+    # must replace /dev/console to attach a terminal. Keep automatic provisioning
+    # but override each of its targets: a noexec /dev, the devpts that a user /dev
+    # mount drops, and an empty read-only /dev/shm.
+    --tmpfs '/dev:rw,nosuid,noexec,mode=755,size=65536k'
+    --mount type=devpts,destination=/dev/pts
+    --mount type=tmpfs,destination=/dev/shm,ro=true
     --env HOME=/claude-home
     --env EDITOR=nano --env VISUAL=nano
     --env CLAUDE_CONFIG_DIR=/claude-home/.claude

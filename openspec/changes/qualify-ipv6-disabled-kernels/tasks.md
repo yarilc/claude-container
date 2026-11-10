@@ -71,7 +71,7 @@
   `bash tests/run-runtime.sh --qualification`, or the narrowest available
   runtime qualification, to confirm that the dual-stack path is unchanged.
   Verify that it passes, or record it as unavailable with the reason.
-- [ ] 5.4 On the IPv6-less lab host, have the operator rerun
+- [x] 5.4 On the IPv6-less lab host, have the operator rerun
   `--container-setup` (provider, refresh). Verify that qualification passes
   and the setup reports `Sandbox: ready`, or record the failure. Then add a
   dated `docs/validation.md` entry with all results, and close the pending
