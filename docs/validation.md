@@ -1710,3 +1710,23 @@ because it copied the npm cache from the Claude image into 64 MiB.
 | --- | --- |
 | `bash tests/run-runtime.sh --guard`, before the change | Passed: 19 tests, 1 skipped |
 | `bash tests/run-runtime.sh --guard`, after the change | Passed: 19 tests, 1 skipped |
+
+## Setup test for API-key-only profiles (`sandbox-ref-4`): 2026-11-10
+
+At import, `tests/test_setup.py` required an authentication method with
+`login_args`. OpenCode's four profiles are API-key methods only, so the shared
+test failed with `StopIteration`. `setup/setup.py` already handles such
+profiles. The test now works as follows:
+- the generic provider method is the profile's first method, which setup
+  proposes by default;
+- the interactive login method is optional;
+- only the login-argument checks are skipped without one.
+
+For Claude and Codex the first method is the login method, so their checks
+are unchanged.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --setup` | Passed: 63 tests |
+| `python3 -m unittest tests.test_alignment` | Passed |
+| Scratch copy whose `account` method uses `credential_env` instead of `login_args`, `--setup` | Passed: 63 tests; the `sandbox-ref-3` version of the test fails there with `StopIteration` |
