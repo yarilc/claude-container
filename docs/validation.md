@@ -1834,3 +1834,28 @@ new tag was created; `network/`, `setup/` and the shared tests are unchanged.
 | Partial scope: Antigravity clone at `51a88d8` (egress only) | `network/agent_profile.py` and `tests/test_agent_profile.py` planned; `setup/setup.py` and `tests/test_setup.py` reported as not adopted |
 | Same-tag run (`sandbox-ref-9` to `sandbox-ref-9`) on clones of the four current wrappers | No files and no documents to change |
 | `openspec validate add-reference-propagation --strict`, markdownlint on `docs/propagation.md`, `git diff --check` | Valid, no findings, clean |
+
+## Setup smoke diagnostics and shared-state privacy (`sandbox-ref-10`): 2026-11-11
+
+Change `surface-setup-smoke-errors`. An operator's Pi setup failed with only
+`Setup command failed (exit 1)`. The cause, `State must be private: ~/.agents`,
+became visible only after the smoke stderr was captured by hand. This tag:
+
+- prints a bounded, sanitized stderr excerpt when the smoke launch fails;
+- adds the optional profile field `native.private_shared_dirs`;
+- makes the private-directory refusal name the reason and the fix.
+
+Claude's profile keeps the default (`false`), so its behavior is unchanged.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_agent_profile tests.test_alignment` | Passed: 21 tests, 1 skipped. Includes the new field (default, `true`/`false`, rejection of `1`, `"true"`, `null` and unknown keys) and the identifier scan of shared files |
+| `bash tests/run-runtime.sh --setup` | Passed: 68 tests. New cases: refusal reasons and unchanged modes; shared-directory privacy under both field values, with no engine call; smoke excerpt on failure and on a missing marker; no excerpt on success; hostile and oversized stderr bounded to 5 printable lines of 2048 characters |
+| `bash tests/run-runtime.sh --qualification` | Passed: 18 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash -n claude-container.sh` | Passed. ShellCheck (Podman image `koalaman/shellcheck:stable`) reports 11 informational or warning findings. They predate this change: the file is unchanged, and the warnings concern variables assigned through `read` from the session helper |
+| `openspec validate surface-setup-smoke-errors --strict`, `git diff --check` | Valid, clean |
+
+Siblings adopt this tag with `tools/propagate.py`. Pi and OpenCode also set
+`native.private_shared_dirs: true` in their profiles, because their wrappers
+refuse non-private shared directories.
