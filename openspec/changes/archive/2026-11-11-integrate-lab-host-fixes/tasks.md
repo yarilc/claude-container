@@ -76,10 +76,10 @@
 
 ## 3. Publication
 
-- [ ] 3.1 Commit the resolution on `integrate-lab-host-fixes`, merge it into
+- [x] 3.1 Commit the resolution on `integrate-lab-host-fixes`, merge it into
   `main` with `--no-ff`, and verify that `git log --oneline main` shows the
   branch commits under the merge.
-- [ ] 3.2 Create the annotated tag `sandbox-ref-11` on the `main` merge commit:
+- [x] 3.2 Create the annotated tag `sandbox-ref-11` on the `main` merge commit:
   `git tag -a sandbox-ref-11 -m "Reference sandbox: lab-host fixes (Podman 5, delegated controllers, IPv6-less kernels, /run/secrets, HTTPS packages)"`.
   Verify with `git cat-file -t sandbox-ref-11`, which prints `tag`, and run
   the `tools/propagate.py` dry run against `../codex-container sandbox-ref-10 sandbox-ref-11`

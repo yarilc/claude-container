@@ -2120,7 +2120,8 @@ Conflict resolution:
 | `bash -n` on `claude-container.sh`, `tests/image-smoke.sh`, `tests/run-runtime.sh`; `git diff --check` | Passed, clean |
 | `--container-setup` with refresh approved, operator-run on this host | Passed (operator-reported): the runtime, toolchain and proxy images were rebuilt; `Sandbox qualification: locally-qualified`; `Sandbox: ready`. Runtime `0fb0d09b935d`, toolchain `215f5ffc1023`, proxy `3352c336ff71`. Engine Podman 4.9.3 with runc 1.3.4; controllers `[cpu memory pids]`, so every budget is enforced. The operator also ran a session and found it correct |
 | Agent device layout in a session on the new release | Passed: `/dev` is a `rw,nosuid,noexec` tmpfs (64 MiB), `/dev/pts` is devpts, `/dev/shm` and `/run/secrets` are read-only empty tmpfs |
-| Rocky Linux 9 lab host, newer WSL host | Pending: the operator runs them on the tagged state. The branch's own lab-host evidence is above |
+| `--container-setup` on the Rocky Linux 9 lab host, on the tagged state | Passed (operator-reported, 2026-11-11): the runtime, toolchain and proxy images were rebuilt (tag suffix `setup-144be313169b4ddfb01b3f77a33a9f40`); `Sandbox qualification: locally-qualified`; `Sandbox: ready`. Both state directories were prepared as private. No authenticated model request |
+| `--container-setup` on the newer WSL host (kernel `6.18.58.1-microsoft-standard-WSL2`), on the tagged state | Passed (operator-reported, 2026-11-11): the runtime, toolchain and proxy images were rebuilt (tag suffix `setup-d790d5e028ab491abe23e91f54c11824`); `Sandbox qualification: locally-qualified`; `Sandbox: ready`. No authenticated model request |
 
 Every restricted installation must rebuild and rerun setup or qualification.
 The qualification identity (IPv6 state, enforced budget sets), the shared
