@@ -48,6 +48,9 @@ elif args[0] == 'info':
     if args[-1] == '{{.Host.NetworkBackend}}':
         print(os.environ.get('FAKE_BACKEND', 'netavark'))
         sys.exit(0)
+    if args[-1] == '{{.Host.CgroupControllers}}':
+        print(os.environ.get('FAKE_CONTROLLERS', '[cpu memory pids]'))
+        sys.exit(int(os.environ.get('FAKE_CONTROLLERS_STATUS', '0')))
     sys.stdout.write(os.environ.get('FAKE_INFO_RAW', os.environ.get('FAKE_INFO', 'true linux false') + '\n'))
     sys.exit(int(os.environ.get('FAKE_INFO_STATUS', '0')))
 elif args[0] == 'version':
@@ -79,7 +82,7 @@ elif args[0] == 'create':
     token = args[args.index('--label') + 1].split('=', 1)[1]
     state.write_text(token)
     from decimal import Decimal
-    flag = lambda name: next(a.split('=', 1)[1] for a in args if a.startswith(name + '='))
+    flag = lambda name: next((a.split('=', 1)[1] for a in args if a.startswith(name + '=')), '0')
     pathlib.Path(str(log) + '.budgets').write_text(' '.join((flag('--memory'),
         str(int(Decimal(flag('--cpus')) * 10**9)), flag('--pids-limit'))))
     pause = os.environ.get('FAKE_CREATE_PAUSE')
@@ -484,7 +487,8 @@ class WrapperTests(unittest.TestCase):
         (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
         shutil.copyfile(ROOT / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
         shutil.copyfile(ROOT / 'network/platform_check.py', install / 'network/platform_check.py')
-        for name in ('network/session.py', 'network/agent_profile.py', 'network/policy.py', 'network/revisions.py', 'agent/profile.json'):
+        for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py',
+                     'network/revisions.py', 'agent/profile.json'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
         (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
@@ -588,6 +592,88 @@ if args[0]=='snapshot':
                                   pids=int(configured[2]), timeout=timeout)
                     self.assertEqual(actual, expected)
                     self.assertEqual(actual[keys[name]], expected[keys[name]])
+
+    def test_budgets_follow_delegated_controllers(self):
+        notices = {'memory': 'agent memory budget not enforced: cgroup controller memory',
+                   'cpu': 'agent CPU budget not enforced: cgroup controller cpu',
+                   'pids': 'agent process budget not enforced: cgroup controller pids'}
+        flags = {'memory': '--memory=4294967296', 'cpu': '--cpus=2', 'pids': '--pids-limit=512'}
+        for controllers in ('[cpu memory pids]', '[cpuset cpu io memory pids]', '[memory pids]',
+                            '[cpu pids]', '[cpu memory]', '[]'):
+            with self.subTest(controllers=controllers):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = self.create()
+                present = controllers[1:-1].split()
+                for name in ('memory', 'cpu', 'pids'):
+                    self.assertEqual(flags[name] in create, name in present)
+                    self.assertEqual(notices[name] in result.stderr, name not in present)
+                self.assertEqual('--pids-limit=-1' in create, 'pids' not in present)
+                self.assertFalse(any(a.startswith('--cpus=') for a in create) and 'cpu' not in present)
+                self.assertTrue(any(c[0] == 'start' for c in self.calls()))
+        # A delegated controller whose limit the engine drops still stops the launch;
+        # an unenforced limit that unexpectedly appears is rejected too.
+        for controllers, reported in (('[memory pids]', '0 0 512'), ('[memory pids]', '4294967296 2000000000 512'),
+                                      ('[cpu memory]', '4294967296 2000000000 512'),
+                                      ('[cpu memory]', '4294967296 2000000000 2048')):
+            with self.subTest(controllers=controllers, reported=reported):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers, FAKE_AGENT_BUDGETS=reported)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('agent resource budgets were not applied', result.stderr)
+                self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+        for controllers in ('cpu memory pids', '[cpu,memory]', '[CPU]', '[ cpu]', ''):
+            with self.subTest(malformed=controllers):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('unverifiable cgroup controller list', result.stderr)
+                self.assertFalse(any(c[0] == 'create' for c in self.calls()))
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper(FAKE_CONTROLLERS_STATUS='125')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('cannot query the rootless cgroup controllers', result.stderr)
+
+    def test_engine_default_secrets_are_masked_in_every_mode(self):
+        mask = 'type=tmpfs,destination=/run/secrets,ro=true'
+        for args, env in (((), {}), (('--container-shell',), {}), (('--container-git-worktree',), {}),
+                          ((), {'CLAUDE_CONTAINER_PODMAN': '1'})):
+            with self.subTest(args=args, env=env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*args, **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = self.create()
+                index = create.index(mask)
+                self.assertEqual(create[index - 1], '--mount')
+                self.assertEqual(create.count(mask), 1)
+                self.assertFalse(any(':/run/secrets' in arg for arg in create))
+
+    def assert_agent_dev_layout(self, create):
+        self.assertIn('--read-only', create)
+        self.assertNotIn('--read-only-tmpfs=false', create)
+        self.assertIn('/dev:rw,nosuid,noexec,mode=755,size=65536k', create)
+        mounts = [create[i + 1] for i, arg in enumerate(create) if arg == '--mount']
+        self.assertIn('type=devpts,destination=/dev/pts', mounts)
+        self.assertIn('type=tmpfs,destination=/dev/shm,ro=true', mounts)
+
+    def test_agent_dev_layout_attaches_terminals_in_every_mode(self):
+        values = self.restricted_fixture()
+        cases = [(mode, flags, {}) for mode in ('offline', 'provider', 'unrestricted')
+                 for flags in ((), ('--container-shell',), ('--container-git-worktree',))]
+        cases.append(('unrestricted', (), {'CLAUDE_CONTAINER_PODMAN': '1'}))
+        for mode, flags, extra in cases:
+            with self.subTest(mode=mode, flags=flags, extra=extra):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*flags, **(values | extra | {'CLAUDE_CONTAINER_NETWORK': mode}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for create in (c for c in self.calls() if c[0] == 'create'):
+                    if any(a.startswith('io.claude-container.egress=') for a in create):
+                        # The proxy never attaches a terminal and keeps /dev read-only.
+                        self.assertIn('--read-only-tmpfs=false', create)
+                        self.assertFalse(any(a.startswith('/dev') or 'destination=/dev' in a for a in create))
+                    else:
+                        self.assert_agent_dev_layout(create)
 
     def test_ignored_budgets_stop_before_start_and_remove_owned_container(self):
         for reported in ('0 0 0', '4294967296 2000000000 0', '4294967296 0 512', '0 2000000000 512',
@@ -730,6 +816,7 @@ if args[0]=='snapshot':
         try:
             self.assertEqual(proc.wait(timeout=10), 0)
             self.assertIn('--tty', self.create())
+            self.assert_agent_dev_layout(self.create())
         finally:
             os.close(master)
             if proc.poll() is None:
@@ -767,6 +854,23 @@ if args[0]=='snapshot':
         self.log.unlink()
         self.assertEqual(self.run_wrapper(FAKE_IMAGE_STATUS='1').returncode, 0)
         self.assertTrue(any(c[0] == 'build' for c in self.calls()))
+
+    def test_runtime_build_receives_host_ca_only_when_trusted(self):
+        ca = self.base / 'bundle.pem'
+        ca.write_text('synthetic certificate bundle')
+        for trust in ('0', '1'):
+            for build in (('--container-build',), ()):
+                with self.subTest(trust=trust, build=build):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper(*build, CLAUDE_CONTAINER_TRUST_HOST_CA=trust,
+                                              CLAUDE_CONTAINER_CA_BUNDLE=str(ca),
+                                              **({} if build else {'FAKE_IMAGE_STATUS': '1'}))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    args = next(c for c in self.calls() if c[0] == 'build')
+                    secrets = [args[i + 1] for i, arg in enumerate(args) if arg == '--secret']
+                    # The wrapper passes the resolved bundle path (readlink -f).
+                    self.assertEqual(secrets, [f'id=build-ca,src={ca.resolve()}'] if trust == '1' else [])
+                    self.assertEqual(args[-3:], ['--file', str(ROOT / 'Containerfile'), str(ROOT)])
 
     def test_build_and_image_inspection_errors(self):
         self.assertEqual(self.run_wrapper('--container-build', FAKE_BUILD_STATUS='17').returncode, 17)
@@ -1201,6 +1305,19 @@ if args[0]=='snapshot':
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(next(c for c in self.calls() if c[0] == '--remote')[2], f'unix://{self.socket_path}')
 
+    def test_podman5_unix_url_host_socket_is_bound_as_path(self):
+        # Podman 5 reports Host.RemoteSocket.Path as a unix:// URL.
+        for reported, accepted in (('unix:///host/podman.sock', True), ('unix://relative.sock', False)):
+            with self.subTest(reported=reported):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', FAKE_HOST_SOCKET=reported)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                if accepted:
+                    self.assertIn('/host/podman.sock:/run/podman/podman.sock:rw', self.create())
+                    self.assertNotIn('unix:///host/podman.sock:', self.create())
+                else:
+                    self.assertIn('absolute host socket path', result.stderr)
+
     def test_socket_fallback_and_invalid_sources(self):
         default = f'/run/user/{os.getuid()}/podman/podman.sock'
         result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', CLAUDE_CONTAINER_PODMAN_SOCKET='')
@@ -1254,12 +1371,13 @@ if args[0]=='snapshot':
                             self.assertEqual('--dangerously-skip-permissions' in create, yolo == '1' and not shell)
                             self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, service == '1')
                             self.assertEqual('--unsetenv' in create, service != '1')
-                            self.assertIn('--read-only-tmpfs=false', create)
+                            self.assertNotIn('--read-only-tmpfs=false', create)
                             mounts = [create[i+1] for i, arg in enumerate(create) if arg == '--tmpfs']
                             self.assertEqual(mounts, [
                                 '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777',
                                 '/run:rw,nosuid,nodev,noexec,size=16m',
-                                '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'])
+                                '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777',
+                                '/dev:rw,nosuid,noexec,mode=755,size=65536k'])
                             self.assertIn(f'{self.project.parent}:{self.project.parent}:rw', create)
 
     def test_disabled_delegation_preserves_host_launch_endpoint(self):

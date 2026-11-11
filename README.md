@@ -246,9 +246,10 @@ retry. Agent resource budgets are described in
 [Agent hardening, budgets and lifetime](#agent-hardening-budgets-and-lifetime).
 Each provider proxy is limited to 128 processes and 256 MiB memory. Startup
 verifies Podman configuration and the effective limits inside the actual proxy
-cgroup before starting the agent. Rootless cgroup v2 `pids` and `memory`
-controllers must be available; missing, ignored or unverifiable limits stop
-provider preparation. Proxy exhaustion leaves outbound access closed.
+cgroup before starting the agent. A limit whose rootless cgroup v2 controller
+(`pids` or `memory`) the engine does not delegate is not requested and is
+announced; a delegated limit that is ignored or unverifiable stops provider
+preparation. Proxy exhaustion leaves outbound access closed.
 
 Restricted eligibility requires rootless Netavark/Podman server >= 4.9 through an
 explicit same-host Unix CONTAINER_HOST, host Python 3, standard OCI seccomp and
@@ -350,7 +351,9 @@ The proxy image must be a full immutable image ID or registry digest. A missing
 registry digest can be pulled only under exact maintenance authorization; missing
 local image IDs require operator preparation. Maintenance authorization is not
 forwarded to the agent. Runtime filtering does not constrain host image pulls,
-build RUN commands, or other operator maintenance tools.
+build RUN commands, or other operator maintenance tools. Image preparation needs
+outbound HTTPS (443) to the container, Debian, Alpine and npm registries, but not
+port 80: the runtime image fetches Debian packages only over verified HTTPS.
 
 Provider mode requires all four policy/profile/runtime/image variables above.
 Runtime storage must be caller-owned `0700`, outside writable agent mounts, and
@@ -619,6 +622,16 @@ the wrapper stops before starting the container.
 CLAUDE_CONTAINER_TRUST_HOST_CA=1 CLAUDE_CONTAINER_CA_BUNDLE=/path/to/ca.pem ./claude-container.sh
 ```
 
+The same bundle also verifies the runtime image build's Debian package
+downloads, which use HTTPS only. With host CA trust enabled, `--container-build`,
+a missing-image build and setup preparation pass it as the build secret
+`build-ca`: it is mounted only for the package installation step and is not stored
+in the image. Setup gives it to the guard toolchain build as well, for its Alpine
+package downloads. Without host CA trust, the build trusts only the root certificates
+of the pinned base image. On a network that intercepts TLS (a corporate proxy that
+re-signs certificates), enable host CA trust with a bundle that contains the
+interception CA, or the build fails with a certificate verification error.
+
 Migration: earlier versions always mounted the host certificate directory and
 set CA variables. Those sessions no longer trust the host CA by default. Set
 `CLAUDE_CONTAINER_TRUST_HOST_CA=1` to restore that behavior.
@@ -635,6 +648,12 @@ the immediate parent of the current directory at that same absolute path
 instead; the container's working directory remains the original current
 directory. Preserving absolute paths is required because bind mounts requested
 by child containers are resolved by the host Podman service.
+
+Every agent container, provider proxy and qualification gate container gets an empty read-only tmpfs at
+`/run/secrets`. On RHEL and Rocky hosts Podman's `mounts.conf` would otherwise
+mount the host subscription secrets there, writable; with the mask Podman skips
+that mount, the agent sees no host subscription material, and the restricted
+bootstrap accepts the layout. No host configuration change is needed.
 
 Claude configuration defaults to `~/.claude`, or `CLAUDE_CONFIG_DIR` when
 nonempty, mounted read/write at `/claude-home/.claude`. Host
@@ -688,9 +707,15 @@ shared state, unset `CLAUDE_CONTAINER_STATE_DIR` and restore any previous
 ### Authority and security policies
 
 The root filesystem is read-only; selected workspace/state mounts are writable.
-Automatic read-only tmpfs provisioning is disabled. `/tmp`, `/run`, and
-`/var/tmp` are explicit ephemeral tmpfs mounts with `nosuid,nodev,noexec` and
-limits of 256 MiB, 16 MiB, and 256 MiB respectively. `/tmp` and `/var/tmp` have
+`/tmp`, `/run`, and `/var/tmp` are explicit ephemeral tmpfs mounts with
+`nosuid,nodev,noexec` and limits of 256 MiB, 16 MiB, and 256 MiB respectively.
+Every target of Podman's automatic read-only tmpfs provisioning is mounted
+explicitly. `/dev` is a 64 MiB `nosuid,noexec` tmpfs with an explicit `devpts`
+at `/dev/pts`, and `/dev/shm` is an empty read-only tmpfs. With
+`--read-only-tmpfs=false`, Podman 5 would mount `/dev` read-only, and newer
+crun releases cannot attach a terminal there. On Podman 5, `/dev` is therefore
+writable by the agent but not executable, and no device can be created
+without capabilities. On Podman 4.9, `/dev` stays read-only. `/tmp` and `/var/tmp` have
 sticky mode `1777`. Their contents disappear when the container is removed.
 `/var/tmp` is now explicitly bounded and prevents direct execution, so tools
 must not depend on executable temporary files there. No writable `/var/log`
@@ -732,7 +757,8 @@ Every agent container runs with `--cap-drop=all` and
 are unsupported; the wrapper never adds one back. The delegated Podman client
 works without capabilities, but the socket still grants host engine authority.
 
-Every agent container also receives memory, CPU and process budgets:
+Every agent container also receives memory, CPU and process budgets, for each
+budget whose cgroup v2 controller the rootless engine delegates:
 
 | Variable | Default | Accepted values |
 | --- | --- | --- |
@@ -748,9 +774,23 @@ launch then stops until you requalify with `--container-qualify`. Budgets
 cannot be disabled: empty, `0`, `-1` and `max` are rejected before any engine
 operation. Each launch checks the created container's configured limits before
 the application starts; setup smoke and restricted qualification measure the
-effective cgroup v2 `memory.max`, `pids.max` and `cpu.max`. Rootless cgroup v2
-`cpu`, `memory` and `pids` controller delegation is required. Budgets and tmpfs
+effective cgroup v2 `memory.max`, `pids.max` and `cpu.max`. Budgets and tmpfs
 sizes do not limit workspace or state storage growth.
+
+The sandbox adapts to the controllers the engine reports
+(`podman info --format '{{.Host.CgroupControllers}}'`) instead of requiring host
+changes. A budget whose controller (`memory`, `cpu` or `pids`) is not delegated
+is not requested; every launch and the setup plan print a notice such as
+`agent CPU budget not enforced: cgroup controller cpu is not delegated to the
+rootless engine`, and continue without asking. The check is still strict: a
+delegated budget must be applied exactly, an unenforced one must be absent, and
+the enforced set is part of the restricted qualification identity, so a later
+delegation change requires requalification. Provider proxy budgets follow the
+same rule. Risk: without memory or process budgets, a compromised or runaway
+agent can exhaust host memory or processes for your user; without a CPU budget
+it can saturate every CPU. Delegating the controllers (for example a systemd
+`Delegate=cpu cpuset io memory pids` drop-in for `user@.service`) restores full
+enforcement, but the sandbox never requires it.
 
 With a lifetime limit, the engine stops the agent container after that many
 seconds. The wrapper reports `session lifetime limit reached` and keeps the

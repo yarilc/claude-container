@@ -120,14 +120,20 @@ disables security policy or silently selects unrestricted networking.
 Every agent container, in every mode, and every provider proxy drops all
 capabilities and enables no-new-privileges. Setup smoke verifies zero capability
 sets, no-new-privileges and the effective agent `memory.max`, `pids.max` and
-`cpu.max` in every mode, so rootless cgroup v2 `cpu`, `memory` and `pids`
-controllers must be delegated. Provider proxies additionally receive 256 MiB and
-128 processes.
+`cpu.max` in every mode. Provider proxies additionally receive 256 MiB and 128
+processes.
+Setup adapts to the cgroup v2 controllers the rootless engine delegates
+(`podman info --format '{{.Host.CgroupControllers}}'`). A budget whose
+controller is missing is not enforced: the setup plan, the smoke and every
+launch name it, and setup continues without asking. Enforced budgets are still
+verified exactly, unenforced ones must be absent, and the enforced set is bound
+into restricted qualification. Without memory or process budgets an agent can
+exhaust host memory or processes for your user; without a CPU budget it can
+saturate every CPU.
 The installed wrapper verifies the effective limits and proxy hardening before
-its smoke agent starts. An unavailable controller, ignored limit or incompatible
-image makes setup incomplete and preserves the previous working release.
-Inspect controller delegation and image compatibility separately; setup never
-adds privileges, changes host security policy or removes limits to proceed.
+its smoke agent starts. An ignored delegated limit or an incompatible image
+makes setup incomplete and preserves the previous working release. Setup never
+adds privileges, changes host security policy or asks for host changes.
 
 Before activation, setup runs `--container-qualify` against its protected
 candidate using fixed disposable IP/IPC/TLS controls and no real credentials.
@@ -180,6 +186,13 @@ Review the settings and image plan before approving preparation. A separate
 refresh question allows rebuilding prepared images/guard. Builds and pulls are
 host maintenance: their network traffic, including build-time package downloads,
 is outside runtime egress filtering even when the chosen session mode is offline.
+Preparation needs outbound HTTPS (443) to the container registry (`docker.io`),
+Debian (`deb.debian.org`), Alpine (`dl-cdn.alpinelinux.org`) and npm
+(`registry.npmjs.org`); it does not need port 80. Debian packages are fetched
+over verified HTTPS, so hosts that block plain HTTP can still build. On networks
+that intercept TLS, answer yes to host CA trust and select a bundle containing the
+interception CA: setup passes it to the runtime image and guard toolchain builds
+as a non-persisted build secret. Without it, such builds fail with a certificate verification error.
 Consent grants exact maintenance authorization only to these preparation
 commands. It is not saved or enabled for subsequent ordinary launches.
 

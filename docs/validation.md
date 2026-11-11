@@ -1,5 +1,193 @@
 # Validation record
 
+## Terminal attach with an engine-forced read-only `/dev`: 2026-11-10
+
+Change: `openspec/changes/allow-terminal-on-read-only-dev/`.
+
+- **Trigger:** on the lab host, the first interactive launch (account login)
+  failed with `crun: unlink /dev/console: Read-only file system`. With
+  `--read-only --read-only-tmpfs=false`, Podman 5.8 mounts `/dev` read-only,
+  and crun 1.27 replaces `/dev/console` to attach a terminal.
+  Non-interactive launches and the qualification gate were unaffected.
+- **Operator probes on the lab host** (Podman 5.8.0, crun 1.27; TTY start
+  with `create -t` then `start --attach`):
+
+| Arguments | TTY start | `/dev` | `/dev/shm` |
+| --- | --- | --- | --- |
+| `--read-only --read-only-tmpfs=false` (previous) | Failed: unlink `/dev/console` | ro | ro |
+| `--read-only` | Started | rw, executable | rw, noexec |
+| `=false` plus a user `/dev` tmpfs | Failed: create, no `/dev/pts` | forced ro | ro |
+| `--read-only`, user `/dev` tmpfs, no `devpts` | Failed: open `/dev/ptmx` | rw, noexec | ro mask |
+| `--read-only`, user `/dev` tmpfs, `devpts`, ro `/dev/shm` (adopted) | Started; `/dev/console` links to `/dev/pts/0` | rw, noexec | ro mask |
+
+- **Change:** agent containers keep automatic provisioning and override each
+  of its targets: explicit `/tmp`, `/run` and `/var/tmp`, a
+  `rw,nosuid,noexec` `/dev` tmpfs (64 MiB), an explicit `devpts`, and an
+  empty read-only `/dev/shm`. The proxy and the qualification gate keep
+  `--read-only-tmpfs=false`. On Podman 5, `/dev` is agent-writable but not
+  executable.
+
+Measured on WSL2 x86_64, with Podman client 4.3.1, server 4.9.3 and
+crun 1.14.1. No credentials or model requests were used.
+
+| Check | Result |
+| --- | --- |
+| Wrapper `--container-shell` with a TTY (unrestricted, isolated state) | Passed: stdin is `/dev/pts/0`; `/dev` stays `ro,nosuid,noexec` on Podman 4.9; `/dev/shm` is read-only; `/tmp` and `/var/tmp` refuse direct execution |
+| `test_wrapper.py`, `test_session.py`, `test_alignment.py` (changed tree versus `HEAD`, same runner) | No new failures; the same environment failures on both. The new test checks the `/dev` layout in offline, provider and unrestricted modes, in shell, worktree and delegated launches and with a TTY, and that the proxy keeps `--read-only-tmpfs=false` |
+| `bash tests/run-runtime.sh --qualification` | Passed: 26 tests in 193 s; the gate and proxy containers are unchanged |
+| Lab host interactive login after `--container-setup` | Passed (operator, 2026-11-10; Podman 5.8.0, crun 1.27): the login attached a terminal and reported `Login successful`, and setup recorded `Authentication: verified`. The operator then confirmed that Claude Code works in provider mode (operator-reported; no model request was made by the test suites). The only egress diagnostic was one `transport-closed` record with no host, from the session closing |
+
+## Engine default `/run/secrets` mask: 2026-11-10
+
+Change: `openspec/changes/mask-engine-default-run-secrets/`.
+
+- **Trigger:** on the Rocky 9 lab host, `/usr/share/containers/mounts.conf`
+  maps `/usr/share/rhel/secrets:/run/secrets`. Every container received a
+  writable tmpfs there, and the guard stopped restricted startup with
+  "nested private IPC mount validation failed (errno=1)".
+- **Operator probe on the lab host:** with
+  `--mount type=tmpfs,destination=/run/secrets,ro=true`, Podman skipped its
+  default mount. `mountinfo` showed one `/run/secrets ro,... tmpfs`, and the
+  directory was empty.
+- **Change:**
+  - every agent container and provider proxy gets that mask;
+  - `guard.c` parses the per-mount options and filesystem type, and admits
+    `/run/secrets` only as a read-only tmpfs.
+
+Measured on WSL2 x86_64 (no default secrets mount), with Podman client 4.3.1
+and server 4.9.3. No credentials or model requests were used.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --guard` (guard compiled from the changed source) | Passed: 20 tests (1 skipped). The read-only tmpfs mask is accepted, with an empty `/run/secrets`. A writable tmpfs at `/run/secrets`, a read-only host bind at `/run/secrets`, and read-only tmpfs mounts at `/run/other-secrets` and `/tmp/secrets` are rejected before exec. The existing `/tmp/untrusted-nested` rejection still holds |
+| `test_wrapper.py`, `test_session.py`, `test_alignment.py` (branch versus `main`, same runner) | No new failures. The new tests check the mask in default, shell, worktree and delegated launches, and in the proxy create |
+| `bash tests/run-runtime.sh --qualification` | Passed: 25 tests in 147 s, with the mask present |
+| Lab host `--container-setup` (provider, refresh) | Passed (operator, 2026-11-10; Rocky 9, `ipv6.disable=1`, Podman 5.8.0, crun 1.27, Landlock ABI 6): images built, guard compiled, qualification `locally-qualified`, `Sandbox: ready`; the gate containers needed the same mask (`qualify.py`). The first interactive launch then failed on `/dev/console` (see the read-only `/dev` entry) |
+
+## Budgets follow delegated cgroup controllers: 2026-11-09
+
+Change: `openspec/changes/adapt-budgets-to-delegated-controllers/`.
+
+- **Trigger:** on the Rocky 9 lab host, systemd does not delegate the `cpu`
+  controller to the user. The qualification agent failed with "crun:
+  controller `cpu` is not available under .../user@31600276.service/...".
+  The operator decided that the host must not be modified and that the
+  sandbox continues automatically.
+- **Policy (relaxes the earlier "never remove a budget" rule):**
+  - A budget is enforced only when the verified engine's
+    `Host.CgroupControllers` lists its controller: `memory`, `cpu` or `pids`
+    for the agent, `memory` or `pids` for the provider proxy.
+  - Unenforced budgets are not requested (`--pids-limit=-1` overrides a
+    `containers.conf` default) and are announced on every launch, in the
+    setup plan and in the smoke.
+  - Enforced budgets must be exact, and unenforced ones must be absent (no
+    configured value, and the cgroup interface missing or `max`).
+  - The agent and proxy enforced sets are part of the qualification
+    identity.
+
+Measured on WSL2 x86_64 (all three controllers delegated), with Podman client
+4.3.1 and server 4.9.3, from an unrestricted session with the host socket
+delegated. No credentials or model requests were used.
+
+| Check | Result |
+| --- | --- |
+| `test_wrapper.py` (branch versus `main`, same runner) | 73 versus 70 tests; identical environment failure set. The new controller-subset test passed: flags, notices, `--pids-limit=-1`, ignored delegated limits, unexpected unenforced limits, malformed lists and query failure |
+| `test_session.py` | Passed: 17 tests, including proxy flags and notices per controller subset and exact per-budget hardening verification |
+| `test_qualification.py` | Passed: 25 tests, including enforced-set parsing, identity staleness on enforced-set change, fixed-input validation and probe checks for each subset |
+| `test_setup.py` | 66 tests; the same 2 environment errors as `main`; new smoke-budget and setup-plan notice tests passed |
+| `test_network_policy.py`, `test_alignment.py`, `test_image_pins.py`, `test_tls_proxy.py` | Passed |
+| `bash tests/run-runtime.sh --qualification` (all controllers delegated) | Passed: 25 tests in 166 s, including 7 real qualification gates; no budget notice printed |
+| Lab host without `cpu` delegation: `--container-setup` (provider, refresh) | Passed (operator, 2026-11-10; Rocky 9, `ipv6.disable=1`, Podman 5.8.0, crun 1.27, Landlock ABI 6): images built, guard compiled, qualification `locally-qualified`, `Sandbox: ready`; the CPU-budget notice was printed |
+
+Existing qualification reports become stale (new identity fields).
+Restricted installations rerun `--container-setup`.
+
+## Qualification on kernels without IPv6: 2026-11-09
+
+Change: `openspec/changes/qualify-ipv6-disabled-kernels/`.
+
+- **Trigger:** the Rocky 9 lab host (kernel 5.14.0-687.12.1.el9_8 booted with
+  `ipv6.disable=1`, Landlock ABI 6, Podman 5.8) built every image and the
+  guard. Qualification then failed at `network create --internal --ipv6`:
+  "netavark: set sysctl net/ipv6/conf/podman1/forwarding: No such file or
+  directory". The kernel setting cannot be changed on that host.
+- **Behavior:**
+  - The identity probe on the engine host records `security.ipv6` as
+    `present` or `absent`. **absent** means no `/proc/sys/net/ipv6` and
+    `EAFNOSUPPORT` on `AF_INET6`; anything else is unverifiable. The state is
+    bound into the report.
+  - When IPv6 is absent, the fixture network and peer are IPv4-only, the
+    fixed input carries `ipv6: false` with one IPv4 address, and the control
+    and guarded probes require `EAFNOSUPPORT` for `AF_INET6`.
+  - Contradictory fixture evidence fails the gate.
+  - The provider proxy skips upstream addresses whose family the kernel
+    lacks.
+
+Measured on WSL2 x86_64 (IPv6 present, TLS-intercepted network), with Podman
+client 4.3.1 and server 4.9.3 (rootless, Netavark), from an unrestricted
+session with the host socket delegated. No credentials or model requests were
+used.
+
+| Check | Result |
+| --- | --- |
+| `test_qualification.py` (contracts) | Passed: 24 tests (6 new: IPv6 state detection, identity binding and staleness, fixtures for both states including contradictions, fixed input shapes, probe and runtime kernel-rejection evidence) |
+| `test_network_policy.py` | Passed: 15 tests; the new family fall-through test fails on the unpatched proxy with `EAFNOSUPPORT` |
+| `test_tls_proxy.py`, `test_alignment.py`, `test_image_pins.py` | Passed: 12, 9 and 5 tests |
+| `test_session.py`, `test_setup.py`, `test_wrapper.py` (branch versus `main`, same runner) | No new failures; the same environment failures on both (7, 2 and 22) |
+| `bash tests/run-runtime.sh --qualification` (IPv6 present) | Passed: 24 tests in 150 s, including 7 real qualification gates through the dual-stack path, with toolchain `localhost/claude-guard-toolchain:development` (`b00a8c07fd15`, built with the `build-ca` secret) |
+| Lab host without IPv6: `--container-setup` (provider, refresh) | Passed (operator, 2026-11-10; Rocky 9, `ipv6.disable=1`, Podman 5.8.0, crun 1.27, Landlock ABI 6): images built, guard compiled, qualification `locally-qualified`, `Sandbox: ready` through the IPv4-only gate |
+
+Existing qualification reports become stale (new identity field and code
+digests), and the proxy image changes. Rerun `--container-setup` with
+refresh on restricted installations.
+
+## HTTPS package sources and host-CA build trust: 2026-11-09
+
+Change: `openspec/changes/https-image-package-sources/`.
+
+- **Recipe:** the runtime `Containerfile` rewrites the Debian deb822 sources
+  to `https://deb.debian.org` before `apt-get update`. Fetches are verified
+  against a temporary bundle built from the pinned base's Node.js roots, plus
+  the optional `build-ca` build secret. The bundle is removed in the same
+  step. Pins are unchanged: Claude Code 2.1.316, OpenSpec 1.16.0, and base
+  `node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`.
+- **Host CA trust:** when it is enabled, setup (runtime and guard toolchain
+  builds, never the proxy build) and the wrapper's `--container-build` and
+  missing-image builds pass the selected bundle as
+  `--secret id=build-ca,src=<bundle>`. The toolchain's `apk` verifies against
+  Alpine's roots plus the secret. Both `.containerignore` files admit
+  `podman-build-secret*`, because remote Podman clients ship secrets inside
+  the build context under that name.
+- **Motivation:** an operator Linux host (Podman 5.8) blocked outbound port
+  80, so the build timed out on `http://deb.debian.org`, while HTTPS to
+  Debian and npm returned 200. The maintainer's WSL host intercepts HTTPS to
+  `deb.debian.org` (`CN = Cato Networks Root CA`), so Node's roots alone fail
+  there.
+
+Measured on WSL2 x86_64 with Podman client 4.3.1 and server 4.9.3 (rootless),
+from an unrestricted session with the host socket delegated. No credentials or
+model requests were used.
+
+| Check | Result |
+| --- | --- |
+| `test_image_pins.py` | Passed: 4 tests, including 11 mutated transport and secret recipes rejected |
+| Build without secret, initial recipe (TLS-intercepted host) | Failed closed, as expected: `Certificate verification failed … issuer is unknown`; no image tagged |
+| Build with `build-ca` secret through the remote client, before the `.containerignore` exception | Failed: `rename … podman-build-secret… no such file or directory`; fixed by admitting `podman-build-secret*` |
+| Build with `build-ca` secret (test tag `localhost/claude-code:https-sources-test`, not `:latest`) | Passed: all fetches from `https://deb.debian.org`; image `6310a9ad30b3` reports Claude Code 2.1.316 and OpenSpec 1.16.0 |
+| Image contents | Both `URIs:` are `https://`; `/tmp/apt-bootstrap-ca.pem` absent; `/run/secrets` empty; Debian `ca-certificates.crt` present (148 roots); no file containing "Cato Networks" in the filesystem; no CA material in image history |
+| `tests/image-smoke.sh` (read-only root, `noexec` tmpfs, all capabilities dropped, uid 1000) | Passed |
+| Build without secret, final recipe (`--no-cache`, TLS-intercepted host) | Failed closed, as expected: exit 100 with certificate verification errors; no image tagged |
+| `test_setup.py` (branch versus `main`, same runner) | 64 versus 63 tests; the same 2 environment errors on both (smoke tests needing a real engine); new host-CA build test passed |
+| `test_wrapper.py` (branch versus `main`, same runner) | 72 versus 70 tests; the same 22 environment failures on both (proxy hardening and effective budgets need a real engine); `main` also had a timing failure in `test_lifetime_notice_preserves_status` that passed on the branch |
+| Guard toolchain with `build-ca` secret (TLS-intercepted host) | Passed: `apk` verified through Cato; image `b00a8c07fd15` has gcc 13.2.1, no `/tmp/apk-bootstrap-ca.pem`, empty `/run/secrets`, and no file containing "Cato Networks" |
+| Guard toolchain without secret, `--no-cache` (TLS-intercepted host) | Failed closed, as expected: `certificate verify failed`; no image tagged |
+| `test_image_pins.py` toolchain recipe check | Passed, with 6 mutated recipes rejected |
+| Operator setup on the port-80-blocked Linux host (2026-11-09) | Partial: runtime, toolchain and proxy images built over HTTPS and the guard compiled; qualification then failed on that kernel's missing IPv6 (see the IPv6 entry above). Rerun on 2026-11-10: setup and qualification passed (`Sandbox: ready`). After the read-only `/dev` change, the managed provider launch reached the agent, account login succeeded and Claude Code worked (operator-reported) |
+
+Restricted installations must rerun `--container-setup` (or qualification),
+because the runtime image identity changes. On TLS-intercepting networks,
+answer yes to host CA trust with a bundle that contains the interception CA.
+
 ## Session hardening baseline (B01–B05): 2026-11-08
 
 Change: `openspec/changes/harden-session-baseline/`.
@@ -60,6 +248,9 @@ The runtime image inputs change only through explicit maintenance:
 4. Rebuild with exact `CLAUDE_CONTAINER_MAINTENANCE=1`, for example
    `CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 ./claude-container.sh --container-build`,
    and confirm `claude --version` and `openspec --version` in the image.
+   On a TLS-intercepting network, also set `CLAUDE_CONTAINER_TRUST_HOST_CA=1`
+   (with `CLAUDE_CONTAINER_CA_BUNDLE` when needed), so that the bundle reaches
+   the build as the `build-ca` secret.
 5. Rerun `--container-setup` (or `--container-qualify` for a manual protected
    installation), because the runtime image identity changes.
 6. Add a dated entry to this record with the versions, digest and results.
@@ -1876,3 +2067,69 @@ The five-wrapper parity table was aligned in the same change
 (`align-parity-table`). The table extracted from each `docs/network-contract.md`,
 from the `| Wrapper |` header to the first blank line, has the same SHA-256 in
 all five repositories: `0b3c30bc8b2a5ba4a1623ede2b4da35234198f34e376cdeae4dc499c89c17b63`.
+
+## Lab-host fixes integrated (`sandbox-ref-11`): 2026-11-11
+
+Change `integrate-lab-host-fixes`. It merges the operator branch
+`test/podman5-socket-url` (head `aa338f5`, forked at `sandbox-ref-2`) into
+`main` (`b633a2d`, `sandbox-ref-10`) and keeps the branch behavior as it is.
+The branch commits are:
+
+- `f3fe54f` Podman 5 `unix://` host socket paths;
+- `9931840` and `009da2b` Debian packages over verified HTTPS, and the host
+  CA as a `build-ca` secret for the runtime and guard toolchain builds;
+- `be5617e` qualification on kernels without IPv6;
+- `21de614` budgets enforced only for delegated cgroup controllers;
+- `0894a3c` and `50a1cd0` the read-only `/run/secrets` mask for agents,
+  proxies and qualification gate containers;
+- `43a17d7` the agent `/dev` tmpfs, devpts and read-only `/dev/shm`, for
+  terminals when the engine forces `/dev` read-only;
+- `5ecac3f` and `aa338f5` the lab-host records and the five archived
+  changes.
+
+The lab-host evidence for these commits is recorded in the sections that
+the branch adds above.
+
+Conflict resolution:
+
+- `openspec/specs/container-setup/spec.md`: the `main` requirements and the
+  branch requirement are both kept.
+- `setup/setup.py`: `build_runtime()` gains the host CA bundle. A
+  recipe-built runtime passes it to the build as the `build-ca` secret, as
+  on the branch. A wrapper-built runtime (`install.runtime_build: wrapper`)
+  receives setup's trust selection explicitly, through
+  `<PREFIX>_TRUST_HOST_CA` and `<PREFIX>_CA_BUNDLE`, instead of inheriting
+  the operator's shell values. This is the new `container-setup`
+  requirement "Wrapper-built runtime receives host CA trust".
+- `tests/test_setup.py`: both sides are kept. Three smoke tests now
+  provide the engine controller query that the branch added to the smoke:
+  two from the branch, and `test_failed_smoke_shows_a_bounded_sanitized_stderr_excerpt`
+  from `main`, which meets the query only after the merge.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 347 tests, 66 skipped. `test_ignored_signals_force_owned_removal` failed once on timing (3.43 s against 3.5 s) before the resolution and passed afterwards; it is a known timing-sensitive test |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 26 tests. It needs `localhost/claude-guard-toolchain:development`, rebuilt from the new recipe (`215f5ffc1023`) |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh --network` | Passed: 20 tests |
+| Runtime image build from the new `Containerfile` | Passed: Debian fetched over `https://deb.debian.org`, sources stay HTTPS, no `/tmp/apt-bootstrap-ca.pem`; development tag `localhost/claude-code:integrate-ref-11` (`949298d43d2d`) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`, including `image-smoke.sh` in both state modes) with that image | Passed: 16 tests |
+| `tests/test_image_pins.py`, `tests/test_alignment.py`, `tests/test_agent_profile.py` | Passed: 5 and 21 tests |
+| `bash -n` on `claude-container.sh`, `tests/image-smoke.sh`, `tests/run-runtime.sh`; `git diff --check` | Passed, clean |
+| `--container-setup` with refresh approved, operator-run on this host | Passed (operator-reported): the runtime, toolchain and proxy images were rebuilt; `Sandbox qualification: locally-qualified`; `Sandbox: ready`. Runtime `0fb0d09b935d`, toolchain `215f5ffc1023`, proxy `3352c336ff71`. Engine Podman 4.9.3 with runc 1.3.4; controllers `[cpu memory pids]`, so every budget is enforced. The operator also ran a session and found it correct |
+| Agent device layout in a session on the new release | Passed: `/dev` is a `rw,nosuid,noexec` tmpfs (64 MiB), `/dev/pts` is devpts, `/dev/shm` and `/run/secrets` are read-only empty tmpfs |
+| Rocky Linux 9 lab host, newer WSL host | Pending: the operator runs them on the tagged state. The branch's own lab-host evidence is above |
+
+Every restricted installation must rebuild and rerun setup or qualification.
+The qualification identity (IPv6 state, enforced budget sets), the shared
+code digests and the runtime image identity all change.
+
+Known follow-up: the guard accepts any tmpfs mounted read-only at
+`/run/secrets`. A read-only mount still allows `connect()` to an existing
+socket, so a stricter check (mountinfo root `/` and an empty directory) will
+be evaluated after the host tests. The behavior is unchanged in this tag.
+
+The five-wrapper parity table now names `sandbox-ref-11`. The sibling tables
+match it once each wrapper adopts the tag with `tools/propagate.py`.

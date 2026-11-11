@@ -298,7 +298,7 @@ Setup SHALL ask for the agent memory, CPU and process budgets and the optional s
 - **THEN** those values are the proposed answers
 
 ### Requirement: Saved budgets govern managed launches and verification
-The managed launcher SHALL supply the saved budgets and lifetime through `CLAUDE_CONTAINER_MEMORY_LIMIT`, `CLAUDE_CONTAINER_CPU_LIMIT`, `CLAUDE_CONTAINER_PIDS_LIMIT` and `CLAUDE_CONTAINER_RUN_TIMEOUT` when these are absent from the launch environment. An explicitly present variable SHALL take precedence. Setup smoke and qualification SHALL use the saved values.
+The managed launcher SHALL supply the saved budgets and lifetime through `CLAUDE_CONTAINER_MEMORY_LIMIT`, `CLAUDE_CONTAINER_CPU_LIMIT`, `CLAUDE_CONTAINER_PIDS_LIMIT` and `CLAUDE_CONTAINER_RUN_TIMEOUT` when these are absent from the launch environment. An explicitly present variable SHALL take precedence. Setup smoke and qualification SHALL use the saved values for every budget the engine can enforce.
 
 #### Scenario: Managed launch uses saved budgets
 - **WHEN** the user launches through the managed command with no budget variables exported
@@ -311,7 +311,12 @@ The managed launcher SHALL supply the saved budgets and lifetime through `CLAUDE
 
 #### Scenario: Smoke verifies saved values
 - **WHEN** setup runs its installed smoke check
-- **THEN** the smoke compares the effective cgroup limits with the saved budgets, not with ambient environment values
+- **THEN** the smoke compares the effective cgroup limits of every enforced budget with the saved budgets, not with ambient environment values
+- **AND** it requires every unenforced budget to be absent
+
+#### Scenario: Setup plan names unenforced budgets
+- **WHEN** setup runs on an engine that does not report the `cpu` controller
+- **THEN** the setup plan lists the CPU budget as not enforced, with the missing controller, and setup continues without an extra question
 
 ### Requirement: Preferences without budgets are migrated
 Setup SHALL read saved preferences from earlier schema versions that lack budget and lifetime fields. It SHALL fill in the first-run defaults as proposed answers. New installations SHALL always be saved with the current schema. Unknown fields or unsupported schema versions SHALL still be rejected.
@@ -368,3 +373,15 @@ For the permission case, the message SHALL name `chmod 700 <path>` or native Lin
 - **WHEN** an existing configuration directory has mode `755` and belongs to the caller
 - **THEN** the refusal names the path, mode `755`, and the `chmod 700` fix
 - **AND** the directory mode is unchanged after setup exits
+
+### Requirement: Host CA trust covers setup package fetches
+When host CA trust is enabled, setup SHALL give the selected CA bundle to the runtime image and guard toolchain builds only as a non-persisted build secret, so their HTTPS package fetches verify on TLS-intercepting networks. Without host CA trust, setup SHALL pass no host CA to any build. The proxy build SHALL never receive it.
+
+#### Scenario: Toolchain build on a TLS-intercepting network
+- **WHEN** setup prepares the guard toolchain with host CA trust enabled and a bundle containing the interception CA
+- **THEN** the toolchain package fetches verify against that bundle and the build completes
+- **AND** the toolchain image contains neither the bundle nor its temporary copy
+
+#### Scenario: Host CA trust disabled
+- **WHEN** setup prepares images with host CA trust disabled
+- **THEN** no build receives a host CA bundle, and the toolchain build verifies only against the base image's certificates
