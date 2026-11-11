@@ -29,6 +29,12 @@ tag. Merge into `main`, then create an annotated tag on the merge commit:
 git tag -a sandbox-ref-N -m "Reference sandbox: <one-line summary>"
 ```
 
+In the same merge, update this repository's own five-wrapper parity table in
+`docs/network-contract.md`: change the `Reference (...)` cell and every
+`Ported from ...` cell to the new tag. `--apply` rewrites those cells only in
+the other wrappers, so the five tables stay identical only if the reference is
+updated by hand.
+
 ## 2. Adopt the tag in each wrapper
 
 Run the tool from this checkout, once per wrapper, starting with a dry run:

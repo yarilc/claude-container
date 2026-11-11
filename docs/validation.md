@@ -1859,3 +1859,20 @@ Claude's profile keeps the default (`false`), so its behavior is unchanged.
 Siblings adopt this tag with `tools/propagate.py`. Pi and OpenCode also set
 `native.private_shared_dirs: true` in their profiles, because their wrappers
 refuse non-private shared directories.
+
+## Operator authenticated session: 2026-11-11
+
+The operator ran an authenticated Claude session in provider mode with the
+setup-default profile `anthropic-account`. In the TUI, they asked the model to confirm
+that it could use the harness tools and to report the sandbox's access limits.
+The model did both, and the operator found the result correct.
+
+This covers an authenticated model request with tool use through the sandbox.
+Real-key API (`anthropic-api`) remains unavailable. Full profile verification under the readiness checklist is not
+claimed. The checklist also covers streaming and long-lived requests,
+WebSockets, sign-in, token reuse and refresh, CA behavior and shell mode.
+
+The five-wrapper parity table was aligned in the same change
+(`align-parity-table`). The table extracted from each `docs/network-contract.md`,
+from the `| Wrapper |` header to the first blank line, has the same SHA-256 in
+all five repositories: `0b3c30bc8b2a5ba4a1623ede2b4da35234198f34e376cdeae4dc499c89c17b63`.
