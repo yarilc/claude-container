@@ -214,6 +214,25 @@ installation code requires write protection, while credential/state directories
 and managed releases retain their private permission checks. Invalid ownership
 or inaccessible existing roots are diagnosed before maintenance confirmation.
 
+The configuration directory, or the isolated state directory, must belong to
+the caller, permit read/write/traverse access and deny all group/other
+permissions. Whether shared directories (the profile's `native.shared_dirs`;
+for Claude `~/.config/openspec`) must also be private depends on the optional
+profile field `native.private_shared_dirs`:
+
+- `false`, the default and Claude's value: shared directories are created
+  privately when missing and must be accessible. Existing modes are kept.
+- `true`: the wrapper refuses non-private shared directories. Setup then checks
+  them the same way as the configuration directory, before any image work.
+
+A refusal names the path and the reason: not a directory, another owner,
+missing access, or group/other permissions with the observed mode. Setup never
+changes permissions itself; for example, a host tool that created a directory
+with mode `755` is reported with the fix `chmod 700 <path>`, or with native
+Linux storage when the filesystem does not enforce Unix modes. The setup
+summary calls a state directory `private` only when it passed this check;
+other directories are listed as `shared`.
+
 Each `releases/<id>/` contains its runtime/setup/build inputs and private
 versioned `setup.json`. `current` selects the active release. Setup holds
 `.setup.lock` during preparation/activation and publishes the pointer only after
@@ -292,6 +311,13 @@ checks the Claude executable; restricted smoke also exercises enforced Unix
 socket denial, direct egress denial, own-loopback/pair compatibility and, for
 provider mode, the confined proxy deny path. ABI query success alone is not
 accepted. Failure prevents activation and returns nonzero.
+
+When the smoke launch fails, or does not confirm readiness, setup prints the
+last lines of the wrapper's standard error, labeled `claude-container: smoke:`,
+before `setup incomplete`. For example, a wrapper refusal of a state directory
+appears there. The excerpt holds at most 5 non-empty lines of at most 2048
+characters, with control characters removed. A successful smoke prints none of
+it, so routine wrapper notices stay hidden.
 
 Completion distinguishes:
 
