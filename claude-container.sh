@@ -119,10 +119,14 @@ New Unix services are unavailable; fixed-peer pairs may have private inert names
 See network/README.md for packaging and docs/validation.md for measured evidence.
 Every agent container, in all modes including shell and delegation, drops all
 capabilities, enables no-new-privileges and receives the memory, CPU and process
-budgets; the created configuration is checked before the application starts.
+budgets whose cgroup v2 controller the rootless engine delegates; a budget whose
+controller is missing is not enforced and a notice names it. The created
+configuration is checked before the application starts; a delegated limit that
+is ignored stops startup. Without memory or process budgets an agent can exhaust
+host memory or processes for your user.
 Budgets and tmpfs sizes do not limit workspace or state storage growth.
-Provider proxies require effective cgroup v2 limits of 128 processes and
-256 MiB memory; unavailable or ignored limits stop startup.
+Provider proxies get effective cgroup v2 limits of 128 processes and 256 MiB
+memory under the same rule.
 The workspace mount (the parent in worktree mode) must not be /, your home,
 /home, /root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt, /srv,
 /mnt, /media, /proc, /sys, /dev, /run, /tmp or a WSL drive root such as /mnt/c.
@@ -291,6 +295,42 @@ read -r _ _ remote <<< "$runtime_info"
 if [[ "$remote" == true && "${CONTAINER_HOST:-}" != unix:///* ]]; then
     die 'remote Podman contexts are not supported; set CONTAINER_HOST to a local Unix socket'
 fi
+
+# A budget is enforced only when the verified engine reports its cgroup v2
+# controller as delegated. Unenforced budgets are not requested, are announced,
+# and must be absent from the created configuration (see network/agent_budgets.py).
+capture_response cgroup_controllers podman info --format '{{.Host.CgroupControllers}}' \
+    || die 'cannot query the rootless cgroup controllers'
+cgroup_controllers=${cgroup_controllers%$'\n'}
+[[ "$cgroup_controllers" =~ ^\[([a-z_]+( [a-z_]+)*)?\]$ ]] \
+    || die 'unverifiable cgroup controller list from the Podman engine'
+controller_delegated() {
+    [[ " ${cgroup_controllers:1:${#cgroup_controllers}-2} " == *" $1 "* ]]
+}
+budget_args=()
+expected_memory=0
+expected_cpu=0
+pids_enforced=0
+if controller_delegated memory; then
+    budget_args+=("--memory=$memory_bytes")
+    expected_memory=$memory_bytes
+else
+    printf 'claude-container: agent memory budget not enforced: cgroup controller memory is not delegated to the rootless engine\n' >&2
+fi
+if controller_delegated cpu; then
+    budget_args+=("--cpus=$cpu_text")
+    expected_cpu=$cpu_nano
+else
+    printf 'claude-container: agent CPU budget not enforced: cgroup controller cpu is not delegated to the rootless engine\n' >&2
+fi
+if controller_delegated pids; then
+    budget_args+=("--pids-limit=$pids_limit")
+    pids_enforced=1
+else
+    # Override any containers.conf default that would request the missing controller.
+    budget_args+=(--pids-limit=-1)
+    printf 'claude-container: agent process budget not enforced: cgroup controller pids is not delegated to the rootless engine\n' >&2
+fi
 if [[ "$network_mode" != unrestricted ]]; then
     command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
     [[ "$remote" == true ]] || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
@@ -320,6 +360,8 @@ if ((podman_access)); then
     socket_info=${socket_info%$'\n'}
     [[ "$socket_info" != *$'\n'* ]] || die "invalid Podman socket response: $socket"
     read -r socket_rootless host_socket <<< "$socket_info"
+    # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
+    host_socket=${host_socket#unix://}
     [[ "$socket_rootless" == true ]] || die "Podman socket must serve a rootless engine: $socket"
     # A wrapper already inside a container sees a remapped Unix socket. Bind
     # sources are resolved by the service, so use its host-side socket path.
@@ -429,16 +471,22 @@ if [[ "$network_mode" != unrestricted ]]; then
     fi
 fi
 
+# The opted-in host CA bundle also verifies the runtime build's package fetches.
+# It is a build secret: mounted only for its RUN step and never stored in a layer.
+build_secret=()
+if [[ -n "$ca_bundle" ]]; then
+    build_secret=(--secret "id=build-ca,src=$ca_bundle")
+fi
 if ((build_image)); then
     [[ "${CLAUDE_CONTAINER_MAINTENANCE:-}" == 1 ]] || die 'image refresh requires exact CLAUDE_CONTAINER_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering'
-    podman build --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
+    podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
 elif podman image exists "$image"; then
     :
 else
     image_status=$?
     [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
     [[ "${CLAUDE_CONTAINER_MAINTENANCE:-}" == 1 ]] || die 'image is absent; prepare it with exact CLAUDE_CONTAINER_MAINTENANCE=1 (build traffic is outside runtime filtering)'
-    podman build --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
+    podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
 fi
 if [[ "$network_mode" == provider ]]; then
     if podman image exists "$CLAUDE_CONTAINER_EGRESS_IMAGE"; then
@@ -461,14 +509,25 @@ if [[ "$network_mode" != unrestricted ]]; then
 fi
 
 container_args=(
-    --rm --interactive --read-only --read-only-tmpfs=false
+    --rm --interactive --read-only
     --userns=keep-id --user "$caller_uid:$caller_gid"
     --cap-drop=all --security-opt=no-new-privileges
-    "--memory=$memory_bytes" "--cpus=$cpu_text" "--pids-limit=$pids_limit"
+    "${budget_args[@]}"
     --workdir "$workspace"
     --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
     --tmpfs '/run:rw,nosuid,nodev,noexec,size=16m'
     --tmpfs '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
+    # Mask engine default mounts at /run/secrets (RHEL subscription secrets from
+    # mounts.conf): Podman skips its own mount there, leaving an empty read-only
+    # tmpfs that the guard accepts and that exposes no host material.
+    --mount type=tmpfs,destination=/run/secrets,ro=true
+    # Podman forces /dev read-only with --read-only-tmpfs=false, and crun >= 1.27
+    # must replace /dev/console to attach a terminal. Keep automatic provisioning
+    # but override each of its targets: a noexec /dev, the devpts that a user /dev
+    # mount drops, and an empty read-only /dev/shm.
+    --tmpfs '/dev:rw,nosuid,noexec,mode=755,size=65536k'
+    --mount type=devpts,destination=/dev/pts
+    --mount type=tmpfs,destination=/dev/shm,ro=true
     --env HOME=/claude-home
     --env EDITOR=nano --env VISUAL=nano
     --env CLAUDE_CONFIG_DIR=/claude-home/.claude
@@ -779,12 +838,22 @@ done
 [[ -n "$container_id" ]] || die 'could not reserve a container name after 20 attempts'
 
 # Engine flags alone are not evidence: require the created configuration to
-# carry every selected budget. Setup smoke and qualification measure cgroups.
+# carry every enforced budget and no unenforced one. Setup smoke and
+# qualification measure the effective cgroups.
 capture_response configured_budgets timeout --kill-after=1s 10s podman inspect --type container \
     --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id" \
     || die 'cannot inspect agent resource budgets; agent not started'
-[[ "${configured_budgets%$'\n'}" == "$memory_bytes $cpu_nano $pids_limit" ]] \
-    || die "agent resource budgets were not applied (expected memory=$memory_bytes nano_cpus=$cpu_nano pids=$pids_limit); check rootless cgroup v2 cpu/memory/pids controller delegation; agent not started"
+read -r configured_memory configured_cpu configured_pids extra <<< "${configured_budgets%$'\n'}"
+budgets_applied=0
+if [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" ]]; then
+    if ((pids_enforced)); then
+        [[ "$configured_pids" == "$pids_limit" ]] && budgets_applied=1
+    else
+        [[ "$configured_pids" =~ ^(0|-1)$ ]] && budgets_applied=1
+    fi
+fi
+((budgets_applied)) \
+    || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers; check rootless cgroup v2 controller delegation; agent not started"
 
 # Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
 # for the background client; traps can forward signals while wait is active.

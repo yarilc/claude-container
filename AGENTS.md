@@ -121,7 +121,10 @@ on changed shell scripts, and `git diff --check`. Run `test_image_pins.py`
 after any `Containerfile` or `tested.cli` change; image inputs stay pinned and
 change only through the maintenance procedure in `docs/validation.md`. Every
 agent container drops capabilities and receives memory/CPU/process budgets in
-all modes; never add a capability or remove a budget to make a tool work. Wrapper tests use synthetic
+all modes; never add a capability, and never drop a budget the engine can enforce
+to make a tool work. A budget whose cgroup v2 controller the rootless engine does
+not delegate (`Host.CgroupControllers`) is omitted, announced and bound into the
+qualification identity; never require host changes to delegate it. Wrapper tests use synthetic
 HOME/configuration and fake Podman on executable native temporary storage;
 `SANDBOX_TEST_TMPDIR` overrides the temporary directory. No real credentials or
 remote Git repositories belong in tests.
@@ -209,7 +212,11 @@ home and conflicts with nonempty host `CLAUDE_CONFIG_DIR`. Create private state,
 validate ownership/access/modes, and reject isolated configuration paths escaping
 that home. Do not recursively repair permissions or import credentials. Keep
 `noexec` tmpfs and standard seccomp/SELinux policy; do not automatically relabel
-host binds or add privileges to make an internal sandbox work.
+host binds or add privileges to make an internal sandbox work. Agent
+containers keep automatic read-only tmpfs provisioning only so a terminal can
+attach. They override every target of that provisioning with an explicit
+mount: a `nosuid,noexec` `/dev`, an explicit `devpts`, and an empty read-only
+`/dev/shm`. Never let a provisioned path become writable and executable.
 
 Provider tunnels require trusted-proxy initial TLS 1.2/1.3 ClientHello inspection
 and exact normalized SNI/CONNECT binding before forwarding client bytes. After a

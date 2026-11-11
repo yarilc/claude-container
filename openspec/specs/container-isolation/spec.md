@@ -19,7 +19,7 @@ Sessions SHALL use a read-only container root, `--userns=keep-id`, and the calle
 - **THEN** the entire selected parent is writable as specified by `workspace-mounts`, with no additional inferred Git mounts
 
 ### Requirement: Ephemeral constrained temporary storage
-Sessions SHALL disable automatic read-only tmpfs provisioning and explicitly provide ephemeral `/tmp`, `/run`, and `/var/tmp` mounts with `rw,nosuid,nodev,noexec`. Limits SHALL be 256 MiB for `/tmp`, 16 MiB for `/run`, and 256 MiB for `/var/tmp`. `/tmp` and `/var/tmp` SHALL permit caller writes with sticky directory mode `1777`. Temporary contents SHALL disappear after container removal. Internal sandbox compatibility SHALL NOT silently relax these options.
+Sessions SHALL explicitly provide ephemeral `/tmp`, `/run`, and `/var/tmp` mounts with `rw,nosuid,nodev,noexec`. Limits SHALL be 256 MiB for `/tmp`, 16 MiB for `/run`, and 256 MiB for `/var/tmp`. `/tmp` and `/var/tmp` SHALL permit caller writes with sticky directory mode `1777`. Temporary contents SHALL disappear after container removal. Internal sandbox compatibility SHALL NOT silently relax these options.
 
 #### Scenario: Temporary file lifecycle
 - **WHEN** a session writes temporary files in `/tmp` and `/var/tmp` and a new container starts after its removal
@@ -28,13 +28,26 @@ Sessions SHALL disable automatic read-only tmpfs provisioning and explicitly pro
 
 #### Scenario: Temporary mounts are explicit
 - **WHEN** a Claude or shell session is created in shared or isolated state mode
-- **THEN** automatic read-only tmpfs provisioning is disabled and `/tmp`, `/run`, and `/var/tmp` are explicitly provisioned
-- **AND** no writable `/var/log` tmpfs is introduced by automatic read-only provisioning
+- **THEN** `/tmp`, `/run`, `/var/tmp`, `/dev`, `/dev/pts` and `/dev/shm` are explicitly provisioned
+- **AND** no writable `/var/log` tmpfs or writable `/dev/shm` is introduced by automatic read-only provisioning
 
 #### Scenario: Execution restrictions apply to both temporary directories
 - **WHEN** a session attempts to execute a copied executable directly from `/tmp` or `/var/tmp`
 - **THEN** the mount policy prevents direct execution from either directory
 - **AND** ordinary temporary file writes remain possible
+
+
+### Requirement: Terminal-compatible device mounts
+Sessions SHALL provide their own `/dev` tmpfs with `nosuid,noexec`, mode `755` and a 64 MiB limit, an explicit `devpts` at `/dev/pts`, and an empty read-only tmpfs at `/dev/shm`, so that a terminal can be attached when the engine would otherwise mount `/dev` read-only. Automatic read-only tmpfs provisioning SHALL NOT add any writable path beyond the explicit temporary and device mounts.
+
+#### Scenario: Terminal attaches on an engine that mounts /dev read-only
+- **WHEN** an interactive session starts with a terminal on Podman 5 with crun 1.27, where `--read-only-tmpfs=false` makes `/dev` read-only
+- **THEN** the terminal attaches and the agent starts without any host configuration change
+- **AND** `/dev` is not executable, `/dev/pts` is present, and `/dev/shm` is read-only and empty
+
+#### Scenario: Executables cannot run from /dev
+- **WHEN** a session copies an executable into `/dev` where the engine leaves it writable
+- **THEN** the mount policy prevents its direct execution
 
 ### Requirement: Standard runtime security policy
 The wrapper SHALL NOT add privileged execution, extra capabilities, replacement or weakened OCI seccomp profiles, disabled SELinux labels, or automatic host bind relabeling. Restricted sessions SHALL additionally apply unprivileged Landlock filesystem confinement and an additional restrictive in-process seccomp filter through a protected bootstrap while preserving those standard runtime policies. Policy failures SHALL remain visible with actionable guidance rather than triggering an automatic security-policy bypass.
@@ -130,32 +143,50 @@ Every agent container SHALL drop all Linux capabilities and enable container-lev
 - **AND** the limitation is recorded in the validation record
 
 ### Requirement: Agent containers have explicit resource budgets
-Every agent container SHALL be created with a memory limit, a CPU limit and a process limit. The defaults are 4 GiB memory, 2 CPUs and 512 processes. `CLAUDE_CONTAINER_MEMORY_LIMIT`, `CLAUDE_CONTAINER_CPU_LIMIT` and `CLAUDE_CONTAINER_PIDS_LIMIT` SHALL override them. No value SHALL disable a budget.
+Every agent container SHALL be created with a memory limit, a CPU limit and a process limit for each budget whose cgroup v2 controller (`memory`, `cpu`, `pids`) the verified rootless engine reports as available. The defaults are 4 GiB memory, 2 CPUs and 512 processes. `CLAUDE_CONTAINER_MEMORY_LIMIT`, `CLAUDE_CONTAINER_CPU_LIMIT` and `CLAUDE_CONTAINER_PIDS_LIMIT` SHALL override them. No value SHALL disable a budget; only a missing controller leaves it unenforced.
 
 #### Scenario: Default budgets
-- **WHEN** a session starts with none of the budget variables set
+- **WHEN** a session starts with none of the budget variables set on an engine reporting the `cpu`, `memory` and `pids` controllers
 - **THEN** the container is created with 4 GiB memory, 2 CPUs and 512 processes
 
 #### Scenario: Operator overrides budgets
-- **WHEN** the operator sets `CLAUDE_CONTAINER_MEMORY_LIMIT=8g`, `CLAUDE_CONTAINER_CPU_LIMIT=1.5` and `CLAUDE_CONTAINER_PIDS_LIMIT=1024`
+- **WHEN** the operator sets `CLAUDE_CONTAINER_MEMORY_LIMIT=8g`, `CLAUDE_CONTAINER_CPU_LIMIT=1.5` and `CLAUDE_CONTAINER_PIDS_LIMIT=1024` on an engine reporting all three controllers
 - **THEN** the container is created with exactly those limits
 
 #### Scenario: Invalid or unbounded budget value
 - **WHEN** a budget variable is empty-but-set with whitespace, zero, negative, `-1`, `max`, non-numeric, or has an unsupported unit
 - **THEN** the wrapper exits with status 1 and names the variable before any engine query, state creation or image operation
 
+#### Scenario: Controller not delegated
+- **WHEN** the verified engine does not report the `cpu` controller
+- **THEN** the container is created without a CPU limit, while the memory and process limits are still applied when their controllers are reported
+- **AND** the session continues and prints a notice naming the unenforced CPU budget and the missing controller
+
 ### Requirement: Resource budgets are verified, not assumed
-Before starting the application, each launch SHALL inspect the created agent container and require its configured memory, CPU and process limits to equal the selected budgets. Setup smoke and restricted qualification SHALL verify the effective cgroup v2 limits inside the agent container. A mismatch or missing limit SHALL stop startup or setup with an actionable diagnostic, without a retry using weaker limits.
+Before starting the application, each launch SHALL inspect the created agent container and require each enforced budget to equal its selected value and each unenforced budget to be absent. Setup smoke and restricted qualification SHALL verify the effective cgroup v2 limits inside the agent container in the same way. A mismatch SHALL stop startup or setup with an actionable diagnostic, without a retry using weaker limits.
 
 #### Scenario: Engine ignores a budget
-- **WHEN** the created container reports no limit or a different limit for memory, CPU or processes
+- **WHEN** the created container reports no limit or a different limit for a budget whose controller the engine reports as available
 - **THEN** the wrapper removes only its own container and exits non-zero before the application starts
 - **AND** the diagnostic names rootless cgroup v2 controller delegation
 
 #### Scenario: Effective limits are measured
 - **WHEN** setup smoke or the restricted qualification probe runs inside the agent container
-- **THEN** it reads the container's cgroup v2 `memory.max`, `pids.max` and `cpu.max` and requires them to match the selected budgets
+- **THEN** it reads the container's cgroup v2 `memory.max`, `pids.max` and `cpu.max` for every enforced budget and requires them to match the selected budgets
+- **AND** for every unenforced budget it requires the controller interface to be absent or unlimited
 
 #### Scenario: Budgets do not bound persistent storage
 - **WHEN** the operator reads the README or wrapper help
 - **THEN** it states that the budgets and tmpfs sizes do not limit workspace or state storage growth
+
+### Requirement: Engine default secrets mount is masked
+Every agent container, every provider proxy and every qualification gate container SHALL be created with an empty read-only tmpfs at `/run/secrets`, so that an engine default mount there (such as RHEL subscription secrets from `mounts.conf`) is neither visible nor writable. The sandbox SHALL NOT require host configuration changes to achieve this.
+
+#### Scenario: Host with a default secrets mount
+- **WHEN** the engine's `mounts.conf` maps `/usr/share/rhel/secrets` to `/run/secrets`
+- **THEN** the agent container has exactly one mount at `/run/secrets`, an empty tmpfs mounted read-only
+- **AND** no host subscription file is readable inside the container
+
+#### Scenario: Host without a default secrets mount
+- **WHEN** the engine adds no mount at `/run/secrets`
+- **THEN** the agent container still has the empty read-only tmpfs there, and the session behaves as before

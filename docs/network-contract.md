@@ -53,13 +53,17 @@ restrictions remain unchanged. Hardening rejection stops preparation without
 adding privileges or retrying with unrestricted networking. Explicit
 unrestricted launches receive the same agent capability drop, no-new-privileges
 and resource budgets, but no egress proxy, guard or network restriction.
-Agent memory, CPU and process budgets and the optional lifetime are part of the
-qualification identity: changing them requires requalification.
+Agent memory, CPU and process budgets, the set of budgets actually enforced and
+the optional lifetime are part of the qualification identity: changing them
+requires requalification.
 
-Every session proxy has enforced budgets of 128 processes and 256 MiB memory.
-Provider startup verifies configured and effective cgroup v2 limits plus actual
-proxy hardening before agent execution. An unavailable controller, unknown
-cgroup layout or ignored limit blocks preparation. Proxy failure or exhaustion
+Every session proxy has budgets of 128 processes and 256 MiB memory, enforced
+for each controller (`pids`, `memory`) the rootless engine delegates; a budget
+whose controller is not delegated is not requested and is announced. Provider
+startup verifies configured and effective cgroup v2 limits plus actual proxy
+hardening before agent execution: an enforced limit must be exact and an
+unenforced one absent. An unknown cgroup layout, an unverifiable controller list
+or an ignored delegated limit blocks preparation. Proxy failure or exhaustion
 leaves outbound access closed and retains bounded owned cleanup and primary
 application/signal status. Per-session budgets do not replace multiplex/TLS
 inspection bounds.
@@ -81,6 +85,12 @@ Unix, VSOCK and Netlink. Permit only connected AF_UNIX stream/seqpacket pairs;
 deny retargetable datagram/raw pairs, compat/x32 syscall ABIs, io_uring operations
 and pidfd_getfd. A failed rule/filter installation stops before agent code.
 Never replace/weaken the OCI profile or retry unrestricted automatically.
+The bootstrap also rejects every nested mount below the private `/tmp`, `/run`
+and `/var/tmp` roots, except the engine's `/run/.containerenv` file, the
+provider's verified `/run/sandbox-egress`, and `/run/secrets` only as a
+read-only tmpfs. The wrapper, proxy and qualification gate mount that empty read-only tmpfs at
+`/run/secrets` so engine default mounts there (RHEL `mounts.conf` subscription
+secrets) are skipped; a writable `/run/secrets` still stops startup.
 
 Provider mode retains exactly one bootstrap-verified preconnected data channel
 to its protected session proxy; offline retains none. A versioned bounded
@@ -132,7 +142,9 @@ per-session checks. Qualification uses controlled positive/negative IP/IPC,
 alternate-transport and provider TLS evidence in the actual production path;
 an unavailable required control is blocking. Reports bind the actual host/boot,
 engine/backend/security artifacts, code, immutable images, selected policy/profile,
-CA trust and hardening. Changed inputs invalidate reuse; unobservable active LSM
+CA trust, hardening and the engine host's IPv6 state. On kernels booted without
+IPv6, kernel rejection of `AF_INET6` replaces the IPv6 positive control; any
+contradictory evidence blocks. Changed inputs invalidate reuse; unobservable active LSM
 policy identity causes a fresh gate each launch. Local qualification does not
 claim exhaustive platform acceptance. Authenticated
 account login/reuse/refresh has scoped manual evidence; optional real-key API
@@ -239,11 +251,11 @@ tag and `tools/propagate.py`; see [propagation](propagation.md).
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Claude | Reference (`sandbox-ref-10`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
-| Codex | Ported from `sandbox-ref-10`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
-| Antigravity | Ported from `sandbox-ref-10`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |
-| OpenCode | Ported from `sandbox-ref-10`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
-| Pi | Ported from `sandbox-ref-10`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
+| Claude | Reference (`sandbox-ref-11`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
+| Codex | Ported from `sandbox-ref-11`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
+| Antigravity | Ported from `sandbox-ref-11`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |
+| OpenCode | Ported from `sandbox-ref-11`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
+| Pi | Ported from `sandbox-ref-11`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
 
 For each wrapper, record mode/default parity, operator policy authority, separate
 maintenance permission, authentication/feature inventories, delegation rejection,
