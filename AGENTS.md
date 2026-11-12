@@ -214,9 +214,10 @@ that home. Do not recursively repair permissions or import credentials. Keep
 `noexec` tmpfs and standard seccomp/SELinux policy; do not automatically relabel
 host binds or add privileges to make an internal sandbox work. Agent
 containers keep automatic read-only tmpfs provisioning only so a terminal can
-attach. They override every target of that provisioning with an explicit
-mount: a `nosuid,noexec` `/dev`, an explicit `devpts`, and an empty read-only
-`/dev/shm`. Never let a provisioned path become writable and executable.
+attach. The engine provides `/dev` and its `devpts`; do not mount either
+explicitly, because an explicit `devpts` gets `ptmxmode=000` and no
+pseudo-terminal can be opened. Override `/dev/shm` with an empty read-only
+tmpfs, and add no other writable provisioned path.
 
 Provider tunnels require trusted-proxy initial TLS 1.2/1.3 ClientHello inspection
 and exact normalized SNI/CONNECT binding before forwarding client bytes. After a
