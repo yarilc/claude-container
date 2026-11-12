@@ -28,7 +28,7 @@ Sessions SHALL explicitly provide ephemeral `/tmp`, `/run`, and `/var/tmp` mount
 
 #### Scenario: Temporary mounts are explicit
 - **WHEN** a Claude or shell session is created in shared or isolated state mode
-- **THEN** `/tmp`, `/run`, `/var/tmp`, `/dev`, `/dev/pts` and `/dev/shm` are explicitly provisioned
+- **THEN** `/tmp`, `/run`, `/var/tmp` and `/dev/shm` are explicitly provisioned, and `/dev` with its `devpts` is left to the engine
 - **AND** no writable `/var/log` tmpfs or writable `/dev/shm` is introduced by automatic read-only provisioning
 
 #### Scenario: Execution restrictions apply to both temporary directories
@@ -36,18 +36,21 @@ Sessions SHALL explicitly provide ephemeral `/tmp`, `/run`, and `/var/tmp` mount
 - **THEN** the mount policy prevents direct execution from either directory
 - **AND** ordinary temporary file writes remain possible
 
-
-### Requirement: Terminal-compatible device mounts
-Sessions SHALL provide their own `/dev` tmpfs with `nosuid,noexec`, mode `755` and a 64 MiB limit, an explicit `devpts` at `/dev/pts`, and an empty read-only tmpfs at `/dev/shm`, so that a terminal can be attached when the engine would otherwise mount `/dev` read-only. Automatic read-only tmpfs provisioning SHALL NOT add any writable path beyond the explicit temporary and device mounts.
+### Requirement: Engine-provided device mounts allow pseudo-terminals
+Every Claude and shell container SHALL keep automatic read-only tmpfs provisioning enabled and SHALL NOT mount its own `/dev` or `devpts`, so that the engine provides `/dev` and a `devpts` that allows pseudo-terminals. It SHALL mask `/dev/shm` with an empty read-only tmpfs. Automatic provisioning SHALL add no writable path beyond the explicit temporary mounts and the engine's `/dev`.
 
 #### Scenario: Terminal attaches on an engine that mounts /dev read-only
-- **WHEN** an interactive session starts with a terminal on Podman 5 with crun 1.27, where `--read-only-tmpfs=false` makes `/dev` read-only
+- **WHEN** an interactive session starts with a terminal on Podman 5 with crun 1.27
 - **THEN** the terminal attaches and the agent starts without any host configuration change
-- **AND** `/dev` is not executable, `/dev/pts` is present, and `/dev/shm` is read-only and empty
+- **AND** `/dev/pts` is present and `/dev/shm` is read-only and empty
 
-#### Scenario: Executables cannot run from /dev
-- **WHEN** a session copies an executable into `/dev` where the engine leaves it writable
-- **THEN** the mount policy prevents its direct execution
+#### Scenario: Pseudo-terminals are available to tools
+- **WHEN** a process inside the session opens a pseudo-terminal, as an interactive tool run by the agent or in the shell does
+- **THEN** the allocation succeeds through `/dev/ptmx` and returns a terminal under `/dev/pts`
+
+#### Scenario: Device masks stay empty and read-only
+- **WHEN** a process inside the session lists or writes `/dev/shm` or `/run/secrets`
+- **THEN** both are empty and the write fails
 
 ### Requirement: Standard runtime security policy
 The wrapper SHALL NOT add privileged execution, extra capabilities, replacement or weakened OCI seccomp profiles, disabled SELinux labels, or automatic host bind relabeling. Restricted sessions SHALL additionally apply unprivileged Landlock filesystem confinement and an additional restrictive in-process seccomp filter through a protected bootstrap while preserving those standard runtime policies. Policy failures SHALL remain visible with actionable guidance rather than triggering an automatic security-policy bypass.

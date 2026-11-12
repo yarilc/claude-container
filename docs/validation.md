@@ -2205,7 +2205,7 @@ mounts allow pseudo-terminals".
 | `tests/test_wrapper.py` | Passed: 75 tests, 1 skipped. With the previous launcher, the updated assertions fail (27 failures) |
 | `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 349 tests, 67 skipped (the runtime tests are opt-in) |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests, including `test_explicit_temporary_mounts_and_lifecycle` and `test_pseudo_terminals_and_device_masks` |
-| Operator `--container-setup` and an interactive session on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+| Operator `--container-setup` and an interactive session on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-12): setup completed on all three hosts, and the operator talked to the model (Opus 5.5) in an attached terminal session on each |
 
 Qualification digests the launcher, so restricted installations rerun
 `--container-setup`. The runtime image is unchanged.
