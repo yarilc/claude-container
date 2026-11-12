@@ -119,7 +119,9 @@ class Gate:
     def common(self, image, network='none'):
         # Same empty read-only /run/secrets mask as agent launches: engine default
         # mounts (RHEL mounts.conf) would otherwise fail the guard's mount check.
-        return ['--pull=never', '--network=' + network, '--read-only', '--cap-drop=all',
+        # An explicit /: the engine never creates or chowns an image WORKDIR missing
+        # from the image layers (that chown fails for domain UIDs under keep-id).
+        return ['--pull=never', '--network=' + network, '--read-only', '--workdir', '/', '--cap-drop=all',
                 '--security-opt=no-new-privileges', '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
                 '--mount', 'type=tmpfs,destination=/run/secrets,ro=true',
                 '--label', PROFILE.label('qualification') + '=' + self.token]

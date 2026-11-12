@@ -105,10 +105,25 @@ class QualificationContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             records.validate_report(report, changed)
 
+    def test_security_probe_runs_in_root_workdir(self):
+        args = records.security_probe_args(PROFILE, 'a' * 32, '/seccomp.json', ['--volume', '/ca.pem:/qualification-ca:ro'],
+                                           '/usr/libexec/netavark', 'sha256:' + 'd' * 64, 'print(1)')
+        image = args.index('sha256:' + 'd' * 64)
+        self.assertEqual(args[args.index('--workdir') + 1], '/')
+        self.assertLess(args.index('--workdir'), image)
+        self.assertEqual(args.count('--workdir'), 1)
+        for value in ('--read-only', '--cap-drop=all', '--security-opt=no-new-privileges', '--userns=keep-id',
+                      '/ca.pem:/qualification-ca:ro', 'type=bind,src=/usr/libexec/netavark,dst=/qualification-netavark,ro=true'):
+            self.assertIn(value, args)
+        self.assertEqual(args[image + 1:], ['-I', '-c', 'print(1)'])
+
     def test_gate_containers_mask_engine_default_secrets(self):
         args = qualify.Gate({}).common('image', 'network')
         index = args.index('type=tmpfs,destination=/run/secrets,ro=true')
         self.assertEqual(args[index - 1], '--mount')
+        # Gate containers never depend on the runtime image WORKDIR.
+        self.assertEqual(args[args.index('--workdir') + 1], '/')
+        self.assertEqual(args.count('--workdir'), 1)
 
     def test_gate_fixtures_follow_the_host_ipv6_state(self):
         base = tempfile.TemporaryDirectory(); self.addCleanup(base.cleanup)
