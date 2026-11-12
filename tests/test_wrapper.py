@@ -652,10 +652,15 @@ if args[0]=='snapshot':
     def assert_agent_dev_layout(self, create):
         self.assertIn('--read-only', create)
         self.assertNotIn('--read-only-tmpfs=false', create)
-        self.assertIn('/dev:rw,nosuid,noexec,mode=755,size=65536k', create)
+        # The engine provides /dev and a devpts that allows pseudo-terminals; an
+        # explicit devpts would get ptmxmode=000.
+        tmpfs = [create[i + 1] for i, arg in enumerate(create) if arg == '--tmpfs']
+        self.assertFalse(any(t == '/dev' or t.startswith('/dev:') or t.startswith('/dev/') for t in tmpfs), tmpfs)
         mounts = [create[i + 1] for i, arg in enumerate(create) if arg == '--mount']
-        self.assertIn('type=devpts,destination=/dev/pts', mounts)
+        self.assertFalse(any('type=devpts' in m or m.endswith('destination=/dev') or 'destination=/dev,' in m
+                             for m in mounts), mounts)
         self.assertIn('type=tmpfs,destination=/dev/shm,ro=true', mounts)
+        self.assertIn('type=tmpfs,destination=/run/secrets,ro=true', mounts)
 
     def test_agent_dev_layout_attaches_terminals_in_every_mode(self):
         values = self.restricted_fixture()
@@ -1376,8 +1381,7 @@ if args[0]=='snapshot':
                             self.assertEqual(mounts, [
                                 '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777',
                                 '/run:rw,nosuid,nodev,noexec,size=16m',
-                                '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777',
-                                '/dev:rw,nosuid,noexec,mode=755,size=65536k'])
+                                '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'])
                             self.assertIn(f'{self.project.parent}:{self.project.parent}:rw', create)
 
     def test_disabled_delegation_preserves_host_launch_endpoint(self):

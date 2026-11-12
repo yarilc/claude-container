@@ -2166,3 +2166,46 @@ found while adopting `sandbox-ref-11` in the wrappers:
 
 The shared code digests change, so restricted installations rerun
 qualification after adopting this tag.
+
+## Engine-provided `/dev` for pseudo-terminals: 2026-11-12
+
+Change `use-engine-dev-for-pseudo-terminals`, launcher only. No shared file
+changes, so no new reference tag.
+
+Agent and shell containers no longer mount their own `/dev` tmpfs or
+`devpts`. The explicit `devpts` from `sandbox-ref-11` took the kernel
+defaults `mode=600,ptmxmode=000`, so no process in a session could open a
+pseudo-terminal. The terminal itself still attached, because the engine
+allocates the console outside that `devpts`. Antigravity found the defect,
+because agy runs tool commands in a PTY. The same fix passed its operator
+tests on this host, the Rocky Linux 9 lab host and the newer WSL host.
+
+Measured on this host (Podman 4.9.3, image
+`localhost/claude-code:setup-11645a29317d4621bf77bc5efc1437af`,
+`--read-only --userns=keep-id --cap-drop=all`):
+
+| Layout | `/dev/pts` options | `pty.openpty()` | `/dev` |
+| --- | --- | --- | --- |
+| Explicit `/dev` tmpfs and `devpts` (previous) | `mode=600,ptmxmode=000` | "out of pty devices" | `ro,nosuid,noexec` |
+| Explicit `/dev`, `devpts` and `--device /dev/ptmx` | `mode=600,ptmxmode=000` | "out of pty devices": the engine replaces `/dev/ptmx` with a `pts/ptmx` link | `ro,nosuid,noexec` |
+| Engine `/dev` (adopted) | `mode=620,ptmxmode=666` | `/dev/pts/0` | `ro,nosuid` |
+
+`--mount type=devpts,destination=/dev/pts,ptmxmode=0666` is rejected:
+"ptmxmode: invalid mount option".
+
+On Podman 5, `/dev` is now the engine's writable tmpfs without `noexec`. No
+device can be created without capabilities. The requirement
+"Terminal-compatible device mounts" is replaced by "Engine-provided device
+mounts allow pseudo-terminals".
+
+| Check | Result |
+| --- | --- |
+| `test_pseudo_terminals_and_device_masks` (new) with the previous launcher | Failed: "out of pty devices" |
+| `test_pseudo_terminals_and_device_masks` with the fix | Passed |
+| `tests/test_wrapper.py` | Passed: 75 tests, 1 skipped. With the previous launcher, the updated assertions fail (27 failures) |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 349 tests, 67 skipped (the runtime tests are opt-in) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 17 tests, including `test_explicit_temporary_mounts_and_lifecycle` and `test_pseudo_terminals_and_device_masks` |
+| Operator `--container-setup` and an interactive session on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+
+Qualification digests the launcher, so restricted installations rerun
+`--container-setup`. The runtime image is unchanged.
