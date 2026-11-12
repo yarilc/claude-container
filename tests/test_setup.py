@@ -800,6 +800,11 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
                 setup.build_runtime(release, 'localhost/test:missing', env)
 
     def test_runtime_build_receives_host_ca_only_when_trusted(self):
+        # The recipe path is asserted here; wrapper-built runtimes are covered by
+        # test_runtime_build_follows_the_profile, so pin the profile for any wrapper.
+        recipe = patch.object(setup.PROFILE, 'runtime_build', 'recipe')
+        recipe.start()
+        self.addCleanup(recipe.stop)
         _, release = self.release()
         env = self.env | {name('MAINTENANCE'): '1'}
         bundle = self.base / 'bundle.pem'

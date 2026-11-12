@@ -2134,3 +2134,35 @@ be evaluated after the host tests. The behavior is unchanged in this tag.
 
 The five-wrapper parity table now names `sandbox-ref-11`. The sibling tables
 match it once each wrapper adopts the tag with `tools/propagate.py`.
+
+## Qualification working directory and runtime-build test (`sandbox-ref-12`): 2026-11-12
+
+Change `fix-shared-gate-workdir-and-runtime-build-test`. Two shared defects
+found while adopting `sandbox-ref-11` in the wrappers:
+
+- **Qualification containers depended on the image `WORKDIR`.**
+  - The gate containers (`Gate.common()`) and the security-identity probe
+    (`qualification_records.security_probe_args()`, extracted from
+    `fingerprint()`) now pass `--workdir /`. Before, Podman created and
+    chowned a `WORKDIR` missing from the image layers, which failed for the
+    Rocky host's domain UID under `--userns=keep-id` (seen in Codex).
+  - The probes use only absolute paths. The guarded probe keeps the
+    wrapper's own `--workdir`.
+- **A shared setup test assumed a recipe-built runtime.**
+  - `test_runtime_build_receives_host_ca_only_when_trusted` now pins
+    `install.runtime_build: recipe`. Before, it failed in Pi
+    (`runtime_build: wrapper`).
+  - Wrapper-built runtimes stay covered by
+    `test_runtime_build_follows_the_profile`.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 348 tests, 66 skipped. New: `--workdir /` in the gate common arguments and in the security probe arguments |
+| `test_runtime_build_receives_host_ca_only_when_trusted` with the profile set to `wrapper` (one-off run) | Passed. The previous version of the test fails in the same run |
+| `bash tests/run-runtime.sh --qualification` | Passed: 27 tests, real gate containers |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| Pre-fix Codex image `8ae054805108` (`WORKDIR /workspace`, in no layer) with the gate's common arguments | With `--workdir /`: the container starts in `/` and `/workspace` does not exist. Without it: Podman creates `/workspace` at start (time 11:15:33, equal to the start time) |
+| Domain-UID host (Rocky Linux 9) | Pending: the operator runs it after wrapper adoption |
+
+The shared code digests change, so restricted installations rerun
+qualification after adopting this tag.

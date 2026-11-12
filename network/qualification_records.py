@@ -82,6 +82,18 @@ def validate_security(security, ca_path):
     return security
 
 
+def security_probe_args(profile, token, profile_path, ca_mount, candidate, runtime, script):
+    """Engine arguments of the server-side security-identity probe container."""
+    # An explicit /: the engine never creates or chowns an image WORKDIR missing
+    # from the image layers (that chown fails for domain UIDs under keep-id).
+    return ['podman', 'run', '--rm', '--pull=never', '--network=none', '--read-only', '--workdir', '/',
+            '--label', profile.label('qualification') + '=' + token,
+            '--cap-drop=all', '--security-opt=no-new-privileges', '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
+            '--volume', profile_path + ':/qualification-seccomp:ro', *ca_mount,
+            '--mount', 'type=bind,src=' + candidate + ',dst=/qualification-netavark,ro=true',
+            '--entrypoint', 'python3', runtime, '-I', '-c', script]
+
+
 def evidence_status(value, identity):
     if (type(value) is not dict or set(value) != {'schema', 'fingerprints'} or
             type(value['schema']) is not int or value['schema'] != 1 or
@@ -179,12 +191,7 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
     if not isinstance(candidate,str) or not candidate.startswith('/') or any(c in candidate for c in ':,\n\r'):
         raise PolicyError('unverifiable server Netavark path')
     engine_configuration['networkBackendInfo'] = backend_info
-    raw = run(['podman', 'run', '--rm', '--pull=never', '--network=none', '--read-only',
-        '--label', profile.label('qualification') + '=' + token,
-        '--cap-drop=all', '--security-opt=no-new-privileges', '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
-        '--volume', profile_path + ':/qualification-seccomp:ro', *ca_mount,
-        '--mount', 'type=bind,src=' + candidate + ',dst=/qualification-netavark,ro=true',
-        '--entrypoint', 'python3', runtime, '-I', '-c', security_probe])
+    raw = run(security_probe_args(profile, token, profile_path, ca_mount, candidate, runtime, security_probe))
     # The IPv6 state is bound into the identity: a host that later boots with the
     # other state needs requalification.
     security = validate_security(decode(raw.encode()), ca_path)
