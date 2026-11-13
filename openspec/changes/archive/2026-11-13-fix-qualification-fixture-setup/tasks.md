@@ -41,7 +41,7 @@
   `Ported from ...` cells of the parity table in `docs/network-contract.md` to
   `sandbox-ref-14`. Verify that `git diff --check` is clean and
   `openspec validate fix-qualification-fixture-setup --strict` passes.
-- [ ] 3.4 Commit with the co-author trailer, merge into `main` with `--no-ff`,
+- [x] 3.4 Commit with the co-author trailer, merge into `main` with `--no-ff`,
   and create the annotated tag `sandbox-ref-14` on the merge commit. Verify
   that `git cat-file -t sandbox-ref-14` prints `tag`, and that a dry run of
   `tools/propagate.py ../opencode-container sandbox-ref-12 sandbox-ref-14`

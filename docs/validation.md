@@ -2308,3 +2308,7 @@ Runner modes after both fixes, with image `localhost/claude-code:setup-11645a29â
 No qualification input changed, because test files are not digested.
 Installations qualified on `sandbox-ref-13` stay valid; no rerun of
 `--container-setup` is needed for this tag.
+
+Operator follow-up (2026-11-13): `main` and `sandbox-ref-14` pushed; the
+operator reports that the tests passed in all environments (this host, the
+Rocky Linux 9 lab host and the newer WSL host).
