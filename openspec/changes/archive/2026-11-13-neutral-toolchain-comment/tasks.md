@@ -18,11 +18,13 @@
   `docs/network-contract.md` to `sandbox-ref-16`. Verify that
   `git diff --check` is clean and `openspec validate
   neutral-toolchain-comment --strict` passes.
-- [ ] 2.3 Commit with the co-author trailer, merge into `main` with `--no-ff`,
+- [x] 2.3 Commit with the co-author trailer, merge into `main` with `--no-ff`,
   and create the annotated tag `sandbox-ref-16`. Verify that
   `git cat-file -t sandbox-ref-16` prints `tag`, and that a dry run of
-  `tools/propagate.py ../opencode-container sandbox-ref-12 sandbox-ref-16`
-  lists the shared files with nothing "not adopted".
+  `tools/propagate.py ../pi-container sandbox-ref-12 sandbox-ref-16` lists
+  the shared files with nothing "not adopted". OpenCode's paused branch has
+  uncommitted changes, so the tool refuses a dry run there; Pi has the same
+  base tag.
 
 ## Workflow follow-up
 

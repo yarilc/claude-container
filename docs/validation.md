@@ -2353,7 +2353,7 @@ The comment is now neutral. No code changed.
 | `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
 | `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
 | `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-13); `main` and `sandbox-ref-16` pushed |
 
 The digest of `setup/toolchains.py` changes, so restricted installations
 rerun `--container-setup`.
