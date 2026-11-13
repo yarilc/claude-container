@@ -27,7 +27,9 @@ Claude Code:
   bootstrap, and agent-side relay. The wrapper calls the helper and never
   re-implements proxy lifecycle, guard arguments or proxy cleanup in-line.
 - `setup/` contains host-only interactive preparation, declarative managed
-  preferences, the exec-based launcher and a sandbox smoke check.
+  preferences, the exec-based launcher, a sandbox smoke check and the
+  operator toolchain library (`setup/toolchains.py`, mounted read-only at
+  `/toolchains`).
 
 ## Shared and agent-specific files
 

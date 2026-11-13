@@ -61,5 +61,6 @@ podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --env "CLAUDE_CONTAINER_IMAGE=$image" \
     --env "SANDBOX_TEST_STATE_ROOT=$native_state" \
     "${guard_environment[@]}" \
+    --env "SANDBOX_TOOLCHAIN_EXAMPLES=${SANDBOX_TOOLCHAIN_EXAMPLES:-0}" \
     --entrypoint python3 "$image" \
     -m unittest discover -s tests -p "$pattern" -v "$@"

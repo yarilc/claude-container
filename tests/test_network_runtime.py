@@ -53,7 +53,9 @@ class NetworkRuntime(unittest.TestCase):
         for source in list((ROOT / 'network').glob('*.py')) + [ROOT / 'network/resolv.conf']:
             shutil.copyfile(source, self.install / 'network' / source.name)
         (self.install / 'agent/policies').mkdir(mode=0o700, parents=True, exist_ok=True)
-        for name in ('agent/profile.json', 'agent/policies/default.json'):
+        (self.install / 'setup').mkdir(mode=0o700, exist_ok=True)
+        for name in ('agent/profile.json', 'agent/policies/default.json', 'setup/common.py', 'setup/toolchains.py',
+                     'Containerfile'):
             shutil.copyfile(ROOT / name, self.install / name)
         binary_dir = self.install / 'network/bin'
         binary_dir.mkdir(mode=0o700, exist_ok=True)
@@ -360,6 +362,100 @@ test "$(curl --fail --silent --show-error --max-time 10 https://localhost.locald
         self.assertTrue(ready, 'session readiness timed out')
         self.assertEqual(proc.stdout.readline().strip(), 'network-ready')
         return proc
+
+    def test_toolchain_added_during_offline_session_without_network(self):
+        # The library is a read-only directory bind: a toolchain the operator adds
+        # on the host appears in a running session, which keeps its restrictions.
+        import io
+        import tarfile
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode='w:gz') as archive:
+            for directory in ('live-1', 'live-1/bin'):
+                info = tarfile.TarInfo(directory)
+                info.type, info.mode = tarfile.DIRTYPE, 0o755
+                archive.addfile(info)
+            data = b'#!/bin/sh\necho live-tool\n'
+            info = tarfile.TarInfo('live-1/bin/live')
+            info.size, info.mode = len(data), 0o755
+            archive.addfile(info, io.BytesIO(data))
+        source = self.base / 'live.tar.gz'
+        source.write_bytes(buffer.getvalue())
+        recipe = self.base / 'live.json'
+        recipe.write_text(json.dumps({'schema': 1, 'name': 'live', 'version': '1', 'default': True, 'check': ['live'],
+                                      'source': {'archive': str(source), 'strip_components': 1,
+                                                 'sha256': hashlib.sha256(source.read_bytes()).hexdigest()}}))
+        command = """echo network-ready
+for attempt in $(seq 1 300); do test -f /toolchains/live/env.sh && break; sleep 0.2; done
+. /toolchains/live/env.sh && live
+if python3 -c 'import socket; socket.create_connection(("1.1.1.1", 443), timeout=3)' 2>/dev/null; then echo direct-network; fi
+exit 0"""
+        proc = self.start_session(command, {})
+        added = subprocess.run([str(self.wrapper), '--container-toolchain', 'add', str(recipe)], cwd=self.project,
+                               env=self.env, capture_output=True, text=True, timeout=300)
+        self.assert_success(added)
+        output, errors = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 0, output + errors)
+        self.assertIn('live-tool', output)
+        self.assertNotIn('direct-network', output)
+
+    @unittest.skipUnless(os.environ.get('SANDBOX_TOOLCHAIN_EXAMPLES') == '1',
+                         'set SANDBOX_TOOLCHAIN_EXAMPLES=1 to download, pull and verify the documented toolchains')
+    def test_documented_toolchain_examples_in_an_offline_session(self):
+        examples = ROOT / 'docs/toolchains'
+        sources = json.loads((examples / 'sources.json').read_text())
+        environment = self.env | {'CLAUDE_CONTAINER_MAINTENANCE': '1'}
+        rust_image = 'localhost/sandbox-rust-musl:example-' + uuid.uuid4().hex[:8]
+        self.addCleanup(subprocess.run, ['podman', 'image', 'rm', '--force', '--ignore', rust_image],
+                        capture_output=True, timeout=120)
+        build = subprocess.run(['podman', 'build', '--tag', rust_image, '--file', str(examples / sources['rust']),
+                                str(examples)], capture_output=True, text=True, timeout=900)
+        self.assert_success(build)
+        rust_digest = self.podman('image', 'inspect', '--format', '{{.Digest}}', rust_image)
+        results = {}
+        for name in ('java21', 'maven3.9', 'go', 'node24', 'python3.13', 'rust'):
+            recipe = json.loads((examples / (name + '.json')).read_text())
+            if 'archive' in recipe['source']:
+                archive = self.base / Path(recipe['source']['archive']).name
+                download = subprocess.run(['curl', '-fsSL', '-o', str(archive), sources[name]],
+                                          capture_output=True, text=True, timeout=600)
+                self.assert_success(download)
+                recipe['source']['archive'] = str(archive)
+            if name == 'rust':
+                recipe['source']['image'] = rust_image.split(':')[0] + '@' + rust_digest
+            path = self.base / (name + '.json')
+            path.write_text(json.dumps(recipe))
+            added = subprocess.run([str(self.wrapper), '--container-toolchain', 'add', str(path)], cwd=self.project,
+                                   env=environment, capture_output=True, text=True, timeout=900)
+            results[name] = added.stdout + added.stderr
+            self.assert_success(added)
+        script = r"""set -Eeuo pipefail
+echo "== java"; (. /toolchains/java21/env.sh && java -version) 2>&1
+echo "== maven"; (. /toolchains/maven3.9/env.sh && mvn -v)
+echo "== go"; mkdir -p gomod .gotmp; printf 'module example.com/m\n\ngo 1.27\n' > gomod/go.mod
+printf 'package m\n\nimport "testing"\n\nfunc TestOK(t *testing.T) {}\n' > gomod/m_test.go
+(cd gomod && . /toolchains/go/env.sh && GOTMPDIR=$PWD/../.gotmp go test ./...)
+echo "== node"; test "$(. /toolchains/node24/env.sh && node --version)" = v24.22.3
+echo "== python"; (. /toolchains/python3.13/env.sh && python3.13 -c 'import ssl, sqlite3, venv; print("python-ok")')
+echo "== rust"; (. /toolchains/rust/env.sh && cargo new --vcs none --quiet hello && cd hello && cargo build --offline --quiet \
+  && ./target/x86_64-unknown-linux-musl/debug/hello)
+echo "== defaults"; java -version 2>&1 | head -1; mvn -v | head -1; go version; cargo --version
+test "$(node --version | cut -d. -f1)" = v22
+test "$(command -v python3)" = /usr/bin/python3
+echo examples-ok
+"""
+        self.ensure_qualification({})
+        session = subprocess.run([str(self.wrapper), '--container-shell'], cwd=self.project, env=self.env,
+                                 input=script, text=True, capture_output=True, timeout=900)
+        print('\n'.join(f'add {name}:\n{text}' for name, text in results.items()))
+        print(session.stdout + session.stderr)
+        self.assert_success(session)
+        self.assertIn('examples-ok', session.stdout)
+        self.assertIn('Hello, world!', session.stdout)
+        self.assertIn('python-ok', session.stdout)
+        for name in ('rust', 'python3.13', 'node24', 'go', 'maven3.9', 'java21'):
+            removed = subprocess.run([str(self.wrapper), '--container-toolchain', 'remove', name], cwd=self.project,
+                                     env=self.env, capture_output=True, text=True, timeout=120)
+            self.assert_success(removed)
 
     def test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy(self):
         _, provider = self.provider_fixture()

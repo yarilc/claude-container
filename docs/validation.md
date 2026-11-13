@@ -2209,3 +2209,48 @@ mounts allow pseudo-terminals".
 
 Qualification digests the launcher, so restricted installations rerun
 `--container-setup`. The runtime image is unchanged.
+
+## Toolchain library: 2026-11-13
+
+Change `add-toolchain-library`, shared code (`setup/toolchains.py`, the
+`TOOLCHAINS` and `TOOLCHAINS_DIR` profile suffixes, the installed and qualified
+file lists) and this wrapper's launcher. Reference tag `sandbox-ref-13`.
+
+Sessions mount an operator-managed host library read-only, with `nosuid` and
+`nodev`, at `/toolchains`. The operator manages it with
+`--container-toolchain add|list|remove|verify`.
+- Toolchains are relocatable prefixes from digest-pinned image paths or
+  checksummed local archives, each checked in the runtime image without
+  network before it is accepted.
+- Default toolchains are appended after the image `PATH`; `env.sh` puts a
+  toolchain first for one command.
+- The guard, proxy, policy and network modes are unchanged.
+
+| Check | Result |
+| --- | --- |
+| `tests/test_toolchains.py` (new, shared) before `setup/toolchains.py` existed | Failed: module missing |
+| `tests/test_toolchains.py` | Passed: 21 tests (recipe validation, archive checksum, unsafe members, permissions, image source and maintenance, hardened check, failed check, replace/remove, lock, `requires`, default conflicts, generated files, `launch-env`, base reference) |
+| New `tests/test_wrapper.py` cases with the previous launcher | Failed as intended (dispatch, mount, private creation, unsafe library, disabled mount, appended `PATH`, restricted `--mount-target`) |
+| `tests/test_wrapper.py` | Passed: 81 tests. Two existing cases now expect the specified behavior: an exposed home workspace contains the default library and stops unless the library is moved or omitted; `~/.local/share` may contain only `sandbox-toolchains` |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 380 tests, 71 skipped (the runtime tests are opt-in) |
+| `bash tests/run-runtime.sh` (image `localhost/claude-code:setup-11645a29…`) | Passed: 19 tests, including the archive and image sources, a failing check, the read-only mount, the default environment that keeps the image's `node` and `python3`, and the omitted mount |
+| `bash tests/run-runtime.sh --network` (full suite; its synthetic installation now includes `setup/toolchains.py`, `setup/common.py` and `Containerfile`) | Passed: 22 tests, 1 skipped (the opt-in documented examples) |
+| `bash tests/run-runtime.sh --network -k toolchain` | Passed: a toolchain added on the host while an offline session was running became usable in that session, with no direct network |
+| `SANDBOX_TOOLCHAIN_EXAMPLES=1 bash tests/run-runtime.sh --network -k documented_toolchain` | Passed: all six recipes in `docs/toolchains/` added, then used in one offline session (see below) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, and a provider session that sees a toolchain added after it started | Pending |
+
+Documented examples, verified 2026-11-13 in an offline session:
+
+| Recipe | Source identity | Result |
+| --- | --- | --- |
+| `java21` | `docker.io/library/eclipse-temurin@sha256:0a3f329821dcadf54b2a3033a15e2e9f007069a9db43d7f51897e6b80e726b07` (`/opt/java/openjdk`) | Temurin 21.0.13 runs on the glibc 2.36 runtime although the image is Ubuntu-based |
+| `maven3.9` | `docker.io/library/maven@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320` (`/usr/share/maven`) | `mvn -v` 3.9.16 with Java from `java21` through `requires`; jansi prints a native-library warning because `/tmp` is `noexec` |
+| `go` | `docker.io/library/golang@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea` (`/usr/local/go`) | `go test` passes with `GOTMPDIR` under the workspace |
+| `node24` | `node-v24.22.3-linux-x64.tar.xz`, SHA-256 `4f2b175a…66fcfb` (nodejs.org `SHASUMS256.txt`) | `node --version` v24.22.3 through `env.sh`; `node` by name stays the image's v22 |
+| `python3.13` | `cpython-3.13.18+20261110-x86_64-unknown-linux-gnu-install_only.tar.gz`, SHA-256 `50c774f6…b37cc` (release `SHA256SUMS`) | `ssl`, `sqlite3` and `venv` import; `python3` by name stays `/usr/bin/python3` |
+| `rust` | image built from `docs/toolchains/rust-musl.Containerfile` (`docker.io/library/rust@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37` plus the musl target) | `cargo build --offline` of a new crate for `x86_64-unknown-linux-musl`, linked by `rust-lld`, runs and prints `Hello, world!` |
+
+The defaults `java`, `mvn`, `go` and `cargo` also ran by name in that session.
+SELinux and AppArmor enforcement were not tested; the README says so.
+Qualification digests the launcher and `setup/toolchains.py`, so every
+restricted installation reruns `--container-setup`.

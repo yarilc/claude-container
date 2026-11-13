@@ -4,6 +4,8 @@ import itertools
 import os
 from pathlib import Path
 import socket
+import stat
+import sys
 import subprocess
 import tempfile
 import time
@@ -58,7 +60,10 @@ elif args[0] == 'version':
 elif args[:2] == ['image', 'exists']:
     sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
 elif args[:2] == ['image', 'inspect']:
-    print('d' * 64)
+    if any('.Config.Env' in a for a in args):
+        print(os.environ.get('FAKE_IMAGE_ENV', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'))
+    else:
+        print('d' * 64)
 elif args[0] == 'build':
     time.sleep(float(os.environ.get('FAKE_BUILD_DELAY', '0')))
     sys.exit(int(os.environ.get('FAKE_BUILD_STATUS', '0')))
@@ -223,6 +228,7 @@ class WrapperTests(unittest.TestCase):
         self.socket.bind(str(self.socket_path))
         self.addCleanup(self.socket.close)
         self.env['CLAUDE_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
+        self.library = self.base / 'host-home/.local/share/sandbox-toolchains'
 
     def run_wrapper(self, *args, cwd=None, caller_umask=-1, **env):
         return subprocess.run([str(getattr(self, 'wrapper', WRAPPER)), *args], cwd=cwd or self.project,
@@ -470,8 +476,108 @@ class WrapperTests(unittest.TestCase):
         for option in ('--read-only', '--userns=keep-id', f'{os.getuid()}:{os.getgid()}'):
             self.assertIn(option, create)
         volumes = [create[i+1] for i, a in enumerate(create) if a == '--volume']
-        self.assertEqual(len(volumes), 2)
+        self.assertEqual(len(volumes), 3)
         self.assertIn(f'{self.state}:/claude-home:rw', volumes)
+        self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', volumes)
+
+    # Toolchain library
+
+    def volumes(self):
+        create = self.create()
+        return [create[i + 1] for i, a in enumerate(create) if a == '--volume']
+
+    def environment(self):
+        create = self.create()
+        return [create[i + 1] for i, a in enumerate(create) if a == '--env']
+
+    def test_toolchain_command_dispatch(self):
+        env = {k: v for k, v in self.env.items() if k != 'CLAUDE_CONTAINER_NETWORK'}
+        result = subprocess.run([str(WRAPPER), '--container-toolchain', 'list'], cwd=self.project, env=env,
+                                text=True, capture_output=True, timeout=25)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Toolchain library: ' + str(self.library), result.stdout)
+        self.assertIn('No toolchains are installed.', result.stdout)
+        self.assertEqual(self.calls(), [])
+        for args, message in ((('--version', '--container-toolchain', 'list'), 'must be the first argument'),
+                              (('--container-toolchain', 'launch-env'), 'usage'),
+                              (('--container-toolchain',), 'usage')):
+            with self.subTest(args=args):
+                result = self.run_wrapper(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
+
+    def test_toolchain_library_created_private_and_mounted_read_only(self):
+        self.assertFalse(self.library.exists())
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(self.library.stat().st_mode), 0o700)
+        self.assertIn('No toolchains are installed', (self.library / 'toolchains.md').read_text())
+        self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', self.volumes())
+        self.assertFalse(any(e.startswith('PATH=') for e in self.environment()))
+
+    def test_unsafe_toolchain_library_stops_before_engine_operations(self):
+        self.library.mkdir(parents=True, mode=0o700)
+        os.chmod(self.library, 0o755)
+        cases = [({}, str(self.library))]
+        cases += [({'CLAUDE_CONTAINER_TOOLCHAINS_DIR': str(path)}, str(path))
+                  for path in (self.project / 'tools', self.base, self.state / 'tools')]
+        for env, path in cases:
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(**env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(path, result.stderr)
+                self.assertFalse(any(c[0] in ('create', 'build', 'image', 'pull') for c in self.calls()))
+
+    def test_toolchain_mount_can_be_disabled(self):
+        for value in ('0', 'false', 'no'):
+            with self.subTest(value=value):
+                result = self.run_wrapper(CLAUDE_CONTAINER_TOOLCHAINS=value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(any(v.endswith(':/toolchains:ro,nosuid,nodev') for v in self.volumes()))
+                self.assertFalse(self.library.exists())
+        result = self.run_wrapper(CLAUDE_CONTAINER_TOOLCHAINS='maybe')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('CLAUDE_CONTAINER_TOOLCHAINS', result.stderr)
+
+    def test_default_toolchain_environment_is_appended(self):
+        sys.path.insert(0, str(ROOT / 'setup'))
+        import toolchains
+        base = toolchains.base_reference(ROOT)
+        self.library.mkdir(parents=True, mode=0o700)
+        entry = {'version': '1', 'default': True, 'commands': ['tool'], 'requires': [], 'notes': [],
+                 'check': ['tool'], 'source': {}}
+        index = {'schema': 1, 'toolchains': [
+            {**entry, 'name': 'current', 'path': ['/toolchains/current/bin'],
+             'env': {'CURRENT_HOME': '/toolchains/current'}, 'verified': {'base': base, 'date': '2026-11-13'}},
+            {**entry, 'name': 'stale', 'path': ['/toolchains/stale/bin'], 'env': {},
+             'verified': {'base': 'docker.io/library/other@sha256:' + 'e' * 64, 'date': '2026-11-13'}}]}
+        (self.library / 'index.json').write_text(json.dumps(index))
+        result = self.run_wrapper(FAKE_IMAGE_ENV='PATH=/usr/bin:/bin\nNODE_VERSION=22')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        environment = self.environment()
+        self.assertIn('PATH=/usr/bin:/bin:/toolchains/current/bin', environment)
+        self.assertIn('CURRENT_HOME=/toolchains/current', environment)
+        self.assertFalse(any('/toolchains/stale' in e for e in environment))
+        self.assertEqual(result.stderr.count('toolchain stale was verified on another base image'), 1)
+        self.assertIn('verify stale', result.stderr)
+
+    def test_restricted_sessions_declare_the_toolchain_mount(self):
+        values = self.restricted_fixture()
+        for mode in ('offline', 'provider'):
+            with self.subTest(mode=mode):
+                self.log.unlink(missing_ok=True)
+                Path(str(self.log) + '.control').unlink(missing_ok=True)
+                result = self.run_wrapper(**(values | {'CLAUDE_CONTAINER_NETWORK': mode}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                agent = next(c for c in self.calls() if c[0] == 'create'
+                             and not any(a.startswith('io.claude-container.egress=') for a in c))
+                volumes = [agent[i + 1] for i, a in enumerate(agent) if a == '--volume']
+                self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', volumes)
+                control = [json.loads(line) for line in Path(str(self.log) + '.control').read_text().splitlines()]
+                self.assertTrue(any(c[i:i + 2] == ['--mount-target', '/toolchains']
+                                    for c in control for i in range(len(c) - 1)), control)
 
     def restricted_fixture(self):
         # Argument/lifecycle instrumentation only. Real guard and protected-path
@@ -488,7 +594,8 @@ class WrapperTests(unittest.TestCase):
         shutil.copyfile(ROOT / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
         shutil.copyfile(ROOT / 'network/platform_check.py', install / 'network/platform_check.py')
         for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py',
-                     'network/revisions.py', 'agent/profile.json'):
+                     'network/revisions.py', 'agent/profile.json', 'setup/common.py', 'setup/toolchains.py',
+                     'Containerfile'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
         (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
@@ -496,6 +603,8 @@ class WrapperTests(unittest.TestCase):
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from revisions import TLS_ENFORCEMENT
 args=sys.argv[1:]
+import json,os
+with open(os.environ['FAKE_LOG']+'.control','a') as log: log.write(json.dumps(args)+'\\n')
 if args[0]=='snapshot':
  p=pathlib.Path(args[args.index('--session')+1]); (p/'transport').mkdir()
  (p/'config').mkdir(); (p/'logs').mkdir()
@@ -729,7 +838,15 @@ if args[0]=='snapshot':
                     self.assertFalse(self.calls())
                     self.assertFalse(self.state.exists())
         self.log.unlink(missing_ok=True)
+        # An exposed home contains the default toolchain library, which must
+        # never be writable through the workspace: the launch stops first.
         result = self.run_wrapper(cwd=home, CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('overlaps ' + str(home), result.stderr)
+        self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper(cwd=home, CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1',
+                                  CLAUDE_CONTAINER_TOOLCHAINS='0')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'WARNING: sensitive workspace explicitly exposed read/write: {home}', result.stderr)
         self.assertIn(f'{home}:{home}:rw', self.create())
@@ -1198,7 +1315,8 @@ if args[0]=='snapshot':
                 self.assertIn(f'{home}/.config/openspec:/claude-home/.config/openspec:rw', self.create())
                 self.assertNotIn(f'{self.state}:/claude-home:rw', self.create())
                 self.assertFalse((home / '.cache').exists())
-                self.assertFalse((home / '.local/share').exists())
+                # Only the toolchain library is created below ~/.local/share.
+                self.assertEqual([p.name for p in (home / '.local/share').iterdir()], ['sandbox-toolchains'])
 
     def test_state_conflict_fails_without_engine(self):
         result = self.run_wrapper(CLAUDE_CONFIG_DIR=str(self.base / 'custom'))

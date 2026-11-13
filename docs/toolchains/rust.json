@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "name": "rust",
+  "version": "1.100.0",
+  "source": {
+    "image": "localhost/sandbox-rust-musl@sha256:REPLACE_WITH_THE_LOCAL_DIGEST",
+    "path": "/usr/local/rustup/toolchains/1.100.0-x86_64-unknown-linux-gnu"
+  },
+  "path": [
+    "bin",
+    "lib/rustlib/x86_64-unknown-linux-gnu/bin"
+  ],
+  "env": {
+    "CARGO_HOME": {
+      "value": "/tmp/cargo"
+    },
+    "CARGO_BUILD_TARGET": {
+      "value": "x86_64-unknown-linux-musl"
+    },
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER": {
+      "value": "rust-lld"
+    }
+  },
+  "notes": [
+    "Builds target x86_64-unknown-linux-musl and link with rust-lld, because the runtime image has no C linker; crates with build scripts or procedural macros need a host C linker and fail.",
+    "Dependency downloads are blocked unless the network policy allows the repository; keep dependencies in the workspace or use an unrestricted session."
+  ],
+  "check": [
+    "cargo",
+    "--version"
+  ],
+  "default": true
+}

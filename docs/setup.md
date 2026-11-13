@@ -66,6 +66,12 @@ setup, or update and requalify a manual restricted installation: changing the
 wrapper invalidates its old qualification identity. Existing activation and
 last-working-release rollback remain unchanged.
 
+The toolchain library (`add-toolchain-library`) changes the wrapper and adds
+`setup/toolchains.py` to the installed and qualified code, so rerun
+`--container-setup` after upgrading. Setup does not manage toolchains: the
+operator adds them with `--container-toolchain`, and every session mounts the
+library read-only at `/toolchains` (see the README "Toolchains" section).
+
 The N23 transport update also requires matching protected code, runtime image
 and immutable proxy image: both images embed the multiplex implementation.
 Prepare them under explicit maintenance consent and rerun setup or manual

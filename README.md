@@ -494,7 +494,8 @@ alias claude=/absolute/path/to/claude-container.sh
 ```
 
 The wrapper handles `--container-build`, `--container-shell`,
-`--container-git-worktree`, and `--container-help`. Every other argument is
+`--container-git-worktree`, `--container-toolchain` (see [Toolchains](#toolchains))
+and `--container-help`. Every other argument is
 forwarded unchanged, so normal commands such as `claude --help` and
 `claude resume --last` retain their meaning.
 
@@ -834,6 +835,139 @@ through the [maintenance procedure](docs/validation.md#updating-pinned-image-inp
 The image includes the `nano` editor, and `EDITOR` and `VISUAL` are set to
 `nano`, so commands that open an editor, such as `/memory`, work inside the
 container. The host's `EDITOR` and `VISUAL` are not forwarded.
+
+## Toolchains
+
+Sessions can use extra toolchains, such as Java, Go or Python, without Podman
+access, an unrestricted network or a rebuilt image. The operator keeps a
+toolchain library on the host. Every session sees it read-only, with `nosuid`
+and `nodev`, at `/toolchains`. The library is shared by the Claude, Codex,
+OpenCode, Pi and Antigravity wrappers. A toolchain adds no network, IPC or
+privilege capability: it runs under the same restrictions as the rest of the
+session.
+
+- **Location:** `${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains`, or
+  `CLAUDE_CONTAINER_TOOLCHAINS_DIR`. The launcher creates it private (`0700`)
+  when it is missing. It must stay outside the workspace, the state
+  directories and the installation. A home directory exposed as the workspace
+  with `CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` contains the default
+  library, so that launch stops. Move the library with
+  `CLAUDE_CONTAINER_TOOLCHAINS_DIR`, or omit it.
+- **Disable:** `CLAUDE_CONTAINER_TOOLCHAINS=0` starts a session without the
+  mount.
+- **Live updates:** a toolchain added or removed on the host appears in
+  running sessions without a restart.
+
+### Managing the library
+
+The operator runs these commands on the host; `--container-toolchain` must be
+the first argument:
+
+```bash
+claude --container-toolchain add java21.json   # install or replace from a recipe
+claude --container-toolchain list              # name, version, default, size, verified base
+claude --container-toolchain remove java21
+claude --container-toolchain verify [java21]   # rerun the checks on the current runtime image
+```
+
+- **Sources:** a toolchain is a relocatable directory tree, taken either from
+  a path inside an OCI image referenced by `@sha256:` digest, or from a local
+  archive with its SHA-256. The command never downloads archives.
+- **Pulls:** pulling a missing image requires exact
+  `CLAUDE_CONTAINER_MAINTENANCE=1`. Like image builds, the pull happens on the
+  host, outside runtime filtering.
+- **Extraction:** it rejects absolute paths, `..`, device nodes and links
+  that leave the toolchain, and clears setuid and setgid bits.
+- **Atomic changes:** changes take a library lock and replace directories
+  atomically.
+- **Check:** before accepting a toolchain, `add` runs the recipe's `check`
+  command in the runtime image, without network and with the session's
+  identity and hardening. A toolchain that needs a newer C library than the
+  image's glibc fails here. The manifest records the base image from the
+  installed `Containerfile`. If that base changes, the toolchain stays visible
+  but loses its default environment until `verify` succeeds, and the launcher
+  prints one warning naming it.
+
+### Recipes
+
+A recipe is a JSON file that the operator keeps and reviews:
+
+| Key | Meaning |
+| --- | --- |
+| `schema`, `name`, `version` | `1`; `[a-z0-9][a-z0-9._-]*`; free version text |
+| `source` | `{"image": "<ref>@sha256:<digest>", "path": "/abs/path"}` or `{"archive": "/abs/file.tar.xz", "sha256": "<hex>", "strip_components": 1}` |
+| `path` | directories relative to the toolchain, added to `PATH` (default `["bin"]`) |
+| `env` | variables: `{"toolchain": "<relative path>"}` or `{"value": "<literal>"}` |
+| `requires` | other toolchains whose environment is loaded first |
+| `notes` | short instructions shown to the agent in `toolchains.md` |
+| `check` | command run in the runtime image before the toolchain is accepted |
+| `default` | `true` adds the toolchain to new sessions' environment |
+
+- **Protected variables:** recipes cannot set `PATH`, `HOME`, loader, proxy,
+  CA, wrapper or credential variables.
+- **Default toolchains:** in new sessions, their `PATH` entries come **after**
+  the image's. They never replace the runtime's own `node` or `python3`, which
+  Claude Code and the image tools use.
+- **Conflicts:** two default toolchains cannot share a command or a variable.
+  Install a second version with `"default": false` and use it through its
+  `env.sh`.
+- **Writable locations:** `/claude-home` is read-only in shared-state mode, and
+  `/tmp` is writable but `noexec`. Point caches to `/tmp` with literal values,
+  and use `notes` to tell the agent when a tool must run files from a
+  workspace directory.
+- **Dependency downloads** (Maven, npm, pip, Cargo, Go modules) need network
+  access that provider and offline modes do not grant. Provide dependencies in
+  the workspace, or use an unrestricted session.
+
+The examples below were verified with the versions, digests and checksums
+shown. See [the validation record](docs/validation.md#toolchain-library-2026-11-13).
+
+The recipes are in [`docs/toolchains/`](docs/toolchains/), and download
+sources are listed in `docs/toolchains/sources.json`:
+
+| Recipe | Version | Source | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `java21.json` | Temurin 21.0.13 | image `eclipse-temurin@sha256:0a3f3298…`, `/opt/java/openjdk` | yes | `JAVA_HOME` |
+| `maven3.9.json` | 3.9.16 | image `maven@sha256:99e61abc…`, `/usr/share/maven` | yes | requires `java21`; local repository in `/tmp/m2`; harmless jansi warning |
+| `go.json` | 1.27.4 | image `golang@sha256:4fa7c968…`, `/usr/local/go` | yes | `GOTOOLCHAIN=local`; caches in `/tmp`; `go test` needs `GOTMPDIR` in the workspace |
+| `node24.json` | 24.22.3 | archive `node-v24.22.3-linux-x64.tar.xz` | no | the image's Node.js 22 stays first |
+| `python3.13.json` | 3.13.18 | archive python-build-standalone `20261110` `install_only` | no | the image's `python3` stays first; virtual environments in the workspace |
+| `rust.json` | 1.100.0 | image built from `rust-musl.Containerfile` | yes | target `x86_64-unknown-linux-musl` linked by `rust-lld`; crates with build scripts or procedural macros fail |
+
+Notes on using the recipes:
+- **Archive recipes:** download the file, check it against the recipe's
+  SHA-256, and set `archive` to its absolute path.
+- **Rust:** the runtime image has no C linker, so the recipe uses the musl
+  target, whose startup files ship with Rust, and links with `rust-lld`. Build
+  the image, then put its local digest in the recipe:
+
+  ```bash
+  podman build --tag localhost/sandbox-rust-musl:local \
+      --file docs/toolchains/rust-musl.Containerfile docs/toolchains
+  podman image inspect --format '{{.Digest}}' localhost/sandbox-rust-musl:local
+  ```
+
+`SANDBOX_TOOLCHAIN_EXAMPLES=1 bash tests/run-runtime.sh --network -k
+documented_toolchain` downloads, pulls and builds all six, then checks them in
+an offline session.
+
+### Telling the agent
+
+The wrapper never edits memory files or installs skills. The library contains
+a generated `/toolchains/toolchains.md` with the usage rules and every
+installed toolchain, plus a machine-readable `/toolchains/index.json`. Add one
+line to the project's or your global `CLAUDE.md`:
+
+```markdown
+Read /toolchains/toolchains.md before using or looking for build tools.
+```
+
+The agent then runs a toolchain in one command with
+`. /toolchains/<name>/env.sh && <command>`. This form also works for
+toolchains added after the session started.
+
+SELinux and AppArmor enforcement were not tested with the library mount. On
+hosts that enforce them, profile the tools you add.
 
 ## Shared sandbox components and the agent profile
 
