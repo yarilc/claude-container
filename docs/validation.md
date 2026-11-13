@@ -2237,7 +2237,8 @@ Sessions mount an operator-managed host library read-only, with `nosuid` and
 | `bash tests/run-runtime.sh --network` (full suite; its synthetic installation now includes `setup/toolchains.py`, `setup/common.py` and `Containerfile`) | Passed: 22 tests, 1 skipped (the opt-in documented examples) |
 | `bash tests/run-runtime.sh --network -k toolchain` | Passed: a toolchain added on the host while an offline session was running became usable in that session, with no direct network |
 | `SANDBOX_TOOLCHAIN_EXAMPLES=1 bash tests/run-runtime.sh --network -k documented_toolchain` | Passed: all six recipes in `docs/toolchains/` added, then used in one offline session (see below) |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, and a provider session that sees a toolchain added after it started | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed on all three hosts (operator, 2026-11-13) |
+| Operator toolchain check on this host: a toolchain added with `--container-toolchain add` and used by the agent session | Passed (operator, 2026-11-13) |
 
 Documented examples, verified 2026-11-13 in an offline session:
 
