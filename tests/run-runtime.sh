@@ -44,6 +44,8 @@ elif [[ "${1:-}" == --guard || "${1:-}" == --guard-idle ]]; then
     fi
     shift
 fi
+# Wrapper fixtures need private, executable temporary storage: the image's
+# /tmp is world-writable, and the toolchain library refuses such ancestors.
 volume=''
 cleanup() {
     [[ -z "$volume" ]] || podman volume rm --force "$volume" >/dev/null
@@ -55,6 +57,8 @@ podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --volume "$project_root:$project_root:rw" \
     --volume "$native_state:$native_state:rw" \
     --volume "$socket:/run/podman/podman.sock:rw" \
+    --mount type=tmpfs,destination=/sandbox-test-tmp,tmpfs-mode=0700,U=true,tmpfs-size=1g \
+    --env SANDBOX_TEST_TMPDIR=/sandbox-test-tmp \
     --workdir "$project_root" \
     --env CONTAINER_HOST=unix:///run/podman/podman.sock \
     --env SANDBOX_RUNTIME_TESTS=1 \

@@ -2255,3 +2255,56 @@ The defaults `java`, `mvn`, `go` and `cargo` also ran by name in that session.
 SELinux and AppArmor enforcement were not tested; the README says so.
 Qualification digests the launcher and `setup/toolchains.py`, so every
 restricted installation reruns `--container-setup`.
+
+## Qualification fixture and test runner (`sandbox-ref-14`): 2026-11-13
+
+Change `fix-qualification-fixture-setup`. Two test defects present since
+`sandbox-ref-13`, found while Codex adopted that tag. Production code is
+unchanged.
+
+- **The shared qualification runtime fixture lacked `setup/`.**
+  - Since `sandbox-ref-13`, `SHARED_CODE` includes `setup/toolchains.py`.
+    The `QualificationRuntime` installation in `tests/test_qualification.py`
+    did not copy it, so six real-engine tests failed with
+    `No such file or directory: …/installed/setup`. The same failure appeared
+    here and in Codex.
+  - The fixture now copies `FIXTURE_SETUP_FILES` (`setup/common.py`,
+    `setup/toolchains.py`). A unit test checks that the tuple covers every
+    `setup/` entry of `SHARED_CODE`.
+- **`bash tests/run-runtime.sh --wrapper` failed** with 190 failures, also on
+  `main`.
+  - The runner set no `SANDBOX_TEST_TMPDIR`, so wrapper fixtures were created
+    under the image's world-writable `/tmp`, which the toolchain library
+    refuses as an ancestor.
+  - The runner now mounts a private executable tmpfs at `/sandbox-test-tmp`
+    (`0700`, `U=true`, 1 GiB) and sets `SANDBOX_TEST_TMPDIR` to it in every
+    mode. This file is not shared.
+- **Procedure.** The `sandbox-ref-13` record lists neither `--qualification`
+  nor `--wrapper`, and that tag left the parity cells on `sandbox-ref-12`.
+  `docs/propagation.md` step 1 now requires every mode that
+  `tools/propagate.py` prints for the changed shared files, plus
+  `--qualification` for any change to a file in `SHARED_CODE`.
+
+| Check | Result |
+| --- | --- |
+| New fixture unit check with an empty tuple | Failed as intended |
+| `python3 -m unittest tests.test_qualification tests.test_alignment` (private tmpfs) | Passed |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 381 tests, 71 skipped |
+| `bash tests/run-runtime.sh --wrapper` on `main` before the runner fix | Failed: 190 failures, toolchain library under the world-writable `/tmp` |
+
+Runner modes after both fixes, with image `localhost/claude-code:setup-11645a29…`:
+
+| Mode | Result |
+| --- | --- |
+| `--wrapper` | Passed: 81 tests |
+| `--setup` | Passed: 71 tests |
+| `--setup-runtime` | Passed: 2 tests |
+| `--qualification` | Passed: 28 tests, including the six that had failed |
+| `--guard` | Passed: 20 tests, 1 skipped |
+| `--network` | Passed: 22 tests, 1 skipped (the opt-in documented toolchain examples) |
+| default (`tests/test_runtime.py`) | Passed: 19 tests |
+| `--shared` | Not offered by this runner; the unit discovery covers the shared suites |
+
+No qualification input changed, because test files are not digested.
+Installations qualified on `sandbox-ref-13` stay valid; no rerun of
+`--container-setup` is needed for this tag.
