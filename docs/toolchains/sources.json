@@ -1,0 +1,5 @@
+{
+  "node24": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz",
+  "python3.13": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.13.18%2B20261110-x86_64-unknown-linux-gnu-install_only.tar.gz",
+  "rust": "rust-musl.Containerfile"
+}
