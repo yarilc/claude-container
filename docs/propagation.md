@@ -16,14 +16,26 @@ A change needs a new tag when it modifies, adds or removes a file under
 `network/` or `setup/`, or a test listed in `SHARED_TESTS`. Changes to the
 wrapper, the agent profile, documentation, `tools/` or per-agent tests do not.
 
-Before tagging, run this repository's suites that cover the change:
+Before tagging, run in this repository at least every runner mode that
+`tools/propagate.py` will print for the wrappers (`checklist()`), for the
+shared files changed since the previous tag:
 
-- `--setup` and `--qualification` for setup or qualification code;
-- `--network` and `--guard` for proxy, relay, multiplex or guard code;
-- the unit tests `tests/test_agent_profile.py` and `tests/test_alignment.py`.
+| Changed shared files | Modes |
+| --- | --- |
+| any | `--shared` (here: the unit discovery), plus `tests/test_agent_profile.py` and `tests/test_alignment.py` |
+| `setup/`, `tests/test_setup.py` | `--setup`, `--setup-runtime` |
+| `network/qualif*`, `network/platform_check.py`, `network/release_acceptance.json`, `tests/test_qualification.py`, `tests/test_platform.py` | `--qualification` |
+| guard, proxy, relay, multiplex, session, control, TLS or policy code and their tests | `--guard`, `--network` |
+| `network/agent_profile.py` | `--wrapper` |
 
-Record the results in `docs/validation.md` under a section that names the new
-tag. Merge into `main`, then create an annotated tag on the merge commit:
+Also run `--qualification` whenever a changed file is listed in
+`SHARED_CODE` (`network/qualification_records.py`), such as a new setup
+module. Qualification digests those files, and the shared runtime fixtures
+must install them.
+
+Record every mode and its result in `docs/validation.md`, under a section that
+names the new tag. A mode that cannot run is recorded as unavailable. Do not
+tag while a listed mode fails. Merge into `main`, then create an annotated tag on the merge commit:
 
 ```bash
 git tag -a sandbox-ref-N -m "Reference sandbox: <one-line summary>"
