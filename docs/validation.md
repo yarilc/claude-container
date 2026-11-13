@@ -2337,3 +2337,23 @@ both in `add` and in `launch-env`.
 
 Images: `localhost/claude-code:setup-11645a29…`. `setup/toolchains.py` is
 qualified code, so restricted installations rerun `--container-setup`.
+
+## Agent-neutral toolchain comment (`sandbox-ref-16`): 2026-11-13
+
+Change `neutral-toolchain-comment`. The `sandbox-ref-15` comment in the shared
+`setup/toolchains.py` named an agent ("OpenCode"). In OpenCode, whose profile
+lists the identifier `opencode`, the agent-identifier scans of
+`tests/test_alignment.py` and `tests/test_reference_copy.py` failed on it.
+The comment is now neutral. No code changed.
+
+| Check | Result |
+| --- | --- |
+| `git grep -i` of `network/`, `setup/` and the shared tests (without `network/bin`) for the identifiers of all five profiles | No match |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 382 tests, 71 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+The digest of `setup/toolchains.py` changes, so restricted installations
+rerun `--container-setup`.
