@@ -2312,3 +2312,28 @@ Installations qualified on `sandbox-ref-13` stay valid; no rerun of
 Operator follow-up (2026-11-13): `main` and `sandbox-ref-14` pushed; the
 operator reports that the tests passed in all environments (this host, the
 Rocky Linux 9 lab host and the newer WSL host).
+
+## XDG variables protected from toolchains (`sandbox-ref-15`): 2026-11-13
+
+Change `protect-xdg-toolchain-variables`, shared code (`setup/toolchains.py`).
+Found while planning the OpenCode adoption. OpenCode places its state with
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME`, and
+Podman keeps the last `--env` for a name (checked on this host). A default
+toolchain with an XDG variable would therefore have moved OpenCode's state in
+new sessions. Every `XDG_` variable is now protected, like the wrapper prefix,
+both in `add` and in `launch-env`.
+
+| Check | Result |
+| --- | --- |
+| New `xdg variable` recipe case and `launch_env` index case with the previous module | Failed as intended |
+| `python3 -m unittest tests.test_toolchains tests.test_alignment` (private tmpfs) | Passed |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 382 tests, 71 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 81 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+Images: `localhost/claude-code:setup-11645a29…`. `setup/toolchains.py` is
+qualified code, so restricted installations rerun `--container-setup`.

@@ -904,7 +904,8 @@ A recipe is a JSON file that the operator keeps and reviews:
 | `default` | `true` adds the toolchain to new sessions' environment |
 
 - **Protected variables:** recipes cannot set `PATH`, `HOME`, loader, proxy,
-  CA, wrapper or credential variables.
+  CA, wrapper or credential variables, or any `XDG_` variable (a wrapper may
+  place its state with them).
 - **Default toolchains:** in new sessions, their `PATH` entries come **after**
   the image's. They never replace the runtime's own `node` or `python3`, which
   Claude Code and the image tools use.
