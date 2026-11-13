@@ -29,7 +29,7 @@
   cells in `docs/network-contract.md` to `sandbox-ref-15`. Verify that
   `git diff --check` is clean and
   `openspec validate protect-xdg-toolchain-variables --strict` passes.
-- [ ] 3.4 Commit with the co-author trailer, merge into `main` with `--no-ff`,
+- [x] 3.4 Commit with the co-author trailer, merge into `main` with `--no-ff`,
   and create the annotated tag `sandbox-ref-15`. Verify that
   `git cat-file -t sandbox-ref-15` prints `tag`, and that a dry run of
   `tools/propagate.py ../opencode-container sandbox-ref-12 sandbox-ref-15`

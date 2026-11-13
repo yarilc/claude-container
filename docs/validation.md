@@ -2333,7 +2333,7 @@ both in `add` and in `launch-env`.
 | `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
 | `bash tests/run-runtime.sh --wrapper` | Passed: 81 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-13); `main` and `sandbox-ref-15` pushed |
 
 Images: `localhost/claude-code:setup-11645a29…`. `setup/toolchains.py` is
 qualified code, so restricted installations rerun `--container-setup`.
