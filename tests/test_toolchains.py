@@ -179,6 +179,7 @@ class ToolchainTests(unittest.TestCase):
             'prefix variable': ({'env': {PROFILE.env('IMAGE'): {'value': 'x'}}}, 'protected'),
             'loader variable': ({'env': {'LD_PRELOAD': {'value': '/tmp/x.so'}}}, 'protected'),
             'proxy variable': ({'env': {'https_proxy': {'value': 'http://x'}}}, 'protected'),
+            'xdg variable': ({'env': {'XDG_DATA_HOME': {'value': '/tmp/data'}}}, 'protected'),
             'bad env form': ({'env': {'TOOL_HOME': ''}}, 'env'),
             'empty check': ({'check': []}, 'check'),
             'default not boolean': ({'default': 'yes'}, 'default'),
@@ -391,6 +392,18 @@ class ToolchainTests(unittest.TestCase):
         self.assertEqual(lines, [])
         self.assertEqual(len(warnings), 2)
         self.assertTrue(all('verify' in warning for warning in warnings))
+
+    def test_launch_env_rejects_xdg_variables_in_the_index(self):
+        # A wrapper may place its state with XDG variables; Podman keeps the last
+        # --env, so a toolchain value would silently move that state.
+        self.add(name='java', env={'JAVA_HOME': {'toolchain': ''}}, archive_bytes=tool_archive(command='java'),
+                 check=['java'])
+        index = json.loads((self.library / 'index.json').read_text())
+        index['toolchains'][0]['env']['XDG_CONFIG_HOME'] = '/tmp/elsewhere'
+        (self.library / 'index.json').write_text(json.dumps(index))
+        with self.assertRaises(common.SetupError) as raised:
+            toolchains.launch_env(self.library, BASE)
+        self.assertIn('XDG_CONFIG_HOME', str(raised.exception))
 
     def test_launch_env_command_output(self):
         self.add()

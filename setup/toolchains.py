@@ -44,7 +44,8 @@ PROTECTED = {name.lower() for name in (
     'PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
     'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS',
     PROFILE.config_dir_env, PROFILE.approval_bypass_env, *PROFILE.credential_envs)}
-PROTECTED_PREFIXES = ('ld_', PROFILE.env_prefix.lower() + '_', 'sandbox_')
+# XDG base-directory variables can place a wrapper's state (OpenCode sets them).
+PROTECTED_PREFIXES = ('ld_', 'xdg_', PROFILE.env_prefix.lower() + '_', 'sandbox_')
 CHECK_TIMEOUT = 300
 PREFIX = PROFILE.message_prefix
 
