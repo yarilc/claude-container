@@ -2357,3 +2357,46 @@ The comment is now neutral. No code changed.
 
 The digest of `setup/toolchains.py` changes, so restricted installations
 rerun `--container-setup`.
+
+## Toolchain variables shared across wrappers (`sandbox-ref-17`): 2026-11-14
+
+Change `share-toolchain-env-across-profiles`. Porting the toolchain library to
+Antigravity found two defects of the shared `setup/toolchains.py`:
+
+- Antigravity removes `DBUS_SESSION_BUS_ADDRESS` with `--unsetenv`. On this
+  host's engine (Podman server 4.9.3, client 4.3.1), `--unsetenv` does not
+  remove a value given with `--env`:
+  `podman run --env DBUS_SESSION_BUS_ADDRESS=x --unsetenv DBUS_SESSION_BUS_ADDRESS …`
+  prints `x`. A default toolchain that set the variable would reach the
+  session. For a name repeated with `--env`, the last value wins.
+- The protected set included the current wrapper's profile variables. A
+  recipe accepted by one wrapper (for example one setting `GEMINI_API_KEY`
+  through Claude) made another wrapper's `launch-env` fail, so that wrapper
+  started no session with the shared library.
+
+Changes:
+
+- `DBUS_SESSION_BUS_ADDRESS` joins the neutral protected set.
+- The protected names form two groups:
+  - **neutral:** the same in every wrapper. `add` rejects them and
+    `launch-env` fails on them, as before;
+  - **profile:** the wrapper's prefix, configuration, approval and
+    credential variables. `add` still rejects them, while `launch-env`
+    leaves them out of the session and prints one warning per toolchain and
+    variable.
+- The README "Protected variables" bullet describes both groups.
+
+| Check | Result |
+| --- | --- |
+| New `tests/test_toolchains.py` cases with the `sandbox-ref-16` module | Failed as intended (bus variable rejected in `add`; bus variable in the index; profile variables from the shared index) |
+| `python3 -m unittest tests.test_toolchains tests.test_alignment tests.test_agent_profile` (private tmpfs) | Passed: 45 tests |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs; the `--shared` mode of the wrappers) | Passed: 384 tests, 71 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 71 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 81 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+
+The digest of `setup/toolchains.py` changes, so restricted installations
+rerun `--container-setup`.
