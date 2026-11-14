@@ -2396,7 +2396,7 @@ Changes:
 | `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
 | `bash tests/run-runtime.sh --wrapper` | Passed: 81 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-14); `main` and `sandbox-ref-17` pushed |
 
 The digest of `setup/toolchains.py` changes, so restricted installations
 rerun `--container-setup`.

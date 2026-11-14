@@ -4,12 +4,7 @@
 
 ### Requirement: Session variables are protected from toolchains
 
-A toolchain SHALL NOT set a variable that the session or a wrapper owns. The protected variables SHALL form two groups:
-
-- **neutral:** the same for every wrapper. They include session identity, shell startup, runtime, proxy and CA variables, every variable whose name starts with `LD_`, `XDG_` or `SANDBOX_`, and `DBUS_SESSION_BUS_ADDRESS`;
-- **profile:** those of the wrapper that runs the command, namely its prefix, configuration, approval-bypass and credential variables.
-
-`add` SHALL reject a recipe that sets a variable of either group. `launch-env` SHALL fail instead of emitting a neutral variable from the index. For a profile variable, `launch-env` SHALL leave it out of the session environment, keep the other variables and the library, and print one warning naming the toolchain and the variable.
+A toolchain SHALL NOT set a variable that the session or a wrapper owns. Profile variables are the running wrapper's prefix, configuration, approval-bypass and credential variables; every other protected variable is neutral and the same in every wrapper. `add` SHALL reject both. `launch-env` SHALL fail on a neutral variable in the index, and SHALL leave a profile variable out of the session with one warning naming the toolchain and the variable.
 
 #### Scenario: Other session variables stay protected
 
