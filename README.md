@@ -903,9 +903,15 @@ A recipe is a JSON file that the operator keeps and reviews:
 | `check` | command run in the runtime image before the toolchain is accepted |
 | `default` | `true` adds the toolchain to new sessions' environment |
 
-- **Protected variables:** recipes cannot set `PATH`, `HOME`, loader, proxy,
-  CA, wrapper or credential variables, or any `XDG_` variable (a wrapper may
-  place its state with them).
+- **Protected variables:** recipes cannot set `PATH`, `HOME`, loader, proxy
+  or CA variables, any `XDG_` variable (a wrapper may place its state with
+  them) or `DBUS_SESSION_BUS_ADDRESS` (no session has a bus). These rules are
+  the same in every wrapper. Each wrapper also protects its own variables:
+  its prefix, configuration, approval and credential variables, such as
+  `CLAUDE_CONTAINER_*`, `CLAUDE_CONFIG_DIR` and `ANTHROPIC_API_KEY` here.
+  `add` rejects them. If another wrapper installed a toolchain that sets one,
+  this wrapper leaves that variable out of its sessions and prints a warning
+  naming the toolchain; the rest of the toolchain stays available.
 - **Default toolchains:** in new sessions, their `PATH` entries come **after**
   the image's. They never replace the runtime's own `node` or `python3`, which
   Claude Code and the image tools use.
