@@ -2447,7 +2447,7 @@ Change `harden-shared-session-boundaries`, from the cross-wrapper review of
 | `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
 | `bash tests/run-runtime.sh --wrapper` | Passed: 83 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-15); `main` and `sandbox-ref-18` pushed |
 
 Runtime image: setup image `0fb0d09b935d`, tagged
 `localhost/claude-code:latest` only for the runs and untagged by name
