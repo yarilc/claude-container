@@ -58,7 +58,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     && echo 'unset historylog' >> /etc/nanorc \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.npm \
-    && mkdir -p /claude-home \
+    && mkdir -p /claude-home /workspace \
     && chmod 1777 /claude-home
 
 WORKDIR /workspace

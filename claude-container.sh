@@ -46,6 +46,7 @@ Environment:
   CLAUDE_CONTAINER_IMAGE  image name (default: localhost/claude-code:latest)
   CLAUDE_CONFIG_DIR       Claude configuration directory (default: ~/.claude)
   CLAUDE_CONTAINER_STATE_DIR optional isolated home; unset keeps shared configuration
+                         (must not be, contain or lie inside the workspace)
   CLAUDE_CONTAINER_PODMAN_SOCKET optional absolute delegation socket override
   CLAUDE_YOLO             enable --dangerously-skip-permissions (default: disabled)
   CLAUDE_CONTAINER_PODMAN enable host Podman API access only with exact value 1
@@ -287,6 +288,13 @@ fi
 command -v podman >/dev/null || die 'Podman is required on the host'
 command -v timeout >/dev/null && [[ $(timeout --version 2>/dev/null) == *'GNU coreutils'* ]] \
     || die 'GNU timeout is required on the host; install GNU coreutils'
+# Isolated credentials and history must never land in, or contain, the workspace.
+# Compare physical paths; readlink -m also resolves a directory not created yet.
+if [[ -n "${CLAUDE_CONTAINER_STATE_DIR:-}" ]]; then
+    state_physical=$(readlink -m -- "$CLAUDE_CONTAINER_STATE_DIR")
+    [[ "$state_physical/" != "$workspace_mount/"* && "$workspace_mount/" != "$state_physical/"* ]] \
+        || die "CLAUDE_CONTAINER_STATE_DIR must not overlap the workspace: $CLAUDE_CONTAINER_STATE_DIR"
+fi
 script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
 script_dir=$(dirname -- "$script_path")
 # Unix service access also supports running this wrapper inside another container
@@ -923,12 +931,12 @@ if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null;
     python3 -I "$script_dir/setup/diagnostics.py" <"$session_dir/diagnostics.pipe" >&2 &
     diagnostics_pid=$!
     exec {diagnostics_fd}>"$session_dir/diagnostics.pipe"
-    podman start --attach --interactive "$container_id" <&0 2>&"$diagnostics_fd" {diagnostics_fd}>&- &
+    podman start --attach --interactive --sig-proxy=false "$container_id" <&0 2>&"$diagnostics_fd" {diagnostics_fd}>&- &
     client_pid=$!
     exec {diagnostics_fd}>&-
     diagnostics_fd=''
 else
-    podman start --attach --interactive "$container_id" <&0 &
+    podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
     client_pid=$!
 fi
 status=0

@@ -2400,3 +2400,57 @@ Changes:
 
 The digest of `setup/toolchains.py` changes, so restricted installations
 rerun `--container-setup`.
+
+## Shared session boundaries (`sandbox-ref-18`): 2026-11-15
+
+Change `harden-shared-session-boundaries`, from the cross-wrapper review of
+2026-11-14:
+
+- **Agent variables (H1, shared part):** `agent/profile.json` gains the
+  optional `native.protected_env`, a list of variables and `_`-terminated
+  prefixes that the agent itself reads. The profile loader validates it
+  (format, prefixes of at least three characters, no duplicates, no neutral
+  names). `setup/toolchains.py` treats them as profile variables: `add`
+  rejects them, and `launch-env` leaves them out with one warning naming the
+  toolchain. The neutral names moved into `network/agent_profile.py`
+  (`NEUTRAL_ENV`, `NEUTRAL_ENV_PREFIXES`), unchanged. Claude declares
+  `CLAUDE_CODE_`, `ANTHROPIC_`, `DISABLE_TELEMETRY`, `DISABLE_AUTOUPDATER`,
+  `DISABLE_ERROR_REPORTING` and `ENABLE_CLAUDEAI_MCP_SERVERS`. Before this
+  change a toolchain could set `ANTHROPIC_BASE_URL`, which Claude does not
+  override in any mode.
+- **Working directory (M4):** `toolchains.check()` runs with `--workdir /`,
+  like qualification since `sandbox-ref-12`. The Claude `Containerfile`
+  creates `/workspace` in the package step, and `tests/test_image_pins.py`
+  gained `workdir_violations` from Codex.
+- **State and workspace (M3):** the shared `writable_mounts()` refuses an
+  isolated state directory that is, contains or lies inside the workspace
+  (the parent in worktree mode), so managed launches refuse it in every
+  wrapper with this tag. The Claude launcher refuses it on direct launches,
+  after the tool prerequisites and before any engine call.
+- **Signals (M2, Claude part):** `podman start --attach` uses
+  `--sig-proxy=false`, like the other four wrappers; the wrapper's shutdown
+  alone forwards INT, TERM and HUP.
+- **Alignment tests (L2):** the mismatch test now runs the real check. The
+  check reads the launcher's code and its help text separately: every profile
+  variable must appear in the code (except `TOOLCHAINS_DIR`, read by shared
+  code), and every prefix-derived variable in the help text (except
+  `QUALIFICATION_INPUT`, set by setup). Ignoring the help text entirely, as
+  the review proposed, failed in all five wrappers on `TOOLCHAINS_DIR`. The
+  new test passes on copies of the four adopters.
+
+| Check | Result |
+| --- | --- |
+| New tests with the old code | Failed as intended: Claude toolchain variables reached the session, `WORKDIR /workspace` not created, state overlap accepted, mismatch test vacuous |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs; the `--shared` mode of the wrappers) | Passed: 391 tests, 72 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 72 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 83 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending |
+
+Runtime image: setup image `0fb0d09b935d`, tagged
+`localhost/claude-code:latest` only for the runs and untagged by name
+afterwards. `setup/common.py`, `setup/toolchains.py` and
+`network/agent_profile.py` change, and so does the `Containerfile`, so
+restricted installations rerun `--container-setup`, which rebuilds the image.
