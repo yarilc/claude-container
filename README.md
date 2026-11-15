@@ -680,6 +680,10 @@ selected directory. A simultaneous nonempty `CLAUDE_CONFIG_DIR` is rejected;
 unset it to select isolation. Unset/empty `CLAUDE_CONTAINER_STATE_DIR` keeps the
 shared default. A directory alias is resolved to its physical absolute path.
 Existing isolated configuration symlinks escaping the selected home are rejected.
+The isolated home must not be the workspace, contain it or lie inside it (the
+parent directory in worktree mode), so credentials and history never land in a
+repository; the wrapper and the managed launcher refuse an overlap before any
+engine operation.
 
 New credential directories are created with user-only permissions. The shared
 Claude directory, or isolated home and its `.claude` directory, must belong to
@@ -908,8 +912,12 @@ A recipe is a JSON file that the operator keeps and reviews:
   them) or `DBUS_SESSION_BUS_ADDRESS` (no session has a bus). These rules are
   the same in every wrapper. Each wrapper also protects its own variables:
   its prefix, configuration, approval and credential variables, such as
-  `CLAUDE_CONTAINER_*`, `CLAUDE_CONFIG_DIR` and `ANTHROPIC_API_KEY` here.
-  `add` rejects them. If another wrapper installed a toolchain that sets one,
+  `CLAUDE_CONTAINER_*`, `CLAUDE_CONFIG_DIR` and `ANTHROPIC_API_KEY` here,
+  and the agent's own variables that its profile lists in
+  `native.protected_env`. For Claude these are every `CLAUDE_CODE_` and
+  `ANTHROPIC_` variable (for example `ANTHROPIC_BASE_URL`),
+  `DISABLE_TELEMETRY`, `DISABLE_AUTOUPDATER`, `DISABLE_ERROR_REPORTING` and
+  `ENABLE_CLAUDEAI_MCP_SERVERS`. `add` rejects them. If another wrapper installed a toolchain that sets one,
   this wrapper leaves that variable out of its sessions and prints a warning
   naming the toolchain; the rest of the toolchain stays available.
 - **Default toolchains:** in new sessions, their `PATH` entries come **after**

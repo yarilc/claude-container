@@ -20,7 +20,9 @@
     "config_dir_env": "CLAUDE_CONFIG_DIR",
     "approval_bypass_env": "CLAUDE_YOLO",
     "config_home": ".claude",
-    "shared_dirs": [".config/openspec"]
+    "shared_dirs": [".config/openspec"],
+    "protected_env": ["CLAUDE_CODE_", "ANTHROPIC_", "DISABLE_TELEMETRY", "DISABLE_AUTOUPDATER",
+                      "DISABLE_ERROR_REPORTING", "ENABLE_CLAUDEAI_MCP_SERVERS"]
   },
   "auth": {
     "account": {

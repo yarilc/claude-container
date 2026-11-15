@@ -97,6 +97,20 @@ def transport_violations(recipe):
     return found
 
 
+def workdir_violations(recipe):
+    """WORKDIR must name a directory created by an earlier build step, never by the engine at start."""
+    text = recipe.replace('\\\n', ' ')
+    found = []
+    for match in re.finditer(r'(?m)^WORKDIR\s+(\S+)\s*$', text):
+        path = match[1]
+        before = text[:match.start()]
+        created = any(re.search(r'\bmkdir\s+(?:-\S+\s+)*(?:\S+\s+)*' + re.escape(path) + r'(?=\s|$)', step)
+                      for step in re.findall(r'(?m)^RUN\b.*$', before))
+        if not created:
+            found.append('WORKDIR is not created by a build step: ' + path)
+    return found
+
+
 class ImagePinTests(unittest.TestCase):
     def setUp(self):
         self.recipe = (ROOT / 'Containerfile').read_text()
@@ -126,6 +140,14 @@ class ImagePinTests(unittest.TestCase):
         message = violations(cases['diverging cli'], self.tested_cli)
         self.assertTrue(any('2.1.317' in item and '2.1.316' in item for item in message), message)
 
+
+    def test_workdir_exists_in_the_image(self):
+        self.assertEqual(workdir_violations(self.recipe), [])
+        self.assertIn('WORKDIR /workspace', self.recipe)
+        mutated = self.recipe.replace('mkdir -p /claude-home /workspace', 'mkdir -p /claude-home')
+        self.assertNotEqual(mutated, self.recipe)
+        self.assertEqual(workdir_violations(mutated), ['WORKDIR is not created by a build step: /workspace'])
+        self.assertTrue(workdir_violations('FROM x@sha256:' + 'a' * 64 + '\nRUN mkdir -p /other\nWORKDIR /workspace\n'))
 
     def test_package_sources_use_verified_https(self):
         self.assertEqual(transport_violations(self.recipe), [])
