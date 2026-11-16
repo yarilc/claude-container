@@ -2495,6 +2495,6 @@ Runtime image: setup image `localhost/claude-code:setup-47ea882abff04628a1c80c11
 | `bash tests/run-runtime.sh --wrapper` | Passed: 83 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
 | `git diff --check`, `bash -n claude-container.sh` | Passed |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host (host CA trust there), then a Claude session | Passed (operator-reported, 2026-11-16); `main` pushed |
 
 Shared setup code changed, so installations rerun `--container-setup`.
