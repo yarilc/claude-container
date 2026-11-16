@@ -2454,3 +2454,47 @@ Runtime image: setup image `0fb0d09b935d`, tagged
 afterwards. `setup/common.py`, `setup/toolchains.py` and
 `network/agent_profile.py` change, and so does the `Containerfile`, so
 restricted installations rerun `--container-setup`, which rebuilds the image.
+
+## Adoption of `sandbox-ref-20`: 2026-11-16
+
+`sandbox-container` is now the reference; this repository becomes an adopting
+wrapper. Change `adopt-sandbox-ref-20`:
+
+- `tests/test_reference_copy.py` copied byte for byte from Codex, pinned to
+  `sandbox-ref-18` (`958465b`); it passed unchanged, so no fork existed.
+- Copied from `sandbox-container` tag `sandbox-ref-20` (commit `d4fd4ca`) with
+  `tools/propagate.py`: `network/README.md`, `network/agent_profile.py`,
+  `network/policy.py`, `network/qualification_records.py`, `network/qualify.py`,
+  `network/session.py`, `setup/common.py`, `setup/setup.py`,
+  `setup/toolchains.py`, `tests/sandbox_profile.py`,
+  `tests/test_agent_profile.py`, `tests/test_alignment.py`, `tests/test_guard.py`,
+  `tests/test_qualification.py`, `tests/test_session.py`, `tests/test_setup.py`,
+  and the fixture profiles in `tests/fixtures/`. The manifest moved to the tag
+  and now names `sandbox-container` as its sibling.
+- Per-agent: the eight setup tests that launch this wrapper moved to
+  `tests/test_setup_wrapper.py` with Claude's semantics; `test_wrapper.py`
+  loads the checkout profile by path; the lifetime notice measures with
+  `EPOCHREALTIME` (the new boundary test failed with the old launcher).
+- Removed the reference-only `tools/propagate.py`, `tests/test_propagate.py`
+  and `docs/propagation.md`; the parity table was fixed by hand (sibling rows
+  stay on `sandbox-ref-18` until they adopt).
+
+Runtime image: setup image `localhost/claude-code:setup-47ea882abff04628a1c80c11e97459a9`
+(`3d7006b29065`); WSL2 6.6.87.2, Podman 4.9.3.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 408 tests, 71 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 66 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped (idle check) |
+| `bash tests/run-runtime.sh --network` | Passed: 22 tests, 1 skipped (documented toolchain downloads) |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 15 tests |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed: 1 test |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 83 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
+| `git diff --check`, `bash -n claude-container.sh` | Passed |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+Shared setup code changed, so installations rerun `--container-setup`.
