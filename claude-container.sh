@@ -872,6 +872,20 @@ if [[ "$network_mode" != unrestricted ]]; then
         [[ -z "${ANTHROPIC_API_KEY:-}" ]] || container_args+=(--env ANTHROPIC_API_KEY)
     fi
 fi
+# Measure the session from just before the container is created, so the
+# engine's lifetime limit cannot have started earlier, with a monotonic clock:
+# WSL2 steps the wall clock to resynchronise with the host, which moves
+# EPOCHREALTIME and SECONDS by seconds at a time, and whole-second SECONDS would
+# also report a short failing session crossing a second boundary as a reached
+# limit. /proc/uptime counts centiseconds since boot.
+elapsed_centiseconds() {
+    local now=''
+    read -r now _ 2>/dev/null </proc/uptime || now=''
+    now=${now//[!0-9]/}
+    [[ -n "$now" ]] || now=$((SECONDS * 100))
+    printf '%s' "$((10#$now - ${1:-0}))"
+}
+started_at=$(elapsed_centiseconds)
 for ((attempt=0; attempt<20; attempt++)); do
     name="$prefix-$next_index"
     cid_file=$session_dir/$attempt.cid
@@ -923,16 +937,6 @@ fi
 
 # Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
 # for the background client; traps can forward signals while wait is active.
-# Measure the session at microsecond resolution: Bash's SECONDS counts whole
-# seconds, so a short failing session that crosses a second boundary would be
-# reported as a reached lifetime limit.
-elapsed_microseconds() {
-    local now=${EPOCHREALTIME:-}
-    now=${now//[!0-9]/}
-    [[ -n "$now" ]] || now=$((SECONDS * 1000000))
-    printf '%s' "$((10#$now - ${1:-0}))"
-}
-started_at=$(elapsed_microseconds)
 if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null; then
     # Optional for legacy unrestricted installs without host Python. Only the
     # exact successful Podman 4.3 restart-check line changes level; errors pass.
@@ -950,7 +954,7 @@ else
 fi
 status=0
 wait "$client_pid" || status=$?
-if ((run_timeout > 0 && status != 0 && $(elapsed_microseconds "$started_at") >= run_timeout * 1000000)); then
+if ((run_timeout > 0 && status != 0 && $(elapsed_centiseconds "$started_at") >= run_timeout * 100)); then
     printf 'claude-container: session lifetime limit reached (%s s); exit status %s\n' "$run_timeout" "$status" >&2
 fi
 exit "$status"
