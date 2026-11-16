@@ -2537,6 +2537,6 @@ Runtime image: `localhost/claude-code:setup-47ea882abff04628a1c80c11e97459a9`; W
 | `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 408 tests, 71 skipped |
 | `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
 | `git diff --check` | Passed |
-| Operator `--container-setup` on the three hosts | Pending (operator, with the `sandbox-ref-20` adoption) |
+| Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 Only shared test files changed: installations need no new setup for this tag.

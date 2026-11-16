@@ -694,3 +694,10 @@ The shared `network/` and `setup/` components and the shared tests SHALL stay by
 #### Scenario: Adoption of a new tag
 - **WHEN** an operator runs `tools/propagate.py` from `sandbox-container` against this repository
 - **THEN** the tool accepts it as an adopter of the recorded tag and updates the shared files, the manifest and the current-state references on a new branch
+
+### Requirement: Guard runtime test uses the wrapper's native home
+The shared guard runtime test SHALL run the real Claude image with the wrapper's own native home mounted writable, as the launcher does, so that an agent command that writes to its home at startup runs under the production guard.
+
+#### Scenario: Agent command writes to its home
+- **WHEN** `bash tests/run-runtime.sh --guard` runs the production guard with the Claude image and its command creates directories under its native home
+- **THEN** the guarded production-container test passes without a read-only file system error
