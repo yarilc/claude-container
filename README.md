@@ -986,8 +986,9 @@ hosts that enforce them, profile the tools you add.
 
 ## Shared sandbox components and the agent profile
 
-`network/` and `setup/` are shared with the sibling Codex, Antigravity, OpenCode
-and Pi wrappers and are copied between them unchanged. They contain no
+`network/` and `setup/` come unchanged from the reference repository
+`sandbox-container` and are shared with the Codex, Antigravity, OpenCode and Pi
+wrappers. They contain no
 Claude-specific names. Every agent-specific value is declared in
 `agent/profile.json`:
 - the wrapper name and the `CLAUDE_CONTAINER_*` variable prefix;
@@ -1000,9 +1001,13 @@ Provider policies are in `agent/policies/`. Inside containers the sandbox uses
 neutral paths: `/opt/sandbox-egress`, `/run/sandbox-egress`,
 `/tmp/sandbox-runtime` and the `sandbox-egress-guard` binary.
 
-Each sibling pins its copy to an annotated `sandbox-ref-N` tag of this
-repository. A shared change gets a new tag and reaches the siblings through
-`tools/propagate.py`, as described in [docs/propagation.md](docs/propagation.md).
+This repository pins its copy to an annotated `sandbox-ref-N` tag of
+`sandbox-container` with `tests/test_reference_copy.py`, which records the tag,
+its commit and the SHA-256 of every copied file, and compares them with a
+sibling `sandbox-container` checkout when one is present. Shared changes are
+made and tagged in `sandbox-container` and adopted here with its
+`tools/propagate.py`; never edit a shared file here. `claude-container` held
+the reference role up to `sandbox-ref-18`.
 
 The profile and policy are protected installation inputs and part of the
 qualification identity. After upgrading from a release that used

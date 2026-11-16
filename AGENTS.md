@@ -42,16 +42,22 @@ to in-container helpers. In-container paths are neutral: `/opt/sandbox-egress`,
 
 These files are per agent:
 - `agent/`, `claude-container.sh`, `Containerfile` and `.containerignore`;
-- the end-to-end tests: `test_wrapper.py`, `test_runtime.py`,
+- the end-to-end tests: `test_wrapper.py`, `test_setup_wrapper.py` (setup
+  checks that launch this wrapper), `test_runtime.py`,
   `test_network_runtime.py` with `network_tls_fixture.py`,
-  `test_setup_runtime.py`, `run-runtime.sh` and `image-smoke.sh`.
+  `test_setup_runtime.py`, `test_image_pins.py`, `run-runtime.sh` and
+  `image-smoke.sh`;
+- `tests/test_reference_copy.py`, the manifest of the adopted reference tag.
 
-When a shared component needs a new agent-specific value, extend the profile
-schema in `network/agent_profile.py` here first. Then tag the result and
-propagate the shared files to the sibling wrappers with `tools/propagate.py`
-(dry run first, then `--apply`), following `docs/propagation.md`; never edit a
-shared file in a sibling. `tests/test_alignment.py` enforces the literal scan
-and wrapper/profile consistency, and `tests/test_propagate.py` covers the tool.
+The shared files come from `sandbox-container`, the reference repository.
+Never edit them here: a shared defect or a new agent-specific profile value is
+fixed in `sandbox-container` first, tagged as `sandbox-ref-N`, and adopted
+here with its `tools/propagate.py` (dry run first, then `--apply`), following
+its `docs/propagation.md`. Shared tests run the shared modules against the
+fixture profiles in `tests/fixtures/`; only the checkout checks and the
+qualification gate read this repository's profile. `tests/test_alignment.py`
+enforces the literal scan and wrapper/profile consistency, and
+`tests/test_reference_copy.py` the byte identity with the reference tag.
 - `docs/setup.md` documents guided installation, maintenance consent and rollback.
 - `docs/network-contract.md` defines the shared mode and rollout contract;
   sibling wrappers remain independently unassessed.

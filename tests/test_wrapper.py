@@ -175,7 +175,7 @@ class AccountInventoryTests(unittest.TestCase):
         import agent_profile
         import policy
         self.policy = policy
-        self.rules = agent_profile.load().policy_rules()
+        self.rules = agent_profile.load(ROOT / agent_profile.PROFILE).policy_rules()
         self.value = json.loads((ROOT / agent_profile.POLICY).read_text())
 
     def hosts(self, name):
@@ -834,6 +834,13 @@ if args[0]=='snapshot':
             with self.subTest(env=env):
                 result = self.run_wrapper(CLAUDE_CONTAINER_RUN_TIMEOUT='1', **env)
                 self.assertEqual(result.returncode, int(env['FAKE_EXIT']))
+                self.assertNotIn('lifetime limit', result.stderr)
+        # A short failing session that crosses a whole-second boundary is not a
+        # reached limit: elapsed time is measured below one second.
+        for attempt in range(8):
+            with self.subTest(boundary_attempt=attempt):
+                result = self.run_wrapper(CLAUDE_CONTAINER_RUN_TIMEOUT='1', FAKE_START_DELAY='0.3', FAKE_EXIT='3')
+                self.assertEqual(result.returncode, 3)
                 self.assertNotIn('lifetime limit', result.stderr)
 
     def test_sensitive_workspaces_refused_before_engine(self):
