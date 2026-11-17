@@ -42,6 +42,8 @@ The `tools/propagate.py` dry run from `sandbox-ref-21` to `sandbox-ref-22` (2026
 
 Update (task 2.3): adopting `sandbox-ref-22` made `tests/test_alignment.py` fail on seven Claude identifiers in the shared `tests/test_launcher.py`. The reference fixed them, and added a check against sibling wrapper identifiers, in `fix-shared-test-identifiers` and tagged `sandbox-ref-23`. This change adopts `sandbox-ref-22` and then `sandbox-ref-23` (shared tests only) on the branch `adopt-sandbox-ref-23`.
 
+Update (task 4.1): the real `--network` run showed that the old launcher forwarded `ANTHROPIC_API_KEY` in every provider session, also with operator profiles such as the test's `custom` profile. The contract's "an operator policy profile forwards no credential, as today" was therefore not true for Claude. The user kept U10 as decided: only `anthropic-api` receives the key. The real tests now set the synthetic key inside the session and assert that the `custom` profile receives none. The delegation grid supplies the provider settings, which the core checks before the socket opt-in.
+
 ## Goals / Non-Goals
 
 **Goals:**

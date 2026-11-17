@@ -42,14 +42,14 @@
 
 ## 4. Integration
 
-- [ ] 4.1 Rebuild the Claude test image with `--container-build`. Then run:
+- [x] 4.1 Rebuild the Claude test image with `--container-build`. Then run:
   - the unit discovery in the disposable test container;
   - `bash tests/run-runtime.sh` with `--wrapper`, `--setup`, `--setup-runtime`, `--qualification`, `--network` and `--guard`, and the default mode;
   - `tests/image-smoke.sh`;
   - `git diff --check`.
 
   Verify that all pass.
-- [ ] 4.2 Add the `sandbox-ref-22` and `sandbox-ref-23` adoption section to `docs/validation.md`, starting from the tool's template. It holds every result and the old-test classification table from task 2.2. Commit with the tool's message and merge into `main`. Verify that `tests/test_reference_copy.py` passes on `main` with host Python next to the `sandbox-container` checkout, with the sibling check not skipped.
+- [x] 4.2 Add the `sandbox-ref-22` and `sandbox-ref-23` adoption section to `docs/validation.md`, starting from the tool's template. It holds every result and the old-test classification table from task 2.2. Commit with the tool's message and merge into `main`. Verify that `tests/test_reference_copy.py` passes on `main` with host Python next to the `sandbox-container` checkout, with the sibling check not skipped.
 
 ## Workflow follow-up
 
