@@ -19,7 +19,13 @@ Sessions SHALL use a read-only container root, `--userns=keep-id`, and the calle
 - **THEN** the entire selected parent is writable as specified by `workspace-mounts`, with no additional inferred Git mounts
 
 ### Requirement: Ephemeral constrained temporary storage
-Sessions SHALL explicitly provide ephemeral `/tmp`, `/run`, and `/var/tmp` mounts with `rw,nosuid,nodev,noexec`. Limits SHALL be 256 MiB for `/tmp`, 16 MiB for `/run`, and 256 MiB for `/var/tmp`. `/tmp` and `/var/tmp` SHALL permit caller writes with sticky directory mode `1777`. Temporary contents SHALL disappear after container removal. Internal sandbox compatibility SHALL NOT silently relax these options.
+Sessions SHALL explicitly provide ephemeral `/tmp`, `/run`, `/var/tmp` mounts and, in shared-state mode, an ephemeral home mount, all with `rw,nosuid,nodev,noexec`. Limits SHALL be:
+- 512 MiB for `/tmp`;
+- 32 MiB for `/run`;
+- 512 MiB for `/var/tmp`;
+- 512 MiB for the ephemeral home.
+
+`/tmp`, `/var/tmp` and the ephemeral home SHALL permit caller writes with sticky directory mode `1777`. The Claude profile SHALL NOT declare executable temporary storage (`native.exec_tmp`). Temporary contents SHALL disappear after container removal. Internal sandbox compatibility SHALL NOT silently relax these options.
 
 #### Scenario: Temporary file lifecycle
 - **WHEN** a session writes temporary files in `/tmp` and `/var/tmp` and a new container starts after its removal
@@ -74,7 +80,11 @@ The wrapper SHALL NOT add privileged execution, extra capabilities, replacement 
 - **AND** live writable workspace/state binds grant ordinary file access without granting external Unix services or new Unix listeners or unconnected Unix sockets
 
 ### Requirement: Independent approvals and delegation
-`CLAUDE_YOLO` SHALL control only wrapper injection of `--dangerously-skip-permissions` in Claude mode. It SHALL accept existing boolean forms case-insensitively and reject invalid values before image operations. Socket access SHALL require exact `CLAUDE_CONTAINER_PODMAN=1` and explicit unrestricted network mode, independently of YOLO and state mode. Restricted modes SHALL reject exact socket opt-in. Shell, YOLO, and native permission settings SHALL NOT weaken the outer network boundary. Disabling YOLO SHALL NOT override native CLI arguments or saved permission settings.
+`CLAUDE_YOLO` SHALL control only the `--dangerously-skip-permissions` argument that Claude's approval-bypass hook adds in Claude mode. It SHALL accept the shared boolean forms case-insensitively and reject invalid values before image operations. Shell mode SHALL NOT receive the flag.
+
+Socket access SHALL require exact `CLAUDE_CONTAINER_PODMAN=1` and explicit unrestricted network mode, independently of YOLO and state mode. Restricted modes, including the default provider mode, SHALL reject exact socket opt-in.
+
+Shell, YOLO, and native permission settings SHALL NOT weaken the outer network boundary. Disabling YOLO SHALL NOT override native CLI arguments or saved permission settings.
 
 #### Scenario: Four combinations in either state mode
 - **WHEN** unrestricted runtime mode is selected and all enabled/disabled combinations of YOLO and Podman delegation are used in shared and isolated modes

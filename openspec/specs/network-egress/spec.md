@@ -7,12 +7,12 @@ Constrain network egress and external IPC independently of Claude and its tools,
 ## Requirements
 
 ### Requirement: Operator-selected runtime modes
-The wrapper SHALL accept `CLAUDE_CONTAINER_NETWORK=offline|provider|unrestricted` from explicit operator configuration or validated managed preferences. An ordinary launch with an unset or empty effective mode SHALL stop with setup guidance before runtime preparation. Other values SHALL fail before image operations. Only explicit `unrestricted` SHALL remove the runtime destination boundary. Agent-writable configuration SHALL NOT select or broaden the outer policy.
+The wrapper SHALL accept `CLAUDE_CONTAINER_NETWORK=offline|provider|unrestricted` from explicit operator configuration or validated managed preferences. An ordinary launch with an unset or empty effective mode SHALL select `provider`. Without the provider settings, it SHALL stop with setup guidance before runtime preparation. Other values SHALL fail before image operations. Only explicit `unrestricted` SHALL remove the runtime destination boundary. Agent-writable configuration SHALL NOT select or broaden the outer policy.
 
 #### Scenario: Default and invalid selection
 - **WHEN** an ordinary invocation leaves the effective mode unset or empty
-- **THEN** it receives missing-setup guidance rather than starting an implicitly offline session
-- **AND** an unknown nonempty mode fails with the existing invalid-mode diagnostic without image operations or agent startup
+- **THEN** it runs in provider mode with every provider check, or receives setup guidance when the provider settings are missing
+- **AND** an unknown nonempty mode fails with the invalid-mode diagnostic without image operations or agent startup
 
 #### Scenario: Policy cannot escalate itself
 - **WHEN** workspace settings, application state, or commands request a broader policy or remove proxy variables
@@ -30,7 +30,7 @@ The wrapper SHALL accept `CLAUDE_CONTAINER_NETWORK=offline|provider|unrestricted
 
 #### Scenario: Qualification is not an ordinary session
 - **WHEN** the standalone fixed qualification operation is invoked with no effective network mode
-- **THEN** its existing offline qualification default and protected-fixture checks remain available
+- **THEN** it qualifies the mode the launcher resolved from the profile with its protected fixtures
 - **AND** neither that operation nor its internal probe admits an arbitrary application command or bypasses enforcement
 
 ### Requirement: Restricted sessions have no direct external path
@@ -270,7 +270,7 @@ Provider mode SHALL set consistent uppercase/lowercase HTTP/HTTPS proxy values a
 - **AND** the second has only the read-only bundle at `/claude-home/ca/bundle.pem` and the four existing CA variables pointing there
 
 ### Requirement: Separate Claude authentication profiles
-Provider mode SHALL require a named protected profile. `anthropic-api` SHALL allow only `api.anthropic.com:443` as its base destination; `anthropic-account` SHALL separately authorize only the measured account hosts needed inside the container. SSO, optional features, third-party clouds, and gateways SHALL require distinct explicit additions or profiles with dated inventories.
+Provider mode SHALL require a named protected profile. `anthropic-api` SHALL allow only `api.anthropic.com:443` as its base destination. `anthropic-account` SHALL separately authorize only the measured account hosts needed inside the container. SSO, optional features, third-party clouds, and gateways SHALL require distinct explicit additions or profiles with dated inventories. A provider session SHALL forward `ANTHROPIC_API_KEY` by name only when the selected policy profile is `anthropic-api` and the variable is set.
 
 #### Scenario: API and account inventories
 - **WHEN** API authentication is selected
@@ -291,6 +291,11 @@ Provider mode SHALL require a named protected profile. `anthropic-api` SHALL all
 - **WHEN** provider mode selects the account profile with usable existing account credentials and no ANTHROPIC_API_KEY
 - **THEN** the wrapper does not require an API key to start that account session
 - **AND** the same outer destination and IPC restrictions apply
+
+#### Scenario: API key follows the selected profile
+- **WHEN** `ANTHROPIC_API_KEY` is set on the host
+- **THEN** a provider session with `anthropic-api` receives it by name
+- **AND** a provider session with `anthropic-account` does not receive it, not even through `CLAUDE_CONTAINER_ENV_VARS`
 
 ### Requirement: Optional traffic remains opt-in
 Provider profiles SHALL disable unnecessary telemetry, updates, connectors, artifact/documentation lookups, and runtime plugin downloads using settings supported by the tested CLI. A missing supported disable control SHALL NOT broaden the allowlist. Shell and native permission-bypass modes SHALL retain the same outer restrictions.
@@ -451,7 +456,7 @@ Restricted preparation SHALL require Linux x86_64, rootless Podman server >= 4.9
 - **AND** no local-engine, rootful, different-backend or unrestricted fallback occurs
 
 ### Requirement: Credential-free local enforcement qualification
-Each restricted installation SHALL pass a bounded credential-free gate through its production launch and guard path before ordinary use. Required denial checks SHALL have controlled positive controls or demonstrate explicit enforcing syscall rejection. Missing fixtures, unrelated connectivity failure, skipped required checks and unavailable transport evidence SHALL fail qualification.
+Each restricted installation SHALL pass a bounded credential-free gate through its production launch and guard path before ordinary use. The qualified code identity SHALL include the shared launcher core and the agent launcher part, so a change to either invalidates the report. Required denial checks SHALL have controlled positive controls or demonstrate explicit enforcing syscall rejection. Missing fixtures, unrelated connectivity failure, skipped required checks and unavailable transport evidence SHALL fail qualification.
 
 #### Scenario: Mandatory IP and IPC controls
 - **WHEN** offline or provider mode is qualified
@@ -483,6 +488,10 @@ Each restricted installation SHALL pass a bounded credential-free gate through i
 - **WHEN** a report was issued for one IPv6 state and the host later runs with the other state
 - **THEN** the report is stale and restricted startup requires requalification
 
+#### Scenario: Launcher core changed after qualification
+- **WHEN** `launcher/core.sh` or `agent/launcher.sh` differs from the one recorded in the report
+- **THEN** ordinary restricted startup requires requalification
+
 ### Requirement: Session proxies have enforced resource budgets
 Each Internet-facing session proxy SHALL have a limit of 128 processes and 256 MiB memory, enforced by the engine and host cgroups, for each budget whose cgroup v2 controller (`pids`, `memory`) the verified rootless engine reports as available. Startup SHALL fail before agent execution if an enforced limit is not applied, or if an unenforced limit is unexpectedly present. These budgets SHALL coexist with existing multiplex, TLS inspection and lifecycle bounds without broadening runtime access.
 
@@ -508,7 +517,15 @@ Each Internet-facing session proxy SHALL have a limit of 128 processes and 256 M
 - **AND** other sessions retain their independent proxy resources and budgets
 
 ### Requirement: Single protected agent profile
-All agent-specific values used by the shared network sandbox and setup components SHALL come from one data-only agent profile and its provider policy file. Examples are wrapper and variable names, images, labels, installation and state names, native configuration and credential variables, authentication assistance and policy profiles. The profile SHALL be schema-validated, trusted-path checked and outside agent-writable mounts.
+All agent-specific values used by the shared network sandbox, launcher and setup components SHALL come from one data-only agent profile and its provider policy file. The agent launcher part SHALL mirror them for the launcher and SHALL be checked against them. Examples:
+- wrapper and variable names;
+- images and labels;
+- installation and state names;
+- native configuration and credential variables;
+- the in-container application path (`native.exec`) and executable temporary storage (`native.exec_tmp`);
+- authentication assistance and policy profiles.
+
+The profile SHALL NOT select who builds the runtime image. The profile SHALL be schema-validated, trusted-path checked and outside agent-writable mounts.
 
 #### Scenario: Invalid or unprotected profile
 - **WHEN** the profile is missing, malformed, has duplicate or unknown keys, fails field validation, or is reachable through a writable workspace or state mount or an escaped symlink
@@ -518,12 +535,20 @@ All agent-specific values used by the shared network sandbox and setup component
 - **WHEN** the current workspace contains a file with the profile's name or layout
 - **THEN** the wrapper uses only the profile in its protected installation or checkout and ignores the workspace copy
 
+#### Scenario: Obsolete or mistyped launcher fields
+- **WHEN** the profile declares `install.runtime_build`, a relative `native.exec` or a non-boolean `native.exec_tmp`
+- **THEN** profile validation fails naming the field
+
 ### Requirement: Profile-bound restricted identity
-The agent profile and its provider policy file SHALL be part of the protected code identity recorded in local qualification reports. Any change to either SHALL invalidate matching qualification evidence.
+The agent profile, its provider policy file, the shared launcher core and the agent launcher part SHALL be part of the protected code identity recorded in local qualification reports. Restricted preflight SHALL require each of them to be a protected file. Any change to one of them SHALL invalidate matching qualification evidence.
 
 #### Scenario: Profile changed after qualification
 - **WHEN** the installed profile or provider policy differs from the one recorded in the current qualification report
 - **THEN** ordinary restricted launches are refused with setup or requalification guidance
+
+#### Scenario: Writable launcher core
+- **WHEN** `launcher/core.sh` or `agent/launcher.sh` in the installation is writable by others or reachable through a writable mount
+- **THEN** restricted preflight fails naming the file
 
 ### Requirement: Agent-neutral shared sandbox components
 The shared network sandbox and setup components, including the compiled guard, SHALL contain no agent-specific identifiers. In-container paths, the guard binary name and the multiplex protocol marker SHALL be agent-neutral. Host-visible images, labels, variables and installation paths SHALL stay per-agent, as declared by the profile.
@@ -611,12 +636,16 @@ Host-side guard probes run by restricted-session preparation and qualification S
 - **THEN** the caller stops with a message that names the guard probe, its status and the Landlock ABI or standard I/O requirement, instead of failing without output
 
 ### Requirement: Residual exfiltration disclosure
-Provider help, setup guidance, README and the network contract SHALL state that destination and SNI binding cannot distinguish the operator's credentials from attacker-supplied ones. Each allowed host can therefore receive workspace data sent with a foreign API key or account. The documentation SHALL name the hosts of each base profile and SHALL NOT present the disclosure or the host reduction as preventing this channel.
+Provider help, setup guidance, the README and the network contract SHALL state that destination and SNI binding cannot distinguish the operator's credentials from attacker-supplied ones. Each allowed host can therefore receive workspace data sent with a foreign API key or account. The documentation SHALL name the hosts of each base profile. It SHALL NOT present the disclosure or the host reduction as preventing this channel. The launcher core SHALL print the provider help from the profile and the default policy, so the help names the same hosts the policy allows.
 
 #### Scenario: Operator reads the provider limits
 - **WHEN** an operator reads the provider help, README or network contract
 - **THEN** the foreign-credential channel is described for `api.anthropic.com` and every other allowed host of the selected profile
 - **AND** the text states that only offline mode removes the channel
+
+#### Scenario: Help follows the policy
+- **WHEN** `--container-help` runs
+- **THEN** the provider disclosure names `api.anthropic.com` for `anthropic-api` and `api.anthropic.com` and `platform.claude.com` for `anthropic-account`, as listed in `agent/policies/default.json`
 
 ### Requirement: Credential-injecting interception remains unimplemented
 The network contract SHALL describe credential-injecting TLS interception as a separately evaluated option only. In that option the proxy holds the credentials and the agent never sees them. The contract SHALL state that it conflicts with the no-decryption guarantee, and that it requires an explicit operator decision and its own change before implementation. The proxy SHALL NOT decrypt, terminate or re-sign provider TLS.
