@@ -213,11 +213,11 @@ sockets and is superseded. See [bootstrap build/tests](network/README.md) and
 execution is checked separately with a controlled synthetic Messages API; it
 does not establish real provider authentication or model behavior.
 
-**Migration:** versions before `c777b73` used ordinary networking without the
-runtime-mode interface. The enforced-network change introduced an unset/empty
-`offline` default. Ordinary launches now refuse an unset or empty effective mode
-with setup guidance. First-run setup proposes `provider` with account
-authentication and saves the selected mode for its managed launcher. Operators
+**Default mode:** an unset or empty `CLAUDE_CONTAINER_NETWORK` selects
+`provider`, the default for an agent wrapper. Without a protected installation
+or the provider settings that setup saves, the launch stops with setup guidance
+before any engine or state operation. First-run setup proposes `provider` with
+account authentication and saves the selected mode for its managed launcher. Operators
 can explicitly choose `offline` for prepared restricted sessions or `unrestricted`
 for broad networking. Offline sessions cannot reach the Claude API.
 A required image build also needs
@@ -232,7 +232,7 @@ CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 bash ./clau
 
 | `CLAUDE_CONTAINER_NETWORK` | Behavior |
 | --- | --- |
-| unset or empty | Ordinary launch stops with setup guidance |
+| unset or empty | `provider`; without setup's saved provider settings the launch stops with setup guidance |
 | `offline` | `--network=none`; own loopback services only |
 | `provider` | Same isolation plus an external CONNECT proxy with initial and retried TLS SNI binding |
 | `unrestricted` | Explicit ordinary runtime networking; socket delegation is eligible |
@@ -402,8 +402,10 @@ optional and non-blocking when no key is available; this does not claim real-key
 authentication was verified. Account access does not require an API key. Host
 browser steps are outside container enforcement. SSO and third-party clouds/gateways require separately reviewed
 profiles; the default inventory does not grant them. An explicitly supplied host
-`ANTHROPIC_API_KEY` is forwarded by name in provider mode; no key is copied into
-the image or policy. Existing account state follows the selected persistence mode.
+`ANTHROPIC_API_KEY` is forwarded by name in provider mode with the `anthropic-api`
+profile only, never with `anthropic-account`; offline and unrestricted sessions get
+no key unless `CLAUDE_CONTAINER_ENV_VARS` lists it in unrestricted mode. No key is
+copied into the image or policy. Existing account state follows the selected persistence mode.
 
 Provider startup sets version-supported controls for nonessential traffic,
 updaters, telemetry/error reporting, account MCP connectors, and artifacts.
@@ -529,8 +531,29 @@ never authorizes removal, and interrupted creation never starts the application.
 
 A TTY is allocated only when stdin and stdout are terminals. Redirected stdin,
 argument order, spaces, and empty arguments are preserved, supporting pipelines
-and headless CLI use. Shell mode ignores Claude arguments and YOLO injection.
+and headless CLI use. Shell mode passes its arguments to Bash (for example
+`--container-shell -c 'make test'`) and never adds the YOLO flag.
 `--container-help` requires no engine and creates no state.
+
+The session receives `USER`, `EDITOR=nano` and `VISUAL=nano`, and by name
+`TERM`, `COLORTERM`, `LANG` and `LC_ALL` when set. Unrestricted sessions also
+receive `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their
+lowercase forms, run with `--init`, and see their container name as
+`CONTAINER_NAME`. `CLAUDE_CONTAINER_ENV_VARS` lists further host variable names
+(separated by whitespace) to forward by name, never by value; an invalid name
+stops the launch, an empty variable is not forwarded, and names the launcher
+sets itself (and, in restricted modes, proxy, CA and provider settings, or in
+provider mode another profile's credential) are skipped with a notice.
+
+A build pulls the exact `FROM` base first and then runs with `--pull=never`
+and the docker format, without a timeout. Every image carries a
+`build-inputs-hash` label over its build inputs (`Containerfile`,
+`.containerignore`, `network/relay.py`, `network/mux.py`); a launch refuses an
+image built from other inputs and names the rebuild command.
+`--container-build` without Claude arguments, also together with
+`--container-git-worktree` or `--container-shell`, validates every setting,
+builds the image and exits without a session; setup uses this operation. With
+Claude arguments, it builds and then starts the session.
 
 `CLAUDE_YOLO=1` adds `--dangerously-skip-permissions` for that session. Use it
 only when the container and mounts are a
@@ -659,9 +682,15 @@ bootstrap accepts the layout. No host configuration change is needed.
 Claude configuration defaults to `~/.claude`, or `CLAUDE_CONFIG_DIR` when
 nonempty, mounted read/write at `/claude-home/.claude`. Host
 `~/.config/openspec` is also mounted read/write at
-`/claude-home/.config/openspec`. The rest of `/claude-home` remains read-only
-in this shared mode. Credentials, plugins, history, and settings remain shared
-with host Claude; the agent can read and change these mounted files.
+`/claude-home/.config/openspec`. In this shared mode the rest of `/claude-home`
+is an ephemeral 512 MiB `noexec` tmpfs: files written there disappear with the
+session. Credentials, plugins, history, and settings remain shared with host
+Claude; the agent can read and change these mounted files.
+
+`CLAUDE_CONTAINER_READONLY_STATE` (`1`, `true` or `yes`) mounts the existing
+Claude and OpenSpec configuration read-only instead, from shared state or from
+the isolated home; the directories must exist, nothing is created, and the
+isolated home itself is not mounted.
 
 ### Optional isolated home
 
@@ -713,7 +742,8 @@ shared state, unset `CLAUDE_CONTAINER_STATE_DIR` and restore any previous
 
 The root filesystem is read-only; selected workspace/state mounts are writable.
 `/tmp`, `/run`, and `/var/tmp` are explicit ephemeral tmpfs mounts with
-`nosuid,nodev,noexec` and limits of 256 MiB, 16 MiB, and 256 MiB respectively.
+`nosuid,nodev,noexec` and limits of 512 MiB, 32 MiB, and 512 MiB respectively,
+the same in every wrapper.
 Podman's automatic read-only tmpfs provisioning stays enabled: with
 `--read-only-tmpfs=false`, Podman 5 would mount `/dev` read-only, and newer
 crun releases cannot attach a terminal there. The engine provides `/dev` and
@@ -986,10 +1016,16 @@ hosts that enforce them, profile the tools you add.
 
 ## Shared sandbox components and the agent profile
 
-`network/` and `setup/` come unchanged from the reference repository
-`sandbox-container` and are shared with the Codex, Antigravity, OpenCode and Pi
-wrappers. They contain no
-Claude-specific names. Every agent-specific value is declared in
+`network/`, `setup/`, `launcher/` and the shared tests come unchanged from the
+reference repository `sandbox-container` and are shared with the Codex,
+Antigravity, OpenCode and Pi wrappers. They contain no Claude-specific names.
+`launcher/core.sh` is the whole launcher: `claude-container.sh` is the thin
+entry script every wrapper shares, and `agent/launcher.sh` holds the profile
+values the core needs plus Claude's two hooks, which document `CLAUDE_YOLO` and
+turn it into `--dangerously-skip-permissions` (`docs/launcher-contract.md` in
+`sandbox-container`). The shared launcher tests (`tests/test_launcher.py`, with
+the fake engine `tests/fake_podman.py`) run the core against fixture agent
+parts; `tests/test_wrapper.py` covers only Claude's part. Every agent-specific value is declared in
 `agent/profile.json`:
 - the wrapper name and the `CLAUDE_CONTAINER_*` variable prefix;
 - the `localhost/claude-*` images and `io.claude-container.*` labels;
@@ -1024,7 +1060,8 @@ preferences are unchanged. Only test-harness controls changed:
 ## Verification
 
 ```bash
-bash -n claude-container.sh
+bash -n claude-container.sh launcher/core.sh agent/launcher.sh
+python3 -m unittest discover -s tests -p test_launcher.py -v
 python3 -m unittest discover -s tests -p test_wrapper.py -v
 SANDBOX_RUNTIME_TESTS=1 python3 -m unittest discover -s tests -p test_runtime.py -v
 bash tests/run-runtime.sh
@@ -1040,4 +1077,4 @@ preserves host absolute paths, and removes only its own test resources; it can
 also run the wrapper tests via `bash tests/run-runtime.sh --wrapper` when host
 Python is unavailable. No automated test uses real credentials or paid model
 requests. Image absence triggers a build; inspection errors stop startup rather
-than causing an accidental rebuild. Explicit builds retain normal caching.
+than causing an accidental rebuild; a stale image is refused until rebuilt. Explicit builds retain normal caching.

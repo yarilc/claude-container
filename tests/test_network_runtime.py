@@ -54,8 +54,9 @@ class NetworkRuntime(unittest.TestCase):
             shutil.copyfile(source, self.install / 'network' / source.name)
         (self.install / 'agent/policies').mkdir(mode=0o700, parents=True, exist_ok=True)
         (self.install / 'setup').mkdir(mode=0o700, exist_ok=True)
-        for name in ('agent/profile.json', 'agent/policies/default.json', 'setup/common.py', 'setup/toolchains.py',
-                     'Containerfile'):
+        (self.install / 'launcher').mkdir(mode=0o700, exist_ok=True)
+        for name in ('agent/profile.json', 'agent/policies/default.json', 'agent/launcher.sh', 'setup/common.py',
+                     'setup/toolchains.py', 'Containerfile', '.containerignore', 'launcher/core.sh'):
             shutil.copyfile(ROOT / name, self.install / name)
         binary_dir = self.install / 'network/bin'
         binary_dir.mkdir(mode=0o700, exist_ok=True)
@@ -127,17 +128,19 @@ class NetworkRuntime(unittest.TestCase):
         return owned
 
     def test_restricted_delegation_grid_and_disabled_override(self):
+        _, provider = self.provider_fixture()
         for mode in ('offline', 'provider'):
+            # Provider mode checks its own settings first, so the grid supplies them.
+            settings = provider if mode == 'provider' else {}
             for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
                 for shell in (False, True):
                     for yolo in ('0', '1'):
                         result = subprocess.run([str(self.wrapper), *(['--container-shell'] if shell else ['--version'])],
-                            cwd=self.project, env=self.env | {'CLAUDE_CONTAINER_NETWORK':mode,
+                            cwd=self.project, env=self.env | settings | {'CLAUDE_CONTAINER_NETWORK':mode,
                                 'CLAUDE_CONTAINER_STATE_DIR':state, 'CLAUDE_YOLO':yolo,
                                 'CLAUDE_CONTAINER_PODMAN':'1'}, input='', capture_output=True, text=True, timeout=10)
                         self.assertNotEqual(result.returncode, 0)
                         self.assertIn('rejects CLAUDE_CONTAINER_PODMAN=1', result.stderr)
-        _, provider = self.provider_fixture()
         for mode in ('offline', 'provider'):
             for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
                 environment = provider | {'CLAUDE_CONTAINER_NETWORK':mode}
@@ -802,7 +805,7 @@ test "$DISABLE_TELEMETRY" = 1
 test "$DISABLE_ERROR_REPORTING" = 1
 test "$ENABLE_CLAUDEAI_MCP_SERVERS" = false
 test "$CLAUDE_CODE_DISABLE_ARTIFACT" = 1
-test "$ANTHROPIC_API_KEY" = synthetic-not-a-real-key
+test -z "${ANTHROPIC_API_KEY+x}"
 """, **environment, CLAUDE_CONTAINER_STATE_DIR=state, ANTHROPIC_API_KEY='synthetic-not-a-real-key')
             self.assert_success(controls)
             for flags, yolo in ((['--version'], '0'), (['--dangerously-skip-permissions', '--version'], '0'),
@@ -819,14 +822,15 @@ test "$ANTHROPIC_API_KEY" = synthetic-not-a-real-key
         context, environment = self.provider_fixture()
         # The controlled custom profile and fixture CA authorize only this local
         # synthetic API. No account state, real key or external model is involved.
+        # A custom profile receives no host API key (U10), so the synthetic key is
+        # set inside the session.
         for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
             sentinel = self.project / 'claude-tool-sentinel'
             sentinel.unlink(missing_ok=True)
-            script = "export ANTHROPIC_BASE_URL=https://localhost.localdomain:8443\n"
+            script = "export ANTHROPIC_BASE_URL=https://localhost.localdomain:8443 ANTHROPIC_API_KEY=synthetic-not-a-real-key\n"
             script += "claude --dangerously-skip-permissions --model claude-sonnet-4-6 --max-turns 3 -p fixture-tool-operation </dev/null\n"
             script += "test \"$(cat claude-tool-sentinel)\" = actual-claude-tool-ok\n"
             result = self.shell(script, **environment, CLAUDE_CONTAINER_STATE_DIR=state,
-                ANTHROPIC_API_KEY='synthetic-not-a-real-key',
                 CLAUDE_CONTAINER_TRUST_HOST_CA='1', CLAUDE_CONTAINER_CA_BUNDLE=str(context / 'cert.pem'))
             self.assert_success(result)
             self.assertIn('fixture-tool-complete', result.stdout)

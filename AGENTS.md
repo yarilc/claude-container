@@ -5,8 +5,12 @@
 This repository contains a small, self-contained Podman wrapper for running
 Claude Code:
 
-- `claude-container.sh` is the entry-point script and owns argument parsing,
-  volume mounts, user mapping, and Podman socket validation.
+- `claude-container.sh` is the thin entry script, identical in every wrapper:
+  it sources the shared launcher core `launcher/core.sh` with Claude's agent
+  part `agent/launcher.sh` (profile values, the `CLAUDE_YOLO` help and the
+  `--dangerously-skip-permissions` approval-bypass hook). The core owns
+  argument parsing, mounts, user mapping, Podman checks and the session
+  lifecycle; `docs/launcher-contract.md` in `sandbox-container` is its contract.
 - `Containerfile` defines the Claude Code runtime image and its shell/tooling
   baseline, including `nano` with `EDITOR` and `VISUAL` set to it. The image
   disables nano's history log in `/etc/nanorc`, because the home directory is
@@ -33,16 +37,18 @@ Claude Code:
 
 ## Shared and agent-specific files
 
-`network/`, `setup/` and the shared tests listed in `tests/test_alignment.py`
-are copied unchanged between the Claude, Codex, Antigravity, OpenCode and Pi
-wrappers. Never add an agent identifier (any of the profile's `identifiers`) to
+`network/`, `setup/`, `launcher/` and the shared tests listed in
+`tests/test_alignment.py` (including `tests/test_launcher.py` and
+`tests/fake_podman.py`) are copied unchanged between the Claude, Codex,
+Antigravity, OpenCode and Pi wrappers. Never add an agent identifier (any of the profile's `identifiers`) to
 them. Read agent-specific values from the profile, or pass them from host code
 to in-container helpers. In-container paths are neutral: `/opt/sandbox-egress`,
 `/run/sandbox-egress`, `/tmp/sandbox-runtime` and `sandbox-egress-guard`.
 
 These files are per agent:
 - `agent/`, `claude-container.sh`, `Containerfile` and `.containerignore`;
-- the end-to-end tests: `test_wrapper.py`, `test_setup_wrapper.py` (setup
+- the end-to-end tests: `test_wrapper.py` (Claude's agent part only; the
+  launcher is tested by the shared `test_launcher.py`), `test_setup_wrapper.py` (setup
   checks that launch this wrapper), `test_runtime.py`,
   `test_network_runtime.py` with `network_tls_fixture.py`,
   `test_setup_runtime.py`, `test_image_pins.py`, `run-runtime.sh` and
@@ -70,7 +76,7 @@ Run these commands from the repository root:
 CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 ./claude-container.sh --container-build
 CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh
 CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh --container-shell
-bash -n claude-container.sh              # Validate Bash syntax
+bash -n claude-container.sh launcher/core.sh agent/launcher.sh  # Validate Bash syntax
 git diff --check                         # Detect whitespace errors
 ```
 
@@ -84,13 +90,14 @@ Reject named connections and TCP/SSH contexts. Delegation requires the exact val
 before image operations, requiring rootless `true` and an absolute reported host
 socket path; bind the latter when the wrapper sees a remapped socket.
 
-Setup is the mandatory first step for new users. Ordinary launches require a
-nonempty `CLAUDE_CONTAINER_NETWORK`, explicitly set by the operator or supplied
-by the validated managed launcher. Unset/empty modes must stop with setup
-guidance before runtime checks, engine queries or state creation; explicit empty
-overrides must not restore saved defaults. Help, setup and standalone fixed
-qualification retain their dedicated checks. Qualification alone keeps its
-offline default and never admits a supplied application command. Maintenance
+Setup is the first step for new users. An unset or empty
+`CLAUDE_CONTAINER_NETWORK` selects `provider`, Claude's default; without a
+protected installation or the saved provider settings (profile, policy, runtime
+directory, proxy image) the launch stops with setup guidance before engine
+queries or state creation, and explicit empty overrides never restore a saved
+mode. Help, setup and standalone fixed qualification retain their dedicated
+checks. Qualification uses the same default mode and never admits a supplied
+application command. Maintenance
 consent does not select a runtime mode. Offline cannot reach the Claude API.
 Restricted sessions must use the static ABI-3
 Landlock/additive-seccomp bootstrap before any application code. Keep fail-closed
@@ -124,7 +131,8 @@ comments, help text, and user-facing messages in English.
 
 ## Testing Guidelines
 
-Run `python3 -m unittest discover -s tests -p test_wrapper.py -v`, `bash -n`
+Run `python3 -m unittest discover -s tests -p 'test_launcher.py' -v` and
+`-p test_wrapper.py -v`, `bash -n`
 on changed shell scripts, and `git diff --check`. Run `test_image_pins.py`
 after any `Containerfile` or `tested.cli` change; image inputs stay pinned and
 change only through the maintenance procedure in `docs/validation.md`. Every

@@ -44,7 +44,7 @@ class SetupRuntime(unittest.TestCase):
         shim.write_text('#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n'
             + 'args=sys.argv[1:]\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/claude-code:latest', prepared_runtime)) + ": sys.exit(0)\n"
-            + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/claude-code:latest', prepared_runtime)) + ":\n"
+            + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/claude-code:latest', prepared_runtime)) + ":\n"
             + ' print(' + repr(prepared_runtime) + '); sys.exit(0)\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/claude-egress:local', prepared_proxy)) + ": sys.exit(0)\n"
             + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/claude-egress:local', prepared_proxy)) + ":\n"

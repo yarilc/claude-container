@@ -55,15 +55,16 @@ Operators can still invoke a manually prepared wrapper with explicit `offline`,
 qualification and authority checks apply. Image maintenance additionally
 requires exact `CLAUDE_CONTAINER_MAINTENANCE=1`; that consent alone does not select
 a mode. Help and standalone setup/qualification retain their own dispatch checks.
-Standalone `--container-qualify` keeps its offline default when no mode is set
-and can run only fixed controls, never a supplied application command.
+Standalone `--container-qualify` qualifies the same default mode when no mode
+is set and can run only fixed controls, never a supplied application command.
 
-Before `c777b73`, ordinary networking needed no runtime-mode selection. The
-enforced-network change introduced an unset/empty offline default; ordinary
-missing-mode launches now stop with setup guidance instead. Existing managed
-launchers supply a saved mode. Install the updated protected wrapper through
-setup, or update and requalify a manual restricted installation: changing the
-wrapper invalidates its old qualification identity. Existing activation and
+An unset or empty `CLAUDE_CONTAINER_NETWORK` selects `provider`, Claude's
+default. Without a protected installation or the saved provider settings, the
+launch stops with setup guidance; managed launchers supply the saved mode and
+settings. Install the updated protected wrapper through setup, or update and
+requalify a manual restricted installation: changing the entry script, the
+shared launcher core `launcher/core.sh` or the agent part `agent/launcher.sh`
+invalidates the old qualification identity. Existing activation and
 last-working-release rollback remain unchanged.
 
 The toolchain library (`add-toolchain-library`) changes the wrapper and adds
@@ -357,11 +358,11 @@ ready sandbox with authentication pending. To log in later:
 "$HOME/.local/bin/claude-container" auth login --claudeai
 ```
 
-API setup does not collect or save an API key. Provider/API launches use the
-existing `ANTHROPIC_API_KEY` environment forwarding by name. Supply that variable
-through your normal private secret mechanism when launching. The existing
-unrestricted wrapper does not add API-key environment forwarding; use
-provider/API or explicitly configured Claude credentials for that workflow.
+API setup does not collect or save an API key. Provider launches with the
+`anthropic-api` profile forward `ANTHROPIC_API_KEY` by name; the
+`anthropic-account` profile never receives it. Supply that variable through
+your normal private secret mechanism when launching. Unrestricted sessions
+forward no API key unless `CLAUDE_CONTAINER_ENV_VARS=ANTHROPIC_API_KEY` lists it.
 Setup performs no paid model request. Shell/version smoke, account login and
 authenticated model-response evidence remain separate.
 

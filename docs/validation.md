@@ -2540,3 +2540,87 @@ Runtime image: `localhost/claude-code:setup-47ea882abff04628a1c80c11e97459a9`; W
 | Operator `--container-setup` on the three hosts (`sandbox-ref-21`) | Passed (operator, 2026-11-16) |
 
 Only shared test files changed: installations need no new setup for this tag.
+
+## Adoption of `sandbox-ref-22` and `sandbox-ref-23`: 2026-11-17
+
+Change `adopt-sandbox-ref-22`. Copied from `sandbox-container` tag `sandbox-ref-22`
+(commit `91a8e97`): `network/README.md`, `network/agent_profile.py`,
+`network/control.py`, `network/qualification_records.py`, `network/qualify.py`,
+`setup/common.py`, `setup/launch.py`, `setup/setup.py`,
+`tests/fixtures/agent/profile.json`, `tests/sandbox_profile.py`,
+`tests/test_agent_profile.py`, `tests/test_alignment.py`,
+`tests/test_network_policy.py`, `tests/test_qualification.py`,
+`tests/test_setup.py`, `launcher/core.sh`, `tests/fake_podman.py`,
+`tests/fixtures/agent/launcher.sh`, `tests/fixtures/shell-agent/launcher.sh`,
+`tests/test_launcher.py`. Then from tag `sandbox-ref-23` (commit `7d14706`):
+`tests/test_alignment.py`, `tests/test_launcher.py`. The
+`tests/test_reference_copy.py` manifest moved to `sandbox-ref-23`.
+
+- **Launcher:** `claude-container.sh` is the reference's thin entry script;
+  `agent/launcher.sh` holds Claude's profile values, the six provider-only
+  optional-traffic settings, `AGENT_CREDENTIALS` (`anthropic-api` with
+  `ANTHROPIC_API_KEY`, `anthropic-account` without) and two hooks:
+  `agent_approval_bypass` (`--dangerously-skip-permissions`) and `agent_help`
+  (documents `CLAUDE_YOLO`, which the old help listed).
+- **Reference defect, fixed as `sandbox-ref-23`:** the shared
+  `tests/test_launcher.py` of `sandbox-ref-22` carried Claude identifiers, so
+  `tests/test_alignment.py` failed here (change `fix-shared-test-identifiers`
+  in `sandbox-container`).
+- **`tests/test_reference_copy.py`:** `launcher/` is a closed shared directory
+  too; its self-tests failed with host Python without it.
+- **Kept decision U10:** the old launcher forwarded `ANTHROPIC_API_KEY` in every
+  provider session; only `anthropic-api` receives it now, operator profiles
+  never. The real network tests set their synthetic key inside the session and
+  assert that the `custom` test profile receives none.
+
+Old tests gate (design decision 3): the `sandbox-ref-21` `tests/test_wrapper.py`
+(83 cases) ran against the new entry script and core, with only its harness
+adapted (the fake engine answers the `build-inputs-hash` label; the synthetic
+installation copies the core, the agent part, the policy and the build inputs).
+70 passed, 13 failed; no lost behavior.
+
+| Old case | Outcome | Maps to |
+| --- | --- | --- |
+| `test_composition_and_independence_in_both_state_modes` | visible change | U3/U16 build-only `--container-build`; U7 tmpfs sizes |
+| `test_disabled_delegation_preserves_host_launch_endpoint` | visible change | U3/U16 build-only |
+| `test_verification_preserves_exact_record_boundaries_and_status` | visible change | U3/U16 build-only |
+| `test_healthy_build_and_session_outlive_shutdown_budget` | visible change | U3 build-only |
+| `test_private_creation_does_not_change_host_command_umask` | visible change | U16: build-only skips state creation |
+| `test_setup_diagnostic_quotes_invoked_symlink_and_runs_from_other_workspace` | visible change | U1 setup message |
+| `test_missing_network_mode_requires_setup_without_side_effects` | visible change | U1 provider default |
+| `test_restricted_unprotected_installation_fails_before_image_operations` | visible change | setup guidance before the engine (phase 1-2 union) |
+| `test_shell_does_not_receive_yolo_or_cli_arguments` | visible change | U14: Bash receives its arguments; still no bypass flag |
+| `test_ca_mount_and_security_policy` | visible change | U7 tmpfs sizes |
+| `test_argument_forwarding_and_defaults` | visible change | M6 `--unsetenv` order (`CONTAINER_HOST` still unset) |
+| `test_socket_disabled_values_skip_delegation_checks` | visible change | M6 `--unsetenv` order |
+| `test_interrupted_creation_recovery_calls_are_bounded` | wording only | the core reports "creation outcome unresolved" |
+
+The other "to verify at adoption" cases passed against the core
+(`test_toolchain_cannot_set_claude_variables`,
+`test_proxy_hardening_failure_never_starts_agent`,
+`test_proxy_probe_timeout_and_interruption_clean_only_proxy`,
+`test_private_existing_claude_and_wrong_owner`), as did the three hook cases,
+which stay in the reduced `tests/test_wrapper.py`.
+
+Environment: WSL2 6.6.87.2, Podman server 4.9.3 (client 4.3.1); image rebuilt
+through the build-only path: `localhost/claude-code:latest` `8762969c5469`,
+`build-inputs-hash`
+`5a2aab00f7773cf8252b2a962677de67d1145922f5aa76d1151bcd41d687cdb5`.
+
+| Check | Result |
+| --- | --- |
+| `--container-build` alone (real engine, maintenance) | Passed: built, labeled, no session container |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 446 tests, 72 skipped |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` (host Python, siblings present) | Passed: 22 tests |
+| Mutated `agent/launcher.sh` (no bypass flag, a provider setting and the API credential removed), `tests.test_wrapper` | Failed as expected: 7 failures; restored |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 115 tests (`test_launcher.py`, `test_wrapper.py`) |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 29 tests |
+| `bash tests/run-runtime.sh --network` | First run failed: 3 tests (U10 and provider settings checked first); after the test updates passed: 22 tests, 1 skipped |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh` (`test_runtime.py`, including `image-smoke.sh`) | Passed: 19 tests |
+| `git diff --check`, `bash -n` on the entry script, core and agent part | Passed |
+
+The installed and qualified code changes (entry script, core, agent part):
+installations rerun `--container-setup`.

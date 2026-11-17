@@ -40,6 +40,10 @@ The `tools/propagate.py` dry run from `sandbox-ref-21` to `sandbox-ref-22` (2026
 - **Rewrite:** six references in `docs/network-contract.md`.
 - **Move:** the manifest.
 
+Update (task 2.3): adopting `sandbox-ref-22` made `tests/test_alignment.py` fail on seven Claude identifiers in the shared `tests/test_launcher.py`. The reference fixed them, and added a check against sibling wrapper identifiers, in `fix-shared-test-identifiers` and tagged `sandbox-ref-23`. This change adopts `sandbox-ref-22` and then `sandbox-ref-23` (shared tests only) on the branch `adopt-sandbox-ref-23`.
+
+Update (task 4.1): the real `--network` run showed that the old launcher forwarded `ANTHROPIC_API_KEY` in every provider session, also with operator profiles such as the test's `custom` profile. The contract's "an operator policy profile forwards no credential, as today" was therefore not true for Claude. The user kept U10 as decided: only `anthropic-api` receives the key. The real tests now set the synthetic key inside the session and assert that the `custom` profile receives none. The delegation grid supplies the provider settings, which the core checks before the socket opt-in.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -63,7 +67,7 @@ The `tools/propagate.py` dry run from `sandbox-ref-21` to `sandbox-ref-22` (2026
      - `AGENT_CREDENTIALS=(anthropic-api=ANTHROPIC_API_KEY anthropic-account=)`;
      - the six settings in `AGENT_PROVIDER_ENV`;
      - empty session, restricted, unset and reserved arrays;
-     - one hook. `agent_approval_bypass` sets `agent_bypass_args=(--dangerously-skip-permissions)`; the core already skips it in shell mode and in the qualification probe.
+     - two hooks. `agent_help` documents `CLAUDE_YOLO`, which the old help listed and the core does not describe, because only the agent knows its effect (added after task 2.1 compared the old and new help). `agent_approval_bypass` sets `agent_bypass_args=(--dangerously-skip-permissions)`; the core already skips it in shell mode and in the qualification probe.
    - Alternative rejected: an `agent_environment` hook for `ANTHROPIC_API_KEY`. The core already forwards the selected profile's credential (U10), and a hook would duplicate that.
 
 3. **Old tests gate the deletion.** Before the old launcher is deleted, the current `tests/test_wrapper.py` (the `sandbox-ref-21` version) runs against the new entry script and core. Its fake engine and the 83 cases stay unchanged. Every failing case is resolved in exactly one of three ways:
@@ -106,7 +110,7 @@ The `tools/propagate.py` dry run from `sandbox-ref-21` to `sandbox-ref-22` (2026
    - **`docs/setup.md`.** It follows the provider default.
    - **Parity table in `docs/network-contract.md`.** It is fixed by hand after `--apply`, as for `sandbox-ref-21`:
      - the reference row is copied from `sandbox-container`;
-     - the Claude row says it adopted `sandbox-ref-22`, with its runtime results;
+     - the Claude row says it adopted `sandbox-ref-23`, with its runtime results;
      - the other wrapper rows are copied from their repositories.
 
 7. **Validation scope.** The launcher, installation manifest and qualification identity all change, so validation covers the full set:

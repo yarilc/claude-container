@@ -24,7 +24,7 @@ API check.
 
 | Mode | Agent access | Socket delegation |
 | --- | --- | --- |
-| unset/empty effective mode | Ordinary launch stops with setup guidance | No session |
+| unset/empty effective mode | `provider` (Claude's default); setup guidance without a protected installation or the saved provider settings | Rejected |
 | `offline` | Own loopback, pipes and fixed-peer socket pairs only | Rejected |
 | `provider` | Loopback/pipes/pairs and preconnected exact-destination proxy | Rejected |
 | `unrestricted` (explicit only) | Ordinary runtime networking | Exact opt-in allowed |
@@ -32,11 +32,13 @@ API check.
 New users must first run `bash ./claude-container.sh --container-setup`, then
 use its managed launcher, which supplies validated saved preferences. Explicit
 operator modes remain supported for manual installations and maintenance.
-Missing/empty ordinary mode stops before runtime checks, engine queries and state
-creation; a managed empty override is preserved and refused. No working-directory
+A missing or empty mode selects `provider`; without the saved provider settings
+it stops with setup guidance before engine queries and state creation, and a
+managed empty override never restores the saved mode. No working-directory
 configuration is discovered. Offline sessions cannot reach the Claude API.
-Standalone qualification retains its offline default and fixed protected controls;
-it cannot launch an arbitrary command. Maintenance consent never selects a mode.
+Provider sessions forward `ANTHROPIC_API_KEY` by name only with the
+`anthropic-api` profile. Standalone qualification uses the same default mode and
+fixed protected controls; it cannot launch an arbitrary command. Maintenance consent never selects a mode.
 
 Unknown modes fail before image operations. Restricted setup errors never retry
 with unrestricted networking. Operator configuration selects the outer policy;
@@ -256,8 +258,8 @@ in `sandbox-container`.
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Sandbox (reference) | Reference (`sandbox-ref-21`) | Guard, qualification and guided setup integrated; no provider mode (no authentication method); provider mechanics covered by the fixture profile | WSL ABI 3: all runner modes passed (2026-11-15) | Not applicable |
-| Claude | Ported from `sandbox-ref-21`; shared files unchanged | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
+| Sandbox (reference) | Reference (`sandbox-ref-23`, shared launcher core) | Guard, qualification and guided setup integrated; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-17) | Not applicable |
+| Claude | Adopted `sandbox-ref-23`: shared launcher core | Shared launcher core, mandatory bootstrap, multiplexed proxy and guided setup integrated | WSL ABI 3: all runner modes passed (2026-11-17, shared launcher core) | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
 | Codex | Ported from `sandbox-ref-21`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
 | Antigravity | Ported from `sandbox-ref-21`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |
 | OpenCode | Ported from `sandbox-ref-21`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
