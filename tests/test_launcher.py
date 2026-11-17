@@ -189,7 +189,7 @@ class LauncherTests(unittest.TestCase):
         (help_bin / 'cat').symlink_to('/bin/cat')
         result = subprocess.run(
             ['/bin/bash', str(WRAPPER), '--container-help'],
-            env=self.env | {'PATH': str(help_bin), 'CLAUDE_YOLO': 'invalid'},
+            env=self.env | {'PATH': str(help_bin), 'OTHER_AGENT_YOLO': 'invalid'},
             text=True, capture_output=True)
         self.assertEqual(result.returncode, 0)
         self.assertIn('beyond the workspace', result.stdout)
@@ -225,7 +225,7 @@ class LauncherTests(unittest.TestCase):
             for missing_tools in (False, True):
                 for mode in (None, ''):
                     with self.subTest(enabled=enabled, missing_tools=missing_tools, mode=mode):
-                        env = self.env | {'CLAUDE_YOLO': 'invalid',
+                        env = self.env | {'OTHER_AGENT_YOLO': 'invalid',
                             'FIXTURE_SHELL_TRUST_HOST_CA': 'invalid',
                             'FIXTURE_SHELL_MAINTENANCE': '1',
                             'FIXTURE_SHELL_PODMAN': '1', 'CONTAINER_HOST': 'invalid',
@@ -342,7 +342,7 @@ class LauncherTests(unittest.TestCase):
             for service in ('0', '1'):
                 with self.subTest(yolo=yolo, service=service):
                     self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper('-c', 'test', CLAUDE_YOLO=yolo,
+                    result = self.run_wrapper('-c', 'test', OTHER_AGENT_YOLO=yolo,
                                               FIXTURE_SHELL_PODMAN=service)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertNotIn('--dangerously-skip-permissions', self.create())
@@ -493,13 +493,13 @@ class LauncherTests(unittest.TestCase):
                  'notes': [], 'check': ['tool'], 'source': {}, 'path': ['/toolchains/tools/bin'],
                  'verified': {'base': toolchains.base_reference(ROOT), 'date': '2026-11-15'}}
         index = {'schema': 1, 'toolchains': [entry | {'env': {
-            'JAVA_HOME': '/toolchains/tools', 'ANTHROPIC_BASE_URL': 'https://example.invalid'}}]}
+            'JAVA_HOME': '/toolchains/tools', 'OTHER_AGENT_BASE_URL': 'https://example.invalid'}}]}
         (self.library / 'index.json').write_text(json.dumps(index))
         result = self.run_wrapper()
         self.assertEqual(result.returncode, 0, result.stderr)
         environment = self.environment()
         self.assertIn('JAVA_HOME=/toolchains/tools', environment)
-        self.assertIn('ANTHROPIC_BASE_URL=https://example.invalid', environment)
+        self.assertIn('OTHER_AGENT_BASE_URL=https://example.invalid', environment)
         for variable in ('FIXTURE_SHELL_CONFIG_DIR', 'HISTFILE', 'HOME'):
             with self.subTest(variable=variable):
                 self.log.unlink(missing_ok=True)
@@ -1557,7 +1557,7 @@ class LauncherTests(unittest.TestCase):
                             if shell:
                                 options.append('--container-shell')
                             result = self.run_wrapper(*options, FIXTURE_SHELL_STATE_DIR=isolated,
-                                                      CLAUDE_YOLO=yolo, FIXTURE_SHELL_PODMAN=service)
+                                                      OTHER_AGENT_YOLO=yolo, FIXTURE_SHELL_PODMAN=service)
                             self.assertEqual(result.returncode, 0, result.stderr)
                             create = self.create()
                             self.assertNotIn('--dangerously-skip-permissions', create)
@@ -1614,7 +1614,7 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
 
     def test_symlink_invocation_and_native_permissions(self):
-        alias = self.base / 'claude'
+        alias = self.base / 'agent-alias'
         alias.symlink_to(WRAPPER)
         result = subprocess.run([str(alias), '--container-build', '--dangerously-skip-permissions'],
                                 cwd=self.project, env=self.env, input='', text=True, capture_output=True)

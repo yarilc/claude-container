@@ -11,12 +11,13 @@
 
 ## 2. Launcher on the shared core
 
-- [ ] 2.1 Save the current `tests/test_wrapper.py` and `claude-container.sh` outside the repository as the old-test baseline. Write `agent/launcher.sh` (design decision 2) and replace `claude-container.sh` with the reference entry script. Verify that:
+- [x] 2.1 Save the current `tests/test_wrapper.py` and `claude-container.sh` outside the repository as the old-test baseline. Write `agent/launcher.sh` (design decision 2) and replace `claude-container.sh` with the reference entry script. Verify that:
   - `python3 -m unittest tests.test_alignment tests.test_launcher` passes in the disposable test container;
   - `bash claude-container.sh --container-help` prints the provider disclosure with Claude's hosts;
   - `diff <(sed s/sandbox-container/claude-container/g ../sandbox-container/sandbox-container.sh) claude-container.sh` is empty.
 - [x] 2.2 Run the saved `tests/test_wrapper.py` against the new entry script and core in the disposable test container. Classify every failing case as (a) visible change, (b) lost behavior or (c) Claude-only behavior (design decision 3), and resolve the six "to verify at adoption" cases by name. Record the table in a scratch note for task 4.2. Verify that every failing case has exactly one outcome.
-- [ ] 2.3 If task 2.2 found any (b), pause this change. Fix each behavior with a shared case in `sandbox-container` through its own reference change and tag, then rerun tasks 1.1 to 2.2 against the new tag. Update this change's artifacts to name that tag. Verify that a rerun of task 2.2 finds no (b). If task 2.2 found none, mark this task done with the note "no lost behavior".
+- [x] 2.3 If task 2.2 found any (b), pause this change. Fix each behavior with a shared case in `sandbox-container` through its own reference change and tag, then rerun tasks 1.1 to 2.2 against the new tag. Update this change's artifacts to name that tag. Verify that a rerun of task 2.2 finds no (b). If task 2.2 found none, mark this task done with the note "no lost behavior".
+  - Done: the old tests found no lost behavior; the reference defect found by task 2.1 (Claude identifiers in the shared `tests/test_launcher.py`) was fixed in `fix-shared-test-identifiers` and tagged `sandbox-ref-23`, adopted on `adopt-sandbox-ref-23`. `launcher/core.sh` is unchanged between the tags, so the task 2.2 classification stands. `tests/test_reference_copy.py` now treats `launcher/` as a closed directory.
 
 ## 3. Claude tests and documentation
 
@@ -48,10 +49,10 @@
   - `git diff --check`.
 
   Verify that all pass.
-- [ ] 4.2 Add the `sandbox-ref-22` adoption section to `docs/validation.md`, starting from the tool's template. It holds every result and the old-test classification table from task 2.2. Commit with the tool's message and merge into `main`. Verify that `tests/test_reference_copy.py` passes on `main` with host Python next to the `sandbox-container` checkout, with the sibling check not skipped.
+- [ ] 4.2 Add the `sandbox-ref-22` and `sandbox-ref-23` adoption section to `docs/validation.md`, starting from the tool's template. It holds every result and the old-test classification table from task 2.2. Commit with the tool's message and merge into `main`. Verify that `tests/test_reference_copy.py` passes on `main` with host Python next to the `sandbox-container` checkout, with the sibling check not skipped.
 
 ## Workflow follow-up
 
 - The operator pushes `main` and runs `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host, then checks a Claude session in provider mode.
 - Archive this change with spec sync. This creates `openspec/specs/shared-launcher/spec.md` in this repository.
-- Then Codex, Antigravity and Pi adopt `sandbox-ref-22` in their own changes, and OpenCode after them.
+- Then Codex, Antigravity and Pi adopt `sandbox-ref-23` in their own changes, and OpenCode after them.

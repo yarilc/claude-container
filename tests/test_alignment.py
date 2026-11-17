@@ -62,6 +62,16 @@ def shared_files(root):
         yield root / name
 
 
+def sibling_identifiers(root):
+    """Identifiers of the wrapper checkouts next to this one, which shared files must not name either."""
+    identifiers = set()
+    for path in sorted(root.parent.glob('*/' + agent_profile.PROFILE)):
+        if path.parent.parent.resolve() != root.resolve():
+            # Only the identifiers: a sibling on another tag may not validate against this checkout's rules.
+            identifiers.update(json.loads(path.read_text())['identifiers'])
+    return sorted(identifiers)
+
+
 def violations(root, identifiers):
     pattern = re.compile('|'.join(map(re.escape, identifiers)), re.IGNORECASE)
     found = []
@@ -121,6 +131,12 @@ class SharedComponentAlignment(unittest.TestCase):
 
     def test_shared_components_contain_no_agent_identifiers(self):
         self.assertEqual(violations(ROOT, PROFILE.identifiers), [])
+
+    def test_shared_components_contain_no_sibling_identifiers(self):
+        identifiers = sibling_identifiers(ROOT)
+        if not identifiers:
+            self.skipTest('no sibling wrapper checkout next to this one')
+        self.assertEqual(violations(ROOT, identifiers), [])
 
     def test_scan_detects_an_injected_identifier(self):
         with tempfile.TemporaryDirectory() as directory:

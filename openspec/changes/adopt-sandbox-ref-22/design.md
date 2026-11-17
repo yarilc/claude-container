@@ -40,6 +40,8 @@ The `tools/propagate.py` dry run from `sandbox-ref-21` to `sandbox-ref-22` (2026
 - **Rewrite:** six references in `docs/network-contract.md`.
 - **Move:** the manifest.
 
+Update (task 2.3): adopting `sandbox-ref-22` made `tests/test_alignment.py` fail on seven Claude identifiers in the shared `tests/test_launcher.py`. The reference fixed them, and added a check against sibling wrapper identifiers, in `fix-shared-test-identifiers` and tagged `sandbox-ref-23`. This change adopts `sandbox-ref-22` and then `sandbox-ref-23` (shared tests only) on the branch `adopt-sandbox-ref-23`.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -106,7 +108,7 @@ The `tools/propagate.py` dry run from `sandbox-ref-21` to `sandbox-ref-22` (2026
    - **`docs/setup.md`.** It follows the provider default.
    - **Parity table in `docs/network-contract.md`.** It is fixed by hand after `--apply`, as for `sandbox-ref-21`:
      - the reference row is copied from `sandbox-container`;
-     - the Claude row says it adopted `sandbox-ref-22`, with its runtime results;
+     - the Claude row says it adopted `sandbox-ref-23`, with its runtime results;
      - the other wrapper rows are copied from their repositories.
 
 7. **Validation scope.** The launcher, installation manifest and qualification identity all change, so validation covers the full set:
