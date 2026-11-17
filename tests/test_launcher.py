@@ -1448,14 +1448,43 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('belong', result.stderr)
 
     def test_inaccessible_state_and_ignored_permissions(self):
-        self.state.mkdir(mode=0o700)
-        self.state.chmod(0o000)
-        try:
-            result = self.run_wrapper()
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(str(self.state), result.stderr)
-        finally:
-            self.state.chmod(0o700)
+        # Every state directory the caller cannot enter, or cannot create, stops
+        # with the wrapper's own diagnostic and hint, never a raw shell error.
+        home = self.base / 'host-home'
+        config = home / '.config/fixture-shell'
+        shared = home / '.config/openspec'
+        cases = [
+            ('isolated home', {}, [self.state], self.state, 'not accessible'),
+            ('isolated child', {}, [self.state, self.state / '.config/fixture-shell'],
+             self.state / '.config/fixture-shell', 'not accessible'),
+            ('shared configuration', {'FIXTURE_SHELL_STATE_DIR': ''}, [config], config, 'not accessible'),
+            ('shared directory', {'FIXTURE_SHELL_STATE_DIR': ''}, [config, shared], shared, 'not accessible'),
+            ('read-only state', {'FIXTURE_SHELL_STATE_DIR': '', 'FIXTURE_SHELL_READONLY_STATE': '1'},
+             [config, shared], config, 'not accessible'),
+            ('uncreatable', {'FIXTURE_SHELL_STATE_DIR': ''}, [], config, 'cannot create'),
+        ]
+        for name, env, directories, locked, problem in cases:
+            with self.subTest(name=name):
+                shutil.rmtree(home, ignore_errors=True)
+                shutil.rmtree(self.state, ignore_errors=True)
+                home.mkdir(mode=0o700)
+                for directory in directories:
+                    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                target = home if problem == 'cannot create' else locked
+                target.chmod(0o500 if problem == 'cannot create' else 0o000)
+                self.log.unlink(missing_ok=True)
+                try:
+                    result = self.run_wrapper(**env)
+                finally:
+                    target.chmod(0o700)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(f'fixture-shell: ', result.stderr)
+                self.assertIn(f'{problem}', result.stderr)
+                self.assertIn(str(locked), result.stderr)
+                self.assertIn('choose another directory', result.stderr)
+                self.assertNotIn('Permission denied', result.stderr)
+                self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()), name)
+        shutil.rmtree(self.state, ignore_errors=True)
         stat = self.bin / 'stat'
         stat.write_text('#!/bin/bash\nif [[ "$2" == %a ]]; then echo 777; else exec /usr/bin/stat "$@"; fi\n')
         stat.chmod(0o755)

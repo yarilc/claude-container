@@ -563,7 +563,7 @@ core_state() {
     private_directory() {
         local path=$1 mode
         [[ -d "$path" && -r "$path" && -w "$path" && -x "$path" ]] \
-            || die "state directory is not accessible: $path"
+            || die "state directory is not accessible: $path (grant your user access, or choose another directory)"
         [[ $(stat -c '%u' -- "$path") == "$caller_uid" ]] \
             || die "state directory must belong to the calling user: $path"
         mode=$(stat -c '%a' -- "$path")
@@ -571,10 +571,19 @@ core_state() {
             || die "state directory must be private: $path (chmod 700; use native Linux storage if permissions are not enforced)"
     }
 
-    create_private_directory() (
-        umask 077
-        mkdir -p -- "$@"
-    )
+    # The umask stays inside the subshell; the caller reports a failure.
+    create_private_directory() {
+        (umask 077; mkdir -p -- "$1") 2>/dev/null \
+            || die "cannot create state directory: $1 (check its parent's permissions, or choose another directory)"
+    }
+
+    # Resolve a state directory only after checking that the caller can enter
+    # it, so a failed cd never replaces the wrapper's diagnostic.
+    resolve_state_directory() {
+        [[ -d "$1" && -r "$1" && -x "$1" ]] \
+            || die "state directory is not accessible: $1 (grant your user read and search access, or choose another directory)"
+        (cd -- "$1" && pwd -P)
+    }
 
     # The build-only operation creates no state; it only selects the CA bundle.
     state_mounts=()
@@ -592,7 +601,7 @@ core_state_directories() {
     fi
     if [[ -n "$state_dir" ]]; then
         create_private_directory "$state_dir"
-        state_dir=$(cd -- "$state_dir" && pwd -P)
+        state_dir=$(resolve_state_directory "$state_dir")
         private_directory "$state_dir"
         # Resolve before creating children so an existing parent symlink cannot
         # redirect configuration creation outside the dedicated application home;
@@ -611,13 +620,13 @@ core_state_directories() {
     else
         config_dir="${cfg_CONFIG_DIR:-$HOME/$AGENT_CONFIG_HOME}"
         create_private_directory "$config_dir"
-        config_dir=$(cd -- "$config_dir" && pwd -P)
+        config_dir=$(resolve_state_directory "$config_dir")
         private_directory "$config_dir"
         state_mounts+=(--volume "$config_dir:$AGENT_HOME/$AGENT_CONFIG_HOME:rw")
         writable_state+=("$config_dir")
         for relative in "${AGENT_SHARED_DIRS[@]}"; do
             create_private_directory "$HOME/$relative"
-            shared_path=$(cd -- "$HOME/$relative" && pwd -P)
+            shared_path=$(resolve_state_directory "$HOME/$relative")
             ((AGENT_PRIVATE_SHARED_DIRS == 0)) || private_directory "$shared_path"
             state_mounts+=(--volume "$shared_path:$AGENT_HOME/$relative:rw")
             writable_state+=("$shared_path")
@@ -640,7 +649,7 @@ core_readonly_state() {
         source=$root/$relative
         [[ "$relative" != "$AGENT_CONFIG_HOME" ]] || source=$config
         [[ -d "$source" ]] || die "read-only state needs an existing directory: $source"
-        source=$(cd -- "$source" && pwd -P)
+        source=$(resolve_state_directory "$source")
         state_mounts+=(--volume "$source:$AGENT_HOME/$relative:ro")
     done
 }

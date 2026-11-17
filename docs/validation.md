@@ -2624,3 +2624,34 @@ through the build-only path: `localhost/claude-code:latest` `8762969c5469`,
 
 The installed and qualified code changes (entry script, core, agent part):
 installations rerun `--container-setup`.
+
+## Adoption of `sandbox-ref-24`: 2026-11-17
+
+Change `adopt-sandbox-ref-24`. Copied from `sandbox-container` tag `sandbox-ref-24`
+(commit `dd5d82e`): `launcher/core.sh`, `tests/test_launcher.py`. The
+`tests/test_reference_copy.py` manifest moved to the tag; the reference and
+Codex parity rows were checked by hand.
+
+The core now checks every state directory for read and search access before it
+resolves it: a directory the caller cannot enter stops with
+`claude-container: state directory is not accessible: <path> (...)` instead of
+Bash's `cd: ...: Permission denied`, and one that cannot be created stops with
+`claude-container: cannot create state directory: <path> (...)` (change
+`fix-inaccessible-state-diagnostic` in `sandbox-container`, found by Codex's
+adoption). No Claude file changed; the Claude wrapper tests ran unchanged.
+
+Environment: WSL2 6.6.87.2, Podman server 4.9.3; image `localhost/claude-code:latest`
+`8762969c5469` (build inputs unchanged, `build-inputs-hash`
+`5a2aab00f7773cf8252b2a962677de67d1145922f5aa76d1151bcd41d687cdb5`).
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` (host Python, siblings present) | Passed, no skips |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 446 tests, 72 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 115 tests |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
+| `git diff --check` | Passed |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+The installed launcher core changes: installations rerun `--container-setup`.
