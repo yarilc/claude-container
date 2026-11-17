@@ -18,7 +18,7 @@ Defines how Claude's launcher is built from the shared Bash core of the `sandbox
 - **THEN** they are identical
 
 ### Requirement: Claude agent launcher part
-`agent/launcher.sh` SHALL hold Claude's profile data for the core, consistent with `agent/profile.json` and `agent/policies/default.json`, including a credential entry for each policy profile. It SHALL declare Claude's optional-traffic settings as provider-only settings. Claude's only hook SHALL be `agent_approval_bypass`, which turns an enabled `CLAUDE_YOLO` into the `--dangerously-skip-permissions` argument.
+`agent/launcher.sh` SHALL hold Claude's profile data for the core, consistent with `agent/profile.json` and `agent/policies/default.json`, including a credential entry for each policy profile. It SHALL declare Claude's optional-traffic settings as provider-only settings. Claude's hooks SHALL be `agent_approval_bypass`, which turns an enabled `CLAUDE_YOLO` into the `--dangerously-skip-permissions` argument, and `agent_help`, which documents `CLAUDE_YOLO` and its effect.
 
 #### Scenario: Profile and launcher part disagree
 - **WHEN** `agent/launcher.sh` and `agent/profile.json` or the default policy declare different values for the same property
@@ -35,11 +35,15 @@ Defines how Claude's launcher is built from the shared Bash core of the `sandbox
 
 #### Scenario: No other agent code
 - **WHEN** the core runs Claude's agent part
-- **THEN** every hook other than `agent_approval_bypass` uses the core default
+- **THEN** every hook other than `agent_approval_bypass` and `agent_help` uses the core default
+
+#### Scenario: Help documents the approval bypass
+- **WHEN** `--container-help` runs
+- **THEN** it lists `CLAUDE_YOLO` with `--dangerously-skip-permissions` after the common variables
 
 ### Requirement: Claude launcher tests cover only Claude's part
 Claude's launcher behavior SHALL be tested by the shared `tests/test_launcher.py` and `tests/fake_podman.py`, copied unchanged from the reference tag. `tests/test_wrapper.py` SHALL test only:
-- Claude's hook;
+- Claude's hooks;
 - Claude's agent data;
 - its credential and provider settings;
 - its shipped policy inventories;

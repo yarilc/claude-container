@@ -11,7 +11,8 @@ socket=${socket#unix://}
 pattern=test_runtime.py
 guard_environment=()
 if [[ "${1:-}" == --wrapper ]]; then
-    pattern=test_wrapper.py
+    # The shared launcher tests and this wrapper's own: test_launcher.py, test_wrapper.py.
+    pattern='test_[lw][ar][au]*.py'
     shift
 elif [[ "${1:-}" == --setup ]]; then
     pattern=test_setup.py

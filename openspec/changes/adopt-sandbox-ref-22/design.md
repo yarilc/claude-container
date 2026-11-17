@@ -65,7 +65,7 @@ Update (task 2.3): adopting `sandbox-ref-22` made `tests/test_alignment.py` fail
      - `AGENT_CREDENTIALS=(anthropic-api=ANTHROPIC_API_KEY anthropic-account=)`;
      - the six settings in `AGENT_PROVIDER_ENV`;
      - empty session, restricted, unset and reserved arrays;
-     - one hook. `agent_approval_bypass` sets `agent_bypass_args=(--dangerously-skip-permissions)`; the core already skips it in shell mode and in the qualification probe.
+     - two hooks. `agent_help` documents `CLAUDE_YOLO`, which the old help listed and the core does not describe, because only the agent knows its effect (added after task 2.1 compared the old and new help). `agent_approval_bypass` sets `agent_bypass_args=(--dangerously-skip-permissions)`; the core already skips it in shell mode and in the qualification probe.
    - Alternative rejected: an `agent_environment` hook for `ANTHROPIC_API_KEY`. The core already forwards the selected profile's credential (U10), and a hook would duplicate that.
 
 3. **Old tests gate the deletion.** Before the old launcher is deleted, the current `tests/test_wrapper.py` (the `sandbox-ref-21` version) runs against the new entry script and core. Its fake engine and the 83 cases stay unchanged. Every failing case is resolved in exactly one of three ways:

@@ -28,6 +28,11 @@ AGENT_PROVIDER_ENV=(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDAT
 AGENT_UNSET_ENV=()
 AGENT_RESERVED_ENV=()
 
+agent_help() {
+    printf '  CLAUDE_YOLO             enable --dangerously-skip-permissions: 1, true or yes\n'
+    printf '                          (default: disabled; never applied in shell mode)\n'
+}
+
 # CLAUDE_YOLO: Claude's own approval bypass; the core skips it in shell mode.
 agent_approval_bypass() {
     agent_bypass_args=(--dangerously-skip-permissions)

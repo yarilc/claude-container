@@ -54,8 +54,9 @@ class NetworkRuntime(unittest.TestCase):
             shutil.copyfile(source, self.install / 'network' / source.name)
         (self.install / 'agent/policies').mkdir(mode=0o700, parents=True, exist_ok=True)
         (self.install / 'setup').mkdir(mode=0o700, exist_ok=True)
-        for name in ('agent/profile.json', 'agent/policies/default.json', 'setup/common.py', 'setup/toolchains.py',
-                     'Containerfile'):
+        (self.install / 'launcher').mkdir(mode=0o700, exist_ok=True)
+        for name in ('agent/profile.json', 'agent/policies/default.json', 'agent/launcher.sh', 'setup/common.py',
+                     'setup/toolchains.py', 'Containerfile', '.containerignore', 'launcher/core.sh'):
             shutil.copyfile(ROOT / name, self.install / name)
         binary_dir = self.install / 'network/bin'
         binary_dir.mkdir(mode=0o700, exist_ok=True)

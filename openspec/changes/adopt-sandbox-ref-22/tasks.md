@@ -21,7 +21,7 @@
 
 ## 3. Claude tests and documentation
 
-- [ ] 3.1 Rewrite `tests/test_wrapper.py` with the shared `tests/fake_podman.py` and the real agent part (design decision 4). It covers:
+- [x] 3.1 Rewrite `tests/test_wrapper.py` with the shared `tests/fake_podman.py` and the real agent part (design decision 4). It covers:
   - the three hook cases;
   - the provider-only settings in each mode;
   - `ANTHROPIC_API_KEY` with each policy profile, including a `CLAUDE_CONTAINER_ENV_VARS` attempt under `anthropic-account`;
@@ -29,7 +29,7 @@
   - every outcome (c) from task 2.2.
 
   Verify that `python3 -m unittest tests.test_wrapper` passes in the disposable test container.
-- [ ] 3.2 Update the wrapper-owned runtime tests (design decision 5): `tests/run-runtime.sh`, `tests/test_runtime.py`, `tests/test_network_runtime.py`, `tests/test_setup_runtime.py` and `tests/test_setup_wrapper.py`. Verify that `python3 -m unittest tests.test_setup_wrapper` passes in the disposable test container and that `bash -n tests/run-runtime.sh` succeeds.
+- [x] 3.2 Update the wrapper-owned runtime tests (design decision 5): `tests/run-runtime.sh`, `tests/test_runtime.py`, `tests/test_network_runtime.py`, `tests/test_setup_runtime.py` and `tests/test_setup_wrapper.py`. Verify that `python3 -m unittest tests.test_setup_wrapper` passes in the disposable test container and that `bash -n tests/run-runtime.sh` succeeds.
 - [ ] 3.3 Update the README, `docs/setup.md`, `docs/network-contract.md` and `AGENTS.md` (design decision 6). Cover:
   - the provider default, without the `c777b73` history;
   - temporary storage and the tmpfs home;

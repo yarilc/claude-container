@@ -8,7 +8,7 @@
 
 - Adopt `sandbox-ref-22` with `tools/propagate.py`, then `sandbox-ref-23`. `sandbox-ref-23` removes the Claude identifiers that `sandbox-ref-22`'s shared `tests/test_launcher.py` carried; this adoption found them (reference change `fix-shared-test-identifiers`). This copies `launcher/core.sh`, `tests/test_launcher.py`, `tests/fake_podman.py` and the launcher fixtures, plus the changed shared files (`network/*`, `setup/*`, `tests/test_alignment.py`, `tests/test_setup.py`, ...), and moves the manifest and the current-state references to the tag.
 - Replace `claude-container.sh` with the thin entry script. The entry script is identical to the reference's apart from its name.
-- Add `agent/launcher.sh`: the Claude profile data, and one hook, `agent_approval_bypass`, which turns `CLAUDE_YOLO` into `--dangerously-skip-permissions`. The six optional-traffic settings become `AGENT_PROVIDER_ENV`. `ANTHROPIC_API_KEY` is listed only under the `anthropic-api` policy profile.
+- Add `agent/launcher.sh`: the Claude profile data and two hooks: `agent_approval_bypass`, which turns `CLAUDE_YOLO` into `--dangerously-skip-permissions`, and `agent_help`, which documents it. The six optional-traffic settings become `AGENT_PROVIDER_ENV`. `ANTHROPIC_API_KEY` is listed only under the `anthropic-api` policy profile.
 - Before the old launcher is deleted, run Claude's current `tests/test_wrapper.py` against the new core. For each failing case, decide one of three outcomes:
   - it is a recorded visible change;
   - it is a lost behavior, which is fixed in the reference with a shared case, and the adoption then moves to the new tag;

@@ -147,7 +147,7 @@ git --version >/dev/null && openspec --version >/dev/null && claude --version >/
     def test_explicit_temporary_mounts_and_lifecycle(self):
         script = '''python3 - <<'CHECK'
 import errno, json, os, pathlib, shutil, stat, subprocess
-for path, size in (('/tmp', 256 << 20), ('/run', 16 << 20), ('/var/tmp', 256 << 20)):
+for path, size in (('/tmp', 512 << 20), ('/run', 32 << 20), ('/var/tmp', 512 << 20)):
     mount = json.loads(subprocess.check_output([
         'findmnt', '--json', '--bytes', '--output', 'TARGET,FSTYPE,OPTIONS,SIZE',
         '--target', path]))['filesystems'][0]
