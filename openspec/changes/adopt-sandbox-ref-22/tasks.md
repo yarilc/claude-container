@@ -2,10 +2,10 @@
 
 ## 1. Adopt `sandbox-ref-22`
 
-- [ ] 1.1 Commit this change directory on `main` and create `prepare-adopt-sandbox-ref-22`. Then, from `sandbox-container`, run `python3 -I tools/propagate.py ../claude-container sandbox-ref-21 sandbox-ref-22` (dry run) and `--apply`. Verify that:
+- [x] 1.1 Commit this change directory on `main` and create `prepare-adopt-sandbox-ref-22`. Then, from `sandbox-container`, run `python3 -I tools/propagate.py ../claude-container sandbox-ref-21 sandbox-ref-22` (dry run) and `--apply`. Verify that:
   - the plan lists exactly the files in design "Context";
   - the tool switched to `adopt-sandbox-ref-22`.
-- [ ] 1.2 Fix the parity table in `docs/network-contract.md` by hand (design decision 6). Verify that:
+- [x] 1.2 Fix the parity table in `docs/network-contract.md` by hand (design decision 6). Verify that:
   - the reference row equals `sandbox-container`'s;
   - the Codex, Antigravity, OpenCode and Pi rows equal their own repositories'.
 
@@ -15,7 +15,7 @@
   - `python3 -m unittest tests.test_alignment tests.test_launcher` passes in the disposable test container;
   - `bash claude-container.sh --container-help` prints the provider disclosure with Claude's hosts;
   - `diff <(sed s/sandbox-container/claude-container/g ../sandbox-container/sandbox-container.sh) claude-container.sh` is empty.
-- [ ] 2.2 Run the saved `tests/test_wrapper.py` against the new entry script and core in the disposable test container. Classify every failing case as (a) visible change, (b) lost behavior or (c) Claude-only behavior (design decision 3), and resolve the six "to verify at adoption" cases by name. Record the table in a scratch note for task 4.2. Verify that every failing case has exactly one outcome.
+- [x] 2.2 Run the saved `tests/test_wrapper.py` against the new entry script and core in the disposable test container. Classify every failing case as (a) visible change, (b) lost behavior or (c) Claude-only behavior (design decision 3), and resolve the six "to verify at adoption" cases by name. Record the table in a scratch note for task 4.2. Verify that every failing case has exactly one outcome.
 - [ ] 2.3 If task 2.2 found any (b), pause this change. Fix each behavior with a shared case in `sandbox-container` through its own reference change and tag, then rerun tasks 1.1 to 2.2 against the new tag. Update this change's artifacts to name that tag. Verify that a rerun of task 2.2 finds no (b). If task 2.2 found none, mark this task done with the note "no lost behavior".
 
 ## 3. Claude tests and documentation
