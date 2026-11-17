@@ -38,7 +38,7 @@ A nonempty `CLAUDE_CONTAINER_STATE_DIR` SHALL select a dedicated writable home a
 - **THEN** startup fails before image operations with instructions to select one state mode
 
 ### Requirement: Private credential directories
-The wrapper SHALL create selected state directories with user-only permissions and verify caller ownership and read/write/search access. It SHALL reject group/other access on the shared Claude directory or isolated home and its existing `.claude` directory. Errors SHALL identify the path and suggest explicit repair or permission-enforcing storage; existing permissions SHALL NOT be repaired recursively.
+The wrapper SHALL create selected state directories with user-only permissions and verify caller ownership and read/write/search access. It SHALL reject group/other access on the shared Claude directory or isolated home and its existing `.claude` directory. Errors SHALL carry the wrapper prefix, identify the path and suggest explicit repair or permission-enforcing storage; existing permissions SHALL NOT be repaired recursively. Access SHALL be checked before a path is resolved, so no raw shell error replaces the wrapper's diagnostic.
 
 #### Scenario: Private state created
 - **WHEN** a selected credential directory is absent on a filesystem supporting Unix permissions
@@ -51,6 +51,15 @@ The wrapper SHALL create selected state directories with user-only permissions a
 #### Scenario: Filesystem ignores permissions
 - **WHEN** the state filesystem cannot enforce user-only directory access
 - **THEN** startup rejects that state and recommends native Linux storage rather than silently weakening privacy
+
+#### Scenario: Directory the caller cannot enter
+- **WHEN** the shared Claude directory, `~/.config/openspec`, the isolated home or one of its children exists with mode `000`
+- **THEN** startup fails before image operations with `claude-container: state directory is not accessible: <path>` and a hint to grant the caller access or choose another directory
+- **AND** stderr contains no shell error such as `cd: ... Permission denied`
+
+#### Scenario: Directory that cannot be created
+- **WHEN** a selected state directory is absent and its parent does not let the caller create it
+- **THEN** startup fails before image operations with a prefixed error naming the directory that could not be created
 
 ### Requirement: Resolved state paths and isolation scope
 The wrapper SHALL resolve selected state sources to physical absolute paths. `CLAUDE_CONTAINER_STATE_DIR` and `CLAUDE_CONFIG_DIR` SHALL be absolute and free of colon, CR and LF, checked before any engine operation. In isolated mode, every configuration child and the CA mount parent SHALL resolve within that home and be private. Escaping configuration symlinks SHALL fail. Documentation SHALL distinguish application-state isolation from access granted independently by workspace mounts or socket delegation.
@@ -125,7 +134,7 @@ The wrapper SHALL refuse an isolated state directory that is the workspace mount
 - **THEN** the managed launcher refuses it before starting the wrapper
 
 ### Requirement: Read-only state
-`CLAUDE_CONTAINER_READONLY_STATE`, a boolean (`1`, `true`, `yes`; empty, `0`, `false`, `no`), SHALL mount the Claude configuration directory and every shared directory read-only below the ephemeral home. They are taken from shared state or from the isolated home. Those directories SHALL already exist. The launcher SHALL NOT create them, SHALL NOT check their owner or privacy, and SHALL NOT pass them to restricted preparation as writable. The isolated home itself SHALL NOT be mounted.
+`CLAUDE_CONTAINER_READONLY_STATE`, a boolean (`1`, `true`, `yes`; empty, `0`, `false`, `no`), SHALL mount the Claude configuration directory and every shared directory read-only below the ephemeral home. They are taken from shared state or from the isolated home. Those directories SHALL already exist and be accessible to the caller. The launcher SHALL NOT create them, SHALL NOT check their owner or privacy, and SHALL NOT pass them to restricted preparation as writable. The isolated home itself SHALL NOT be mounted.
 
 #### Scenario: Read-only shared state
 - **WHEN** `CLAUDE_CONTAINER_READONLY_STATE=1` is set and `~/.claude` and `~/.config/openspec` exist
@@ -134,3 +143,7 @@ The wrapper SHALL refuse an isolated state directory that is the workspace mount
 #### Scenario: Missing state
 - **WHEN** read-only state is selected and a configuration directory does not exist
 - **THEN** the launch stops before the engine and names the missing directory
+
+#### Scenario: Inaccessible read-only state
+- **WHEN** read-only state is selected and a configuration directory exists but the caller cannot enter it
+- **THEN** the launch stops before image operations with a prefixed error naming that directory, without a shell error
