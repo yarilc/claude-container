@@ -24,7 +24,7 @@ API check.
 
 | Mode | Agent access | Socket delegation |
 | --- | --- | --- |
-| unset/empty effective mode | Ordinary launch stops with setup guidance | No session |
+| unset/empty effective mode | `provider` (Claude's default); setup guidance without a protected installation or the saved provider settings | Rejected |
 | `offline` | Own loopback, pipes and fixed-peer socket pairs only | Rejected |
 | `provider` | Loopback/pipes/pairs and preconnected exact-destination proxy | Rejected |
 | `unrestricted` (explicit only) | Ordinary runtime networking | Exact opt-in allowed |
@@ -32,11 +32,13 @@ API check.
 New users must first run `bash ./claude-container.sh --container-setup`, then
 use its managed launcher, which supplies validated saved preferences. Explicit
 operator modes remain supported for manual installations and maintenance.
-Missing/empty ordinary mode stops before runtime checks, engine queries and state
-creation; a managed empty override is preserved and refused. No working-directory
+A missing or empty mode selects `provider`; without the saved provider settings
+it stops with setup guidance before engine queries and state creation, and a
+managed empty override never restores the saved mode. No working-directory
 configuration is discovered. Offline sessions cannot reach the Claude API.
-Standalone qualification retains its offline default and fixed protected controls;
-it cannot launch an arbitrary command. Maintenance consent never selects a mode.
+Provider sessions forward `ANTHROPIC_API_KEY` by name only with the
+`anthropic-api` profile. Standalone qualification uses the same default mode and
+fixed protected controls; it cannot launch an arbitrary command. Maintenance consent never selects a mode.
 
 Unknown modes fail before image operations. Restricted setup errors never retry
 with unrestricted networking. Operator configuration selects the outer policy;
