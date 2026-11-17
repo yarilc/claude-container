@@ -9,8 +9,8 @@
 
 ## 2. Validation and integration
 
-- [ ] 2.1 In the disposable test container, run the unit discovery. Then run `bash tests/run-runtime.sh` with `--wrapper` and `--setup`, the default runtime run, and `git diff --check` (design decision 4). Verify that all pass. If a Claude wrapper test fails, pause the change (design decision 2).
-- [ ] 2.2 Set the Claude row to "Adopted `sandbox-ref-24`" with the runner result of task 2.1. Add the `sandbox-ref-24` adoption section to `docs/validation.md`, starting from the tool's template, with every result of task 2.1. Commit with the tool's message and merge into `main`. Verify that `tests/test_reference_copy.py` passes on `main` with host Python.
+- [x] 2.1 In the disposable test container, run the unit discovery. Then run `bash tests/run-runtime.sh` with `--wrapper` and `--setup`, the default runtime run, and `git diff --check` (design decision 4). Verify that all pass. If a Claude wrapper test fails, pause the change (design decision 2).
+- [x] 2.2 Set the Claude row to "Adopted `sandbox-ref-24`" with the runner result of task 2.1. Add the `sandbox-ref-24` adoption section to `docs/validation.md`, starting from the tool's template, with every result of task 2.1. Commit with the tool's message and merge into `main`. Verify that `tests/test_reference_copy.py` passes on `main` with host Python.
 - [ ] 2.3 In `sandbox-container`, set the reference row to `sandbox-ref-24` and copy the Claude row byte for byte from `claude-container` (design decision 3). Commit on `main`. Verify that the reference, Claude and Codex rows are identical in `sandbox-container`, `claude-container` and `codex-container`.
 
 ## Workflow follow-up
