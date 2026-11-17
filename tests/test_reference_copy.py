@@ -15,14 +15,14 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_TAG = 'sandbox-ref-23'
-REFERENCE_COMMIT = '7d14706296b7e6140b3ebd62eca05f1675665950'
+REFERENCE_TAG = 'sandbox-ref-24'
+REFERENCE_COMMIT = 'dd5d82eaadc4b25724e2c702ff4039d4c21836aa'
 SIBLING = ROOT.parent / 'sandbox-container'
 # Shared directories whose complete file set is fixed by the manifest.
 CLOSED_DIRECTORIES = ('launcher', 'network', 'setup')
 SKIPPED_PARTS = ('__pycache__', 'bin')
 MANIFEST = {
-    'launcher/core.sh': 'f4e1394ec041a5ed73af555046f8f50d863a6474c2090cc34194d9b2465be8c8',
+    'launcher/core.sh': '70c26e8f8d491a5392e709a98e2e165a9344664557935937480d125d2dfeefbe',
     'network/.containerignore': '938d84510789e940b804c8062c45c257d4a119ad55d21f60db57d6290590187c',
     'network/Containerfile': 'b909198e5027bc58ceca4e6076ea4b1a54faa592083e4c0190b2c671cc5b2f36',
     'network/README.md': '0e88d289d9eb9d3ba0d2c53540f407fb08dc74ac8e30f9b73e7ede021319fcf3',
@@ -77,7 +77,7 @@ MANIFEST = {
     'tests/test_agent_profile.py': '51072b5c037496f5ad057610247d508c03ebe07e6b855ab440f8b9179c0b3ea6',
     'tests/test_alignment.py': '5e8e1818bb101d5aab678b5399b9e0c98603d141d449f81c2a802e48a2ec38ca',
     'tests/test_guard.py': 'bad0772d868b8cac767355557b655b43b765eb83e79008065240d41f2c8f37fd',
-    'tests/test_launcher.py': '5a04eeae3c040ce36fe6ffd15c7c8c97a94458fb42724bf8ed061276e78285cb',
+    'tests/test_launcher.py': '15286898405ab4021f5436b01ad835ac0ddd1795d0290dfef686d17d66addd4e',
     'tests/test_mux.py': 'fb3a7cf8675d247c6609a337d56682d484cde6296e14ea939bfde70537cc8446',
     'tests/test_network_feasibility.py': '4cff9c50b996fd38f2b21b75abe73de77531e554522b04641fcb5288178d1e1c',
     'tests/test_network_policy.py': 'f57b3fe72deca821510855b6a474efb2e606471c4d231c210a699627e056f032',
