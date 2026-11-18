@@ -2655,3 +2655,33 @@ Environment: WSL2 6.6.87.2, Podman server 4.9.3; image `localhost/claude-code:la
 | Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator, 2026-11-17) |
 
 The installed launcher core changes: installations rerun `--container-setup`.
+
+## Adoption of `sandbox-ref-25`: 2026-11-18
+
+Change `adopt-sandbox-ref-25`. Copied from `sandbox-container` tag `sandbox-ref-25`
+(commit `6bed770`): `launcher/core.sh`, `setup/setup.py`, `tests/test_launcher.py`,
+`tests/test_setup.py`. The `tests/test_reference_copy.py` manifest moved to the
+tag; the parity rows were checked by hand.
+
+With delegation enabled, the launcher and guided setup now refuse a reported host
+socket path made only of slashes, and one that exists in the wrapper's namespace
+as a non-socket (change `verify-delegated-socket-path` in `sandbox-container`). A
+path the wrapper cannot see is still accepted as the remapped socket of a
+containerized wrapper. No Claude file changed; the Claude tests ran unchanged.
+
+Environment: WSL2 6.6.87.2, Podman server 4.9.3; image `localhost/claude-code:latest`
+`75f5e38b9ec3`, rebuilt through the build-only path (`build-inputs-hash`
+`5a2aab00f7773cf8252b2a962677de67d1145922f5aa76d1151bcd41d687cdb5`, unchanged).
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` (host Python, siblings present) | Passed, no skips |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 447 tests, 72 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 116 tests |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
+| `git diff --check` | Passed |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+The installed launcher core and setup change: installations rerun `--container-setup`.
