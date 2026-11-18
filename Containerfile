@@ -3,8 +3,8 @@
 # recorded in agent/policies/default.json `tested.cli`.
 FROM docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 
-ARG CLAUDE_CODE_VERSION=2.1.316
-ARG OPENSPEC_VERSION=1.16.0
+ARG CLAUDE_CODE_VERSION=2.1.325
+ARG OPENSPEC_VERSION=2.0.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CLAUDE_CONFIG_DIR=/claude-home/.claude \

@@ -2685,3 +2685,93 @@ Environment: WSL2 6.6.87.2, Podman server 4.9.3; image `localhost/claude-code:la
 | Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator, 2026-11-18) |
 
 The installed launcher core and setup change: installations rerun `--container-setup`.
+
+## Claude Code 2.1.325 and OpenSpec 2.0.0 image pins (2026-11-18)
+
+The change `pin-claude-code-2-1-325` selects the newest stable npm releases
+at least 72 hours old at the 2026-11-18 freeze. Claude Code 2.1.325 was published
+on November 13 and OpenSpec 2.0.0 on November 11. Claude Code 2.1.326 and 2.1.327
+were still within the 72-hour window. The base image remains
+`node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`.
+
+| Image | Image ID | Reported Claude Code | Reported OpenSpec |
+| --- | --- | --- | --- |
+| Baseline | `75f5e38b9ec3b38f6cd2b7ae376bd1fd028096a455867a380f4c1262242901d9` | 2.1.316 | 1.16.0 |
+| Updated | `3d916384eff20d1a7363a341e49253ecbfb7e5cd53984a47ad7a3ae6e27e6521` | 2.1.325 | 2.0.0 |
+
+The maintenance build used HTTPS Debian sources and recorded build-inputs hash
+`e73f8a34b76e833d06a4f2ac1390bb692fb90f25befe4e34a775e05088fc8ca1`.
+Both images report Node.js 22.23.4 and Python 3.11.2. Validation used WSL2
+6.6.87.2 x86_64, Podman client 4.3.1, rootless server 4.9.3, and Netavark.
+
+### Provider endpoint and native control checks
+
+The offline scan searched both installed ELF binaries for literal HTTPS URLs
+on Anthropic and Claude domains, following the 2026-11-08 inventory. All six
+variables from `AGENT_PROVIDER_ENV` appear in the 2.1.325 binary, and
+`claude --help` lists `--dangerously-skip-permissions`.
+
+| Host | Comparison with CLI 2.1.316 |
+| --- | --- |
+| `api.anthropic.com` | The same account API URL strings and the same API host for both profiles. |
+| `platform.claude.com` | Same `/v1/oauth/token` and authorization strings. Added a CLI documentation link. |
+| `claude.ai` | Added project, share and privacy settings links. The host remains outside both base profiles. |
+| `claude.com` | Retained host-browser authorization. Removed one feedback form link. |
+| `anthropic.com`, `code.claude.com`, `support.claude.com` | Added a plugin schema identifier and a documentation link. Removed one support article link. |
+| `portal.anthropic.com` | The bare hostname URL disappeared. It was outside both base profiles. |
+
+The other scanned hostnames and paths matched. The inventory leaves
+`anthropic-api` at `api.anthropic.com:443` and `anthropic-account` at that host
+plus `platform.claude.com:443`, under revision `anthropic-2026-11-08-v2`.
+The authentication entries dated 2026-11-08 refer to CLI 2.1.316.
+
+A credential-free `GET /api/oauth/usage` through the production proxy in
+`anthropic-account` returned HTTP 401 from both allowed hosts, matching the
+2026-11-08 check. The proxy used policy digest
+`5daa304957e38b0f2f347e35d8cc737073f1b00b4f02348ade2df12ab146d58a`.
+
+In a locally qualified provider session, `claude -p` with a dummy key made
+nine CONNECT attempts, all to `api.anthropic.com:443`. The logging proxy used
+the API profile's destination and a synthetic TLS Messages API on loopback.
+Claude completed the synthetic exchange and executed the test Bash tool under
+the guard. Separate CONNECT probes to `platform.claude.com:443`,
+`claude.ai:443`, and `claude.com:443` all reported `policy-denied`.
+The checks used synthetic state and made no authenticated provider requests.
+
+### Offline OpenSpec round trip
+
+OpenSpec 1.16.0 populated `.config/openspec/config.json` in a disposable shared
+home. OpenSpec 2.0.0 read the same profile in a locally qualified offline shell
+with guard `abi3-seccomp-mux-v1`. On a temporary project, `init --tools none`,
+`new change`, `validate --all --strict --json`, and `list --json` passed. The
+temporary change used `skip_specs: true`. The legacy configuration's file names
+and content checksums matched before and after.
+
+### Acceptance checks
+
+The baseline and updated image each passed the six pin checks. Credential-free
+unit discovery ran 447 cases on each image with the same 72 skips and matching
+case-by-case results. This discovery includes the shared suites and the byte
+comparison with `sandbox-ref-25`.
+
+| Check | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh --wrapper` | Passed all 116 tests. |
+| `bash tests/run-runtime.sh --setup` | Passed all 67 tests. |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed both tests. |
+| `bash tests/run-runtime.sh` | Passed all 19 default runtime tests. |
+| `bash tests/run-runtime.sh --qualification` | Passed all 29 tests. |
+| `bash tests/run-runtime.sh --network` | Ran 22 cases with the opt-in toolchain downloads skipped. All other cases passed, including the native Claude Bash tool through the synthetic API and TLS destination binding. |
+| `bash tests/run-runtime.sh --guard` | Ran 20 cases with the opt-in 305-second idle case skipped. All other cases passed. |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed the topology harness, including its expected unguarded Unix socket control. |
+| `bash tests/run-runtime.sh --network-policy` | Passed all 15 tests. |
+
+The guard tests used the prepared toolchain image
+`a33a4e7a708555af127d04f788dc341decf4402077064deb64bb345720365654`
+and verified Unix socket denial with the production guard on the rootless kernel.
+
+`bash ../sandbox-container/tools/shellcheck.sh .` returned the same 97
+findings on both runs. The agent part had one SC2148 and 25 SC2034 findings.
+The shared core and fixtures accounted for the other 71. `git diff --check`
+passed, as did strict change validation with the local OpenSpec 1.16.0 and the
+built image's OpenSpec 2.0.0.

@@ -305,6 +305,8 @@ static endpoint inventory of CLI 2.1.316 (OAuth code exchange and refresh at
 in the host browser); sessions now receive policy denials for them. A separately
 named operator profile is required to re-add them. `--container-setup` shows
 this notice and requires an acknowledgement each time provider mode is selected.
+The 2026-11-18 endpoint inventory of CLI 2.1.325 confirmed the same required
+hosts for both base profiles. See the [validation record](validation.md#claude-code-21325-and-openspec-200-image-pins-2026-11-18).
 The disclosure and the host reduction do not prevent the channel; only offline
 mode removes it.
 

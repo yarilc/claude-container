@@ -4,9 +4,9 @@
   "source_date": "2026-11-08",
   "sources": ["https://code.claude.com/docs/en/network-config"],
   "tested": {
-    "cli": "2.1.316 (version query; static endpoint inventory 2026-11-08)",
+    "cli": "2.1.325 (version query; static endpoint inventory 2026-11-18)",
     "node": "22.23.4 (version query only)",
-    "authentication": "operator account login, request and forced refresh passed 2026-11-08; real API key unverified"
+    "authentication": "operator account login, request and forced refresh passed with CLI 2.1.316 on 2026-11-08; real API key unverified"
   },
   "profiles": {
     "anthropic-api": {

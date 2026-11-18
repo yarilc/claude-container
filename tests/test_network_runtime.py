@@ -815,7 +815,7 @@ test -z "${ANTHROPIC_API_KEY+x}"
                                             env=values | {'CLAUDE_YOLO': yolo}, input='',
                                             text=True, capture_output=True, timeout=30)
                     self.assert_success(result)
-                    self.assertIn('2.1.316', result.stdout)
+                    self.assertIn('2.1.325', result.stdout)
             self.assertFalse(list(self.runtime.iterdir()))
 
     def test_actual_claude_bash_tool_with_synthetic_messages_api(self):

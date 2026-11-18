@@ -390,8 +390,10 @@ OAuth code exchange and token refresh at `platform.claude.com`, account API call
 at `api.anthropic.com`, and authorization pages opened in the host browser, so
 `claude.ai` and `claude.com` were removed from the account profile and are denied.
 Operators who need them must define a separately named profile in an operator
-policy; the exact base profile cannot be extended. On 2026-11-07 an operator-reported account request using existing
-OAuth credentials returned ACCOUNT_PROFILE_OK and exit 0 through the restricted
+policy; the exact base profile cannot be extended. The 2026-11-18 inventory of
+CLI 2.1.325 confirmed the same required hosts. On 2026-11-07 an operator-reported
+account request with CLI 2.1.316 and existing OAuth credentials returned
+ACCOUNT_PROFILE_OK and exit 0 through the restricted
 wrapper. A subsequent fresh isolated login and separate ACCOUNT_LOGIN_OK request
 also succeeded with exit 0. An automatic refresh after the recorded token expired
 returned ACCOUNT_REFRESH_OK and exit 0, advancing the stored expiry. These are
@@ -411,10 +413,9 @@ Provider startup sets version-supported controls for nonessential traffic,
 updaters, telemetry/error reporting, account MCP connectors, and artifacts.
 Documentation lookups and runtime plugin downloads remain blocked unless
 explicitly authorized by a feature profile. Changing writable Claude settings
-cannot add network destinations. Controls were identified in the installed
-2.1.316 binary and current documentation; their presence alone does not establish
-authenticated behavioral compatibility. No broad vendor/CDN or storage wildcard
-is added to repair a failed feature.
+cannot add network destinations. All six controls were found in the installed
+2.1.325 binary. No broad vendor/CDN or storage wildcard is added to repair a
+failed feature.
 
 Startup reports mode, profile, revision/digest, and a private session diagnostic
 path. Denial records contain only sanitized bounded hostname/port, reason, time,
@@ -865,6 +866,8 @@ OpenSpec versions on a base image referenced by digest, and sets
 `DISABLE_AUTOUPDATER=1`. The pinned CLI version must equal the policy's
 `tested.cli`; `tests/test_image_pins.py` enforces both rules. Update them only
 through the [maintenance procedure](docs/validation.md#updating-pinned-image-inputs).
+In OpenSpec 2.0.0, use the project's `/openspec-*` skills. The
+[`/opsx:*` commands were removed in this release](https://github.com/Fission-AI/OpenSpec/releases/tag/v2.0.0).
 
 The image includes the `nano` editor, and `EDITOR` and `VISUAL` are set to
 `nano`, so commands that open an editor, such as `/memory`, work inside the

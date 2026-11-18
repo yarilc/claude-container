@@ -130,15 +130,15 @@ class ImagePinTests(unittest.TestCase):
                                                   '@fission-ai/openspec@latest'),
             'unversioned package': self.recipe.replace('"@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"',
                                                        '@anthropic-ai/claude-code'),
-            'version range': self.recipe.replace('ARG OPENSPEC_VERSION=1.16.0', 'ARG OPENSPEC_VERSION=^1.16.0'),
-            'diverging cli': self.recipe.replace('ARG CLAUDE_CODE_VERSION=2.1.316', 'ARG CLAUDE_CODE_VERSION=2.1.317'),
+            'version range': self.recipe.replace('ARG OPENSPEC_VERSION=2.0.0', 'ARG OPENSPEC_VERSION=^2.0.0'),
+            'diverging cli': self.recipe.replace('ARG CLAUDE_CODE_VERSION=2.1.325', 'ARG CLAUDE_CODE_VERSION=2.1.326'),
         }
         for name, recipe in cases.items():
             with self.subTest(name=name):
                 self.assertNotEqual(recipe, self.recipe)
                 self.assertTrue(violations(recipe, self.tested_cli))
         message = violations(cases['diverging cli'], self.tested_cli)
-        self.assertTrue(any('2.1.317' in item and '2.1.316' in item for item in message), message)
+        self.assertTrue(any('2.1.326' in item and '2.1.325' in item for item in message), message)
 
 
     def test_workdir_exists_in_the_image(self):
