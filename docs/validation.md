@@ -2682,6 +2682,6 @@ Environment: WSL2 6.6.87.2, Podman server 4.9.3; image `localhost/claude-code:la
 | `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
 | `git diff --check` | Passed |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator, 2026-11-18) |
 
 The installed launcher core and setup change: installations rerun `--container-setup`.
