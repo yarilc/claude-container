@@ -2775,3 +2775,116 @@ findings on both runs. The agent part had one SC2148 and 25 SC2034 findings.
 The shared core and fixtures accounted for the other 71. `git diff --check`
 passed, as did strict change validation with the local OpenSpec 1.16.0 and the
 built image's OpenSpec 2.0.0.
+
+## Adoption of `sandbox-ref-28`: 2026-11-22
+
+Change `adopt-sandbox-ref-28`, from `sandbox-ref-25` directly. It takes in
+`sandbox-ref-26`, `sandbox-ref-27` and `sandbox-ref-28`:
+- the process rlimit fallback and systemd-only cgroup delegation;
+- the shared launcher files passing ShellCheck;
+- Windows support on a Podman machine;
+- the Windows setup guidance for agent wrappers.
+
+Copied from `sandbox-container` tag `sandbox-ref-28` (commit `ba1ef14`):
+- updated: `launcher/core.sh`, `network/README.md`, `network/agent_budgets.py`,
+  `network/control.py`, `network/guard.c`, `network/proxy_hardening.py`,
+  `network/qualification_probe.py`, `network/qualification_records.py`,
+  `network/session.py`, `setup/common.py`, `setup/launch.py`, `setup/setup.py`,
+  `setup/smoke.py`, `tests/fake_podman.py`, both fixture `launcher.sh`,
+  `tests/test_alignment.py`, `tests/test_guard.py`, `tests/test_launcher.py`,
+  `tests/test_qualification.py`, `tests/test_session.py` and
+  `tests/test_setup.py`;
+- added: the five `launcher/windows/` files, `tests/test_windows_bootstrap.py`,
+  `tests/test_windows_enter.py` and `tests/windows/shim_tests.ps1`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag.
+
+By hand, as `docs/propagation.md` says:
+- `claude-container.ps1` is a byte-for-byte copy of `sandbox-container.ps1`;
+- `.gitattributes` was copied. The LF rewrite was not needed: all 390 tracked
+  files were already LF in the index and the working tree;
+- `agent/launcher.sh` gained the ShellCheck header of the reference agent part.
+
+Claude's own tests changed where the shared behavior did, as in the reference:
+- `tests/test_setup_wrapper.py`:
+  - a failing `systemctl`, through `install_fake_systemctl`;
+  - the budget plan with the rlimit fallback and `cgroupfs`;
+  - the new case for setup without a launch service;
+- `tests/test_runtime.py`: the budget checks follow the delegated controllers
+  and the process mechanism.
+
+The README, `docs/setup.md` and `AGENTS.md` cover:
+- the Windows entry for Claude;
+- the installer;
+- host CA trust on Windows;
+- the Windows limits, including Bitdefender;
+- the rlimit fallback and `cgroupfs` budgets;
+- the setup changes.
+
+**This runner.** WSL2 `6.18.58.1-microsoft-standard-WSL2`, Podman server
+4.9.3, the `systemd` cgroup manager and controllers `[cpu memory pids]`. The
+engine had no `localhost/claude-code:latest`. The runs used:
+- `localhost/claude-code:setup-64205fd1c5d74ac7baf195905c03e901`, whose
+  `build-inputs-hash` `e73f8a34...` matches the current inputs, through
+  `CLAUDE_CONTAINER_IMAGE`;
+- for the guard toolchain, `localhost/claude-guard-toolchain:setup-64205fd1c5d74ac7baf195905c03e901`
+  through `SANDBOX_GUARD_TOOLCHAIN`, and also tagged as
+  `localhost/claude-guard-toolchain:development`, the name that
+  `--qualification` and `--network` build the guard from.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` (host Python, siblings present) | Passed: 26 tests, no skips |
+| `bash tools/shellcheck.sh ../claude-container`, `bash tools/powershell.sh ../claude-container` (from `sandbox-container`) | Passed: no finding, 62 shim cases |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | 501 tests, 80 skipped. Before the test changes above, the three `test_setup_wrapper.py` cases failed at "Continue with unrestricted networking" (setup without a launch service, `sandbox-ref-27`); after them, `test_setup_wrapper.py` passed: 9 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 120 tests, 1 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 88 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 31 tests |
+| `bash tests/run-runtime.sh --guard` | Passed: 25 tests, 1 skipped (`--guard-idle`) |
+| `bash tests/run-runtime.sh --network` | Passed: 22 tests, 1 skipped (toolchain examples) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests, including the budget checks above |
+| `git diff --check` | Passed |
+
+**Windows** (operator, 2026-11-22). Windows WSL 3.0.5.0, kernel
+6.18.58.1-1, Landlock ABI 7. The Podman Desktop machine
+`podman-machine-default` uses the `cgroupfs` manager, with Ubuntu running. The
+checkouts were snapshots of this branch and of `sandbox-container` in
+`C:\Work`.
+
+| Step | Result |
+| --- | --- |
+| Setup from `claude-container.ps1`: provider networking with the account method, host CA trust with `/etc/ssl/certs/ca-certificates.crt`, permission bypass on, login postponed | Images built in the machine, `Sandbox qualification: locally-qualified`, `Sandbox: ready`. The next step read `Next authentication action: claude-container.ps1 auth login --claudeai (or reuse your selected existing account state).`, with no distribution path |
+| `claude-container.ps1 auth login --claudeai` from a project folder | Provider session with `anthropic-account`. URL in the Windows browser, code pasted back, `Login successful` |
+| A Claude session | Claude wrote and read back a file in the project (`/mnt/c/Work/test-prj`, mode `rwxrwxrwx` on drvfs). `example.com` was refused by the proxy (502), as the provider policy requires. It exited with status 0 after Ctrl+C; `podman ps -a` then listed no container |
+| `windows-validate.ps1 -Checkout C:\Work\claude-container -Install -StopMachine`, Windows PowerShell 5.1 | 52 passed, 2 failed, 1 skipped. Installer, user `PATH`, uninstall, stopped machine, a distribution started by WSL alone and the restart with Podman all passed. The two failures came from the script; see below |
+| The same without `-Install -StopMachine`, PowerShell 7.7.0 | 40 passed, 2 failed, 3 skipped, the same two failures |
+| After the script fix, Windows PowerShell 5.1 and PowerShell 7 | 43 passed, 0 failed, 3 skipped in each. "Offline qualification", "Offline session (no network access)" (`blocked`), "Redirected input" (`610ac3a80d0a007a`) and "One engine for sessions and the machine" passed |
+| API method (setup with `api`, then `$env:ANTHROPIC_API_KEY = 'test_key'` and `--container-shell`) | Setup printed `Authentication pending. Set $env:ANTHROPIC_API_KEY = '...' in PowerShell before claude-container.ps1`. The provider session used `anthropic-api`, and `echo $ANTHROPIC_API_KEY` printed `test_key`. A real-key model request is unavailable |
+
+Notes:
+
+- **The two failures before the fix were script defects, not Claude's.**
+  - "Redirected input" ran the entry through `cmd.exe` without
+    `--container-shell`, so `-c` reached Claude.
+  - "Offline session" ran without an offline qualification. Reports are per
+    network mode, and setup qualified provider only.
+  - `sandbox-container` fixed both in `tools/windows-validate.ps1`, with no
+    tag (merge `8dcd0a6`).
+- **The first PowerShell 7 rerun failed every case with `SecurityError`.**
+  The operator had copied `C:\Work\claude-container` from the WSL share, and
+  the files carried the Mark of the Web. After `Unblock-File` the rerun passed.
+  The README describes this case for downloaded copies.
+- **Two certificates in the CA bundle are ignored.** At every start, Claude
+  Code reports that it ignores two certificates of the machine's CA bundle,
+  because they name themselves as issuer. The bundle holds the Windows CAs
+  that `podman machine set --import-native-ca` imported. Login and sessions
+  worked.
+- **The `transport-closed` diagnostic.** At session end, the
+  `recent protected egress diagnostics` line with `transport-closed` is the
+  behavior already recorded on Linux.
+- **The machine keeps the `api` method from the last setup.** The operator
+  reruns setup to return to the account method.
+
+The installed launcher core, setup and guard change, so installations rerun
+`--container-setup`.
