@@ -11,6 +11,13 @@ Claude Code:
   `--dangerously-skip-permissions` approval-bypass hook). The core owns
   argument parsing, mounts, user mapping, Podman checks and the session
   lifecycle; `docs/launcher-contract.md` in `sandbox-container` is its contract.
+- `claude-container.ps1` is the thin Windows entry, identical in every
+  wrapper: it runs the shared shim `launcher/windows/core.ps1`, which starts
+  the managed installation inside a Podman machine's WSL distribution through
+  `launcher/windows/bootstrap.sh`, and runs sessions and setup in the machine's
+  systemd namespaces through `launcher/windows/enter.sh`. Windows supports
+  every network mode that setup prepared, without Podman delegation; see the
+  README's Windows section.
 - `Containerfile` defines the Claude Code runtime image and its shell/tooling
   baseline, including `nano` with `EDITOR` and `VISUAL` set to it. The image
   disables nano's history log in `/etc/nanorc`, because the home directory is
@@ -46,7 +53,9 @@ to in-container helpers. In-container paths are neutral: `/opt/sandbox-egress`,
 `/run/sandbox-egress`, `/tmp/sandbox-runtime` and `sandbox-egress-guard`.
 
 These files are per agent:
-- `agent/`, `claude-container.sh`, `Containerfile` and `.containerignore`;
+- `agent/`, `claude-container.sh`, `claude-container.ps1` (the same text in
+  every wrapper, under the wrapper's name), `Containerfile` and
+  `.containerignore`;
 - the end-to-end tests: `test_wrapper.py` (Claude's agent part only; the
   launcher is tested by the shared `test_launcher.py`), `test_setup_wrapper.py` (setup
   checks that launch this wrapper), `test_runtime.py`,
@@ -78,7 +87,21 @@ CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh
 CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh --container-shell
 bash -n claude-container.sh launcher/core.sh agent/launcher.sh  # Validate Bash syntax
 git diff --check                         # Detect whitespace errors
+bash ../sandbox-container/tools/shellcheck.sh .   # ShellCheck at warning level
+bash ../sandbox-container/tools/powershell.sh .   # PSScriptAnalyzer and shim tests
 ```
+
+Every tracked `*.sh` file, the shared `launcher/core.sh` and launcher fixtures
+included, passes `tools/shellcheck.sh` of `sandbox-container` (pinned
+ShellCheck, warning level). Claude's agent part `agent/launcher.sh` starts with
+`# shellcheck shell=bash disable=SC2034,SC2154`, because the core reads its data
+and defines the state its hooks read.
+
+Every tracked `*.ps1` file passes `tools/powershell.sh` of `sandbox-container`
+(pinned PSScriptAnalyzer, warning level), which also runs the shared shim tests
+`tests/windows/shim_tests.ps1` against a fake `wsl.exe`. The thin entry and the
+shim stay ASCII and run on Windows PowerShell 5.1 and PowerShell 7; Windows
+PowerShell 5.1 itself is validated on a Windows host.
 
 Configured launches require host Podman and its launch engine must verify as
 Linux and rootless. Unrestricted local use requires no API socket with delegation off; explicit same-host
@@ -140,7 +163,16 @@ agent container drops capabilities and receives memory/CPU/process budgets in
 all modes; never add a capability, and never drop a budget the engine can enforce
 to make a tool work. A budget whose cgroup v2 controller the rootless engine does
 not delegate (`Host.CgroupControllers`) is omitted, announced and bound into the
-qualification identity; never require host changes to delegate it. Wrapper tests use synthetic
+qualification identity; never require host changes to delegate it. Reported
+controllers count as delegated only with the `systemd` cgroup manager
+(`Host.CgroupManager`): a rootless `cgroupfs` engine reports controllers but
+applies no limits, so it delegates none (`delegated()` in
+`network/agent_budgets.py`, mirrored in `launcher/core.sh`). The process
+budget alone falls back to a soft and hard process rlimit (`--ulimit nproc`) when
+the engine kernel (`Host.Kernel`) is Linux 5.14 or later, which counts it per
+container; the mechanism (`cgroup`, `rlimit` or `none`) is one rule in
+`network/agent_budgets.py` and `launcher/core.sh`, verified and qualified like a
+cgroup budget. Wrapper tests use synthetic
 HOME/configuration and fake Podman on executable native temporary storage;
 `SANDBOX_TEST_TMPDIR` overrides the temporary directory. No real credentials or
 remote Git repositories belong in tests.

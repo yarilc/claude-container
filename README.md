@@ -91,8 +91,11 @@ image inspection, build, or launch. Unrestricted local Podman needs no API servi
 delegation is disabled. An explicit same-host Unix `CONTAINER_HOST` is also
 supported, including when this wrapper runs inside another container; launch
 verification then queries that service even without delegating it to Claude.
-Named `CONTAINER_CONNECTION` contexts, implicit remote contexts, TCP/SSH,
-Podman Machine, and rootful engines are unsupported. All bind sources and build
+Named `CONTAINER_CONNECTION` contexts, implicit remote contexts, TCP/SSH
+(including the Podman machine connection that `podman.exe` uses), and rootful
+engines are unsupported. On Windows, the PowerShell entry runs the sandbox
+inside the Podman machine instead; see
+[Windows with Podman machine](#windows-with-podman-machine). All bind sources and build
 paths must exist on the same Linux host at their original absolute paths.
 Unix transport alone does not prove that a forwarded service is on that host.
 Launch-engine and enabled delegation verification each require exactly one
@@ -540,7 +543,9 @@ The session receives `USER`, `EDITOR=nano` and `VISUAL=nano`, and by name
 `TERM`, `COLORTERM`, `LANG` and `LC_ALL` when set. Unrestricted sessions also
 receive `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their
 lowercase forms, run with `--init`, and see their container name as
-`CONTAINER_NAME`. `CLAUDE_CONTAINER_ENV_VARS` lists further host variable names
+`CONTAINER_NAME`. In offline and provider sessions the confined guard plays the
+role of `--init`: Ctrl+C and the shutdown signals reach Claude, and the session
+ends with Claude's status. `CLAUDE_CONTAINER_ENV_VARS` lists further host variable names
 (separated by whitespace) to forward by name, never by value; an invalid name
 stops the launch, an empty variable is not forwarded, and names the launcher
 sets itself (and, in restricted modes, proxy, CA and provider settings, or in
@@ -657,9 +662,230 @@ of the pinned base image. On a network that intercepts TLS (a corporate proxy th
 re-signs certificates), enable host CA trust with a bundle that contains the
 interception CA, or the build fails with a certificate verification error.
 
+With a Podman machine on Windows, the host is the machine: it must first
+import the CAs that Windows trusts
+([Trusting a host CA on Windows](#trusting-a-host-ca-on-windows)).
+
 Migration: earlier versions always mounted the host certificate directory and
 set CA variables. Those sessions no longer trust the host CA by default. Set
 `CLAUDE_CONTAINER_TRUST_HOST_CA=1` to restore that behavior.
+
+## Windows with Podman machine
+
+On Windows, `claude-container.ps1` starts the sandbox from PowerShell on the
+rootless engine of a Podman machine that Podman Desktop created with the WSL
+provider. The session runs inside the machine's WSL distribution
+(`podman-machine-default`, user `user`), in the PID and mount namespaces where
+the machine runs systemd and its Podman service, as the machine's own login
+shells do. The entry uses neither `podman.exe` nor the machine's SSH or
+Windows API connection, so it works while other WSL distributions, such as
+Ubuntu, are running.
+
+Prerequisites:
+
+- Windows PowerShell 5.1 or PowerShell 7, with a policy that allows local
+  scripts, for example `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`;
+- a rootless Podman machine with the WSL provider, created with Podman
+  Desktop, and started by Podman (Podman Desktop or `podman machine start`)
+  before setup and sessions;
+- `sudo` without a password for the machine's user, which Podman machines
+  provide: sessions and setup enter the machine's systemd namespaces with
+  `sudo nsenter`, as its login shells do (`/usr/local/bin/enterns`);
+- a checkout of this repository in a folder on a Windows drive, with LF line
+  endings. The repository's `.gitattributes` keeps them LF even with
+  `core.autocrlf=true`; [docs/setup.md](docs/setup.md) explains how to fix an
+  older CRLF checkout.
+
+Run setup once from the checkout, in an interactive PowerShell window:
+
+```powershell
+cd C:\Work\claude-container
+.\claude-container.ps1 --container-setup
+```
+
+Setup runs the guided setup inside the machine distribution. The release,
+preferences and images are installed there, in `~/.local/lib/claude-container`.
+Its output leaves out the Linux shell guidance; the entry prints how to start
+sessions.
+Setup finds the machine's own Podman service, so it offers provider
+networking, the default, with the account or API method, and offline and
+unrestricted networking, as on Linux.
+
+With the account method, setup offers to run `claude auth login --claudeai`
+in the machine. Open the printed URL in a Windows browser and paste the code
+back. The credentials stay in the machine user's Claude configuration
+(`~/.claude` in shared state mode), separate from Claude Code on Windows. When
+you postpone the login, setup names the next step:
+`claude-container.ps1 auth login --claudeai`. With the API method, set
+`$env:ANTHROPIC_API_KEY = '...'` in PowerShell before `claude-container.ps1`.
+The entry forwards the key by name, and setup stores none. Rerun setup
+after updating the checkout, and after the machine is recreated. To run the sandbox as a command without keeping the checkout,
+install it instead ([Install as a command](#install-as-a-command)).
+
+Start sessions from a project directory on a Windows drive:
+
+```powershell
+cd C:\Work\my-project
+C:\Work\claude-container\claude-container.ps1
+C:\Work\claude-container\claude-container.ps1 --container-shell -c 'git status'
+C:\Work\claude-container\claude-container.ps1 --container-help
+```
+
+The project is mounted at its drive path, for example `/mnt/c/Work/my-project`.
+A launch is refused before any engine query in these cases:
+
+- the machine is stopped: the entry does not start its distribution, because
+  `wsl.exe` would start it without the user's runtime directory
+  `/run/user/<uid>`, where no `podman` command works. Start the machine with
+  Podman Desktop or `podman machine start`;
+- the distribution runs without that directory, because `wsl.exe` alone
+  started it. Run `wsl --terminate podman-machine-default`, then start the
+  machine with Podman. Setup refuses both states too;
+- `sudo` asks the machine's user for a password, so the entry cannot enter the
+  machine's systemd namespaces. Setup refuses it too;
+
+- the location is a network share, a path inside a WSL distribution, a drive
+  the distribution does not mount, or not a file system path;
+- the project or the worktree parent contains the checkout, or lies inside it;
+- the project is a Windows system or profile folder (see
+  [Agent hardening, budgets and lifetime](#agent-hardening-budgets-and-lifetime)).
+
+The exit status, the terminal and Ctrl+C work as on Linux. Closing the window
+also ends the session and removes its container. The machine's engine uses
+the `cgroupfs` manager: the memory and CPU budgets are not enforced, and the
+process budget uses the process rlimit, as the launch notices state (see
+[Agent hardening, budgets and lifetime](#agent-hardening-budgets-and-lifetime)).
+
+| Variable | Meaning |
+| --- | --- |
+| `CLAUDE_CONTAINER_NETWORK` | `provider`, `offline` or `unrestricted` for one launch (default: the mode setup saved); a restricted mode needs a setup that prepared it |
+| `CLAUDE_CONTAINER_WSL_DISTRO` | WSL distribution (default `podman-machine-default`) |
+| `CLAUDE_CONTAINER_WSL_USER` | user in the distribution (default `user`) |
+| `CLAUDE_CONTAINER_WSL_INSTALLATION` | absolute installation path in the distribution, when setup used another one |
+
+Set them with `$env:NAME = 'value'`. The entry forwards to the launcher in the
+distribution, by name, the other `CLAUDE_CONTAINER_*` variables whose names
+use only letters, digits and `_`, `CLAUDE_CONFIG_DIR` when it holds a
+distribution path (starting with `/`), `CLAUDE_YOLO`, `ANTHROPIC_API_KEY`, and
+the names listed in `CLAUDE_CONTAINER_ENV_VARS`. A Windows path in
+`CLAUDE_CONFIG_DIR`, such as one set for Claude Code on Windows, is skipped
+with a notice, and the directory saved by setup applies.
+`$env:ANTHROPIC_API_KEY = '...'` before the entry supplies the key as an
+exported variable does on Linux; the help lists it. It forwards no other
+Windows variable. Path values are distribution
+paths, such as `/home/user/...`.
+
+Limits on Windows:
+
+- No Podman delegation: `CLAUDE_CONTAINER_PODMAN=1` is refused, and a
+  release whose setup saved delegation, for example from a Linux shell in the
+  machine, asks to rerun setup from Windows.
+- PowerShell pipeline input, such as `'x' | .\claude-container.ps1 --container-shell -c cat`, is
+  refused, because PowerShell alters it. Redirect a file from `cmd.exe`
+  instead:
+  `cmd /c "powershell -File C:\Work\claude-container\claude-container.ps1 --container-shell -c cat < input.txt"`.
+- PowerShell parses the arguments first. Quote a `--` meant for Bash (`'--'`),
+  values with commas (`'a,b'`), numbers whose spelling matters (`'007'`) and
+  arguments of the form `-x:y`. The encoded arguments are limited to 32766
+  characters.
+- A variable with an empty value counts as unset.
+- `podman machine stop` (`wsl --terminate`) ends running sessions.
+- After the machine starts, the folder of its first session may stay in use
+  by a WSL process until `wsl --shutdown`, so Windows cannot delete that
+  folder meanwhile.
+- Projects on a Windows drive go through drvfs, which is slow on large trees.
+  Git for Windows clones with `core.autocrlf=true` look modified to Git in the
+  session: set `core.autocrlf=false` for the project, or give it a
+  `.gitattributes`.
+- Bitdefender's Advanced Threat Control (`Atc4.Detection`) has blocked the
+  operator validation script `tools/windows-validate.ps1` of `sandbox-container`, and quarantined
+  files while validation bundles were extracted with `tar`, for example
+  `tests/fixtures/shell-agent/launcher.sh`, which only the Linux tests use.
+  Setup, the installer and sessions ran with it active, and another Windows
+  system with other antivirus products ran the validation without problems.
+  Run the validation script with the checkout folder excluded, or with the
+  protection paused for the run, as your administrator allows. Setup and the
+  entry fail when a file they need is missing: restore it from the quarantine,
+  and report the false positive to the vendor.
+
+### Trusting a host CA on Windows
+
+Setup and sessions run in the machine, so host CA trust uses a bundle of the
+machine, not the Windows certificate store. On a network that intercepts TLS
+(a corporate proxy that re-signs certificates), the machine trusts the
+interception CA only when Podman imports the Windows store into it. Without
+it, image pulls and builds in the machine and HTTPS requests in sessions fail
+with a certificate verification error. With Podman 6.0 or later, enable the
+import once. `podman machine set` fails while the machine runs, so stop it
+first:
+
+```powershell
+podman machine stop
+podman machine set --import-native-ca
+podman machine start
+```
+
+The import happens at every machine start: Podman copies the CAs that Windows
+trusts into the machine and runs `update-ca-trust`, so the machine's system
+bundle contains them. Restart the machine after Windows gains a new CA.
+
+Then run setup and answer yes to "Trust a host CA bundle?". Keep the bundle
+setup proposes, the machine's system bundle (see
+[Trusting a host CA](#trusting-a-host-ca)): setup passes it to the image builds
+and saves it for sessions. Rerun setup after the machine is recreated, and
+enable the import again on the new machine.
+
+### Install as a command
+
+Instead of setup from the checkout, you can install the entry for your
+Windows account:
+
+```powershell
+cd C:\Work\claude-container
+.\claude-container.ps1 --container-install
+```
+
+The install copies the entry, the Windows scripts and every file that setup
+needs into `%LOCALAPPDATA%\Programs\claude-container`. It then adds that
+folder to your user `PATH` (`HKCU\Environment`, no administrator rights; the
+other entries and their `%VAR%` references stay as they are) and runs setup
+from the copy. The installer announces the `PATH` change before making it;
+nothing is written to the PowerShell profile or system-wide. Afterwards the
+checkout can be deleted, and a new PowerShell window runs the command from any
+project directory:
+
+```powershell
+cd C:\Work\my-project
+claude-container
+claude-container --container-shell -c 'git status'
+claude-container --container-setup
+```
+
+New PowerShell windows and new Windows Terminal tabs find the command; the
+window or tab that ran the install may not. When setup fails after the copy,
+the copy and the `PATH` entry stay; finish with
+`claude-container --container-setup`.
+
+To update, run `--container-install` again from a newer checkout or download.
+It replaces the installed files, removes the ones the new version no longer
+has, and runs setup. Do not update while a setup runs from the installed
+copy. The installed command refuses to install itself. An
+interrupted install leaves the copy marked incomplete: the command then
+refuses to start sessions until the next install completes. Two installs never
+run at once.
+
+`claude-container --container-uninstall` (also from a checkout) removes the
+`PATH` entry and the installed copy. The installation inside the Podman machine
+stays until the machine is reset. A folder still used by a WSL process is
+reported; `wsl --shutdown` releases it.
+
+The scripts are not signed. The installer writes new local files, so the
+installed command runs under the default `RemoteSigned` policy. A downloaded
+zip keeps the Mark of the Web on its files: run its first install as
+`powershell -ExecutionPolicy Bypass -File .\claude-container.ps1 --container-install`,
+or `Unblock-File` its files first. Running the installer is your decision to
+trust that source. Policies stricter than `RemoteSigned`, such as `AllSigned`,
+are unsupported.
 
 ## Mounts, identity, and persistence
 
@@ -812,8 +1038,9 @@ launch then stops until you requalify with `--container-qualify`. Budgets
 cannot be disabled: empty, `0`, `-1` and `max` are rejected before any engine
 operation. Each launch checks the created container's configured limits before
 the application starts; setup smoke and restricted qualification measure the
-effective cgroup v2 `memory.max`, `pids.max` and `cpu.max`. Budgets and tmpfs
-sizes do not limit workspace or state storage growth.
+effective cgroup v2 `memory.max`, `pids.max` and `cpu.max`, and the effective
+process rlimit when the fallback below applies. Budgets and tmpfs sizes do not
+limit workspace or state storage growth.
 
 The sandbox adapts to the controllers the engine reports
 (`podman info --format '{{.Host.CgroupControllers}}'`) instead of requiring host
@@ -824,9 +1051,34 @@ rootless engine`, and continue without asking. The check is still strict: a
 delegated budget must be applied exactly, an unenforced one must be absent, and
 the enforced set is part of the restricted qualification identity, so a later
 delegation change requires requalification. Provider proxy budgets follow the
-same rule. Risk: without memory or process budgets, a compromised or runaway
-agent can exhaust host memory or processes for your user; without a CPU budget
-it can saturate every CPU. Delegating the controllers (for example a systemd
+same rule.
+
+A rootless engine applies cgroup limits only through the `systemd` cgroup
+manager (`podman info --format '{{.Host.CgroupManager}}'`). With `cgroupfs`,
+for example on a Podman machine on WSL, the engine reports every controller but
+ignores the limits. The sandbox therefore treats no controller as delegated: it
+prints `agent memory budget not enforced: the rootless engine uses the cgroupfs
+cgroup manager, which applies no cgroup limits` and the matching CPU line, and
+the process budget uses the fallback below.
+
+The process budget has a fallback. Without the `pids` controller, the agent
+container gets a soft and hard process rlimit (`--ulimit nproc=N:N`) at the
+selected budget, and the notice reads `agent process budget enforced through the
+process rlimit (512 tasks of the session user, threads included)`. The limit is
+per session: Linux 5.14 and later count it per user namespace, and every
+container has its own. The session cannot raise it, because it has no
+capabilities. Container startup uses a few of these tasks, so slightly fewer
+than `N` processes are available. The fallback applies only when the engine
+reports kernel 5.14 or later (`podman info --format '{{.Host.Kernel}}'`). Older
+or unrecognized kernels may count every process of your user, so the process
+budget then stays unenforced, and the notice names the reason. The memory and
+CPU budgets have no fallback. The provider proxy's process budget uses the same
+fallback. Which mechanism enforces each process budget is part of the restricted
+qualification identity.
+
+Risk: without memory or process budgets, a compromised or runaway agent can
+exhaust host memory or processes for your user; without a CPU budget it can
+saturate every CPU. Delegating the controllers (for example a systemd
 `Delegate=cpu cpuset io memory pids` drop-in for `user@.service`) restores full
 enforcement, but the sandbox never requires it.
 
@@ -838,9 +1090,28 @@ shutdown budget.
 The writable workspace mount (the parent with `--container-git-worktree`) must
 not be `/`, your home directory, `/home`, `/root`, `/etc`, `/usr`, `/var`, `/bin`,
 `/sbin`, `/lib`, `/lib64`, `/boot`, `/opt`, `/srv`, `/mnt`, `/media`, `/proc`,
-`/sys`, `/dev`, `/run`, `/tmp` or a WSL drive root such as `/mnt/c`. Physical
-paths are compared, so symlinks do not bypass the check. Launch from a project
-subdirectory instead. Exact `CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` permits a
+`/sys`, `/dev`, `/run`, `/tmp` or a WSL drive root such as `/mnt/c`.
+
+On a WSL drive mount, it also must not be one of these Windows folders, in any
+letter case, because drvfs ignores case:
+
+- `/mnt/<drive>/Users`;
+- a profile, `/mnt/<drive>/Users/<name>`, its `Documents`, its `OneDrive`
+  (also `OneDrive - <organization>`) or `OneDrive/Documents`, which hold the
+  PowerShell profile and modules;
+- anything inside the profile's `AppData`, which holds the startup folder;
+- `/mnt/<drive>/Windows`;
+- `/mnt/<drive>/Program Files` or `/mnt/<drive>/Program Files (x86)`;
+- `/mnt/<drive>/ProgramData`.
+
+Apart from `AppData`, only these exact folders are refused. A project below
+them, such as `/mnt/c/Users/me/projects/app` or
+`/mnt/c/Users/me/Documents/GitHub/app`, is accepted. In worktree mode, however, a
+project placed directly in a profile is refused, because its parent is the
+profile.
+
+Physical paths are compared, so symlinks do not bypass the check. Launch from a
+project subdirectory instead. Exact `CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` permits a
 refused directory with a warning and relaxes nothing else.
 
 ### Standard security policies
