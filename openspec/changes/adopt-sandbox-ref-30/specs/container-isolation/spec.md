@@ -57,9 +57,9 @@ Sessions SHALL use a read-only container root, `--userns=keep-id`, and the calle
 ## REMOVED Requirements
 
 ### Requirement: Independent approvals and delegation
-**Reason**: Its socket-access rule and its combination scenario described host Podman delegation, which `sandbox-ref-29` removes.
+**Reason**: Its socket-access rule and its combination scenario described host Podman delegation, which `sandbox-ref-30` removes.
 **Migration**: The approval rule continues as "Independent approvals". A leftover exact `CLAUDE_CONTAINER_PODMAN=1` stops startup with guidance (`container-launcher`), and container tests use the session container engine (`session-container-engine`).
 
 ### Requirement: Every agent container drops capabilities and privilege gains
-**Reason**: Its delegated-client scenario described host Podman delegation, which `sandbox-ref-29` removes.
+**Reason**: Its delegated-client scenario described host Podman delegation, which `sandbox-ref-30` removes.
 **Migration**: The same rule continues as "Agent containers drop all capabilities and privilege gains", with the session container engine in place of delegation.

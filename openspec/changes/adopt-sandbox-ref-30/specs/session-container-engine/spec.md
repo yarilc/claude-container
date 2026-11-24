@@ -133,18 +133,23 @@ The engine container SHALL receive the session's memory, CPU and process budgets
 - **THEN** the launch announces the engine's unenforced budgets with the same reasons as the agent's, and applies the process rlimit fallback where the rules allow it
 
 ### Requirement: Fixed engine hardening exceptions
-The engine container SHALL run as an unprivileged user. Over the standard container policy it SHALL relax only what nested rootless containers need:
+The engine container SHALL run as an unprivileged user. Over the standard policy it SHALL relax only what nested containers and image operations need:
 - the user-namespace helper capabilities;
+- the chroot capability, for layer extraction and builds;
 - the FUSE and TUN devices;
 - an unmasked procfs;
 - disabled SELinux labelling;
-- `sethostname` and `setdomainname` allowed over the engine host's default seccomp profile.
+- `sethostname` and `setdomainname` over the host's default seccomp profile.
 
-The wrapper SHALL NOT widen these to make a nested tool work.
+The wrapper SHALL NOT widen these for a nested tool.
 
 #### Scenario: Engine container inspected
 - **WHEN** an engine container is inspected
 - **THEN** its user, capabilities, devices, masks, labels and seccomp profile match exactly the documented exceptions
+
+#### Scenario: Image operations in a session
+- **WHEN** a session builds an image with a `RUN` step, or loads an image whose layers its engine does not have
+- **THEN** the operation succeeds within these exceptions
 
 #### Scenario: Tool needs more
 - **WHEN** a nested tool fails because it needs a privilege outside these exceptions
