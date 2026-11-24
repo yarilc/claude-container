@@ -4,16 +4,16 @@
 
 Claude runs on `sandbox-ref-28`, where container-based tests need host Podman
 delegation. Delegation gives the session host engine authority, and works only
-in unrestricted mode. `sandbox-ref-33` replaces it with a private session
+in unrestricted mode. `sandbox-ref-34` replaces it with a private session
 container engine: the operator adds the images that tests need as toolchains,
 and restricted sessions can use them too. The tag also lets the toolchain
 command add catalog recipes by name, without maintenance consent.
 
 ## What Changes
 
-- **Adopt the tag.** `tools/propagate.py` adopts `sandbox-ref-33` from
+- **Adopt the tag.** `tools/propagate.py` adopts `sandbox-ref-34` from
   `sandbox-ref-28`. The 2026-11-24 dry run gave this plan:
-  - update 18 shared files;
+  - update 25 shared files;
   - add 14: `launcher/engine/`, `setup/engine.py`, `setup/toolchain-catalog/`
     and `tests/test_engine.py`;
   - rewrite 11 tag references in `docs/network-contract.md`;
@@ -28,6 +28,10 @@ command add catalog recipes by name, without maintenance consent.
   the toolchain library holds an image. The session reaches it at
   `CONTAINER_HOST` and `DOCKER_HOST=tcp://127.0.0.1:2375`. Setup builds
   `localhost/claude-code-engine`.
+- **Process rlimit fallback.** Where the engine applies no cgroup limits, the
+  first process of the agent, the proxy and the engine sets the process limit
+  inside the container. `--ulimit nproc`, which counted every container of the
+  user, is no longer used.
 - **Toolchain recipes.** Schema 2 recipes can:
   - have several sources;
   - list digest-pinned or local images;
@@ -58,7 +62,8 @@ command add catalog recipes by name, without maintenance consent.
   read-only image store and image removal.
 - `container-isolation`: no Podman socket in sessions. The approval rule and
   the capability rule are restated without delegation, with the engine client
-  in place of the delegated client.
+  in place of the delegated client. The process rlimit fallback is set inside
+  the container and verified on the created command.
 - `container-launcher`: removes delegation from engine verification, launch
   contexts and image operations, and refuses a leftover delegation opt-in.
 - `container-setup`:
@@ -67,7 +72,8 @@ command add catalog recipes by name, without maintenance consent.
   - applies the saved worktree scope only to sessions;
   - re-verifies the toolchain library.
 - `network-egress`: engine containment replaces delegation rejection in the
-  credential-free bypass evidence.
+  credential-free bypass evidence. The proxy's process rlimit fallback is set
+  inside the proxy.
 - `shared-launcher`: Claude's approval-bypass combinations no longer include
   delegation.
 - `windows-launcher`: the delegation refusal is the common migration refusal.

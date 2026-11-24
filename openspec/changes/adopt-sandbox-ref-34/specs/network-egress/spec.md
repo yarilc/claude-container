@@ -26,3 +26,26 @@ Documentation SHALL map N01–N14 to implementation and acceptance, publish the 
 - **WHEN** a user reads the network documentation
 - **THEN** it explains that allowed services can receive session data, remote provider tools are outside local filtering, and runtime filtering does not constrain host-side image pulls or builds
 - **AND** no sibling wrapper is claimed implemented or verified without repository-specific evidence
+
+### Requirement: Proxy process budget falls back to the process rlimit
+When the verified engine does not delegate the `pids` controller and the engine host counts the process rlimit per container, each session proxy's first process SHALL set its soft and hard process rlimit to 128 before the proxy program runs, and the engine SHALL apply no process rlimit for the budget. The created proxy and its effective limit SHALL be verified before agent execution. Otherwise the proxy process budget SHALL stay unenforced with a notice. The proxy memory budget SHALL have no fallback.
+
+#### Scenario: Proxy on the process rlimit fallback
+- **WHEN** a restricted session prepares its proxy on an engine that delegates `memory` but not `pids`, on a host that counts the process rlimit per container
+- **THEN** the proxy's first process sets a soft and hard process rlimit of 128, and the proxy is created without a cgroup process limit and without a process rlimit requested from the engine
+- **AND** the effective process rlimit inside the proxy is verified before the agent starts
+- **AND** the session prints a notice that the proxy process budget is enforced through the process rlimit
+
+#### Scenario: Proxy fallback is not effective
+- **WHEN** the proxy reports no process rlimit, or a value other than 128, while the fallback applies
+- **THEN** preparation fails before agent execution and cleans up only owned resources
+- **AND** it never substitutes an unrestricted connection
+
+#### Scenario: Proxy fallback not applied
+- **WHEN** the engine does not delegate `pids` and per-container counting is not established
+- **THEN** the session requests neither a cgroup process limit nor a process rlimit for the proxy
+- **AND** the session prints a notice naming the unenforced proxy process budget and why the fallback was not applied
+
+#### Scenario: Other containers do not consume the proxy's budget
+- **WHEN** other containers of the same user, such as other sessions, their proxies and engines, together hold more than 128 processes
+- **THEN** the proxy starts, passes its effective-limit check, and serves the session

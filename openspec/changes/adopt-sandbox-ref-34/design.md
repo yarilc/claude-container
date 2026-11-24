@@ -2,13 +2,13 @@
 
 ## Context
 
-Claude adopted `sandbox-ref-28` on 2026-11-22. `sandbox-ref-33` holds:
+Claude adopted `sandbox-ref-28` on 2026-11-22. `sandbox-ref-34` holds:
 - `simplify-toolchain-provisioning`: catalog names, several sources, archive
   downloads, no maintenance consent for `add`;
 - `replace-podman-delegation-with-session-engine`: the session container
   engine, image toolchains and the removal of host Podman delegation, tagged
   `sandbox-ref-29`;
-- four fixes found while adopting it:
+- five fixes found while adopting it:
   - `sandbox-ref-30`: the engine's chroot capability, without which the engine
     could not build images or extract new layers;
   - `sandbox-ref-31`: the engine base pinned to an `-immutable` tag, because
@@ -19,19 +19,26 @@ Claude adopted `sandbox-ref-28` on 2026-11-22. `sandbox-ref-33` holds:
     engine ran, and engines left by interrupted launches were never removed;
   - `sandbox-ref-33`: a restricted session's interfaces checked in its network
     namespace. A session with an engine sees the host's `/sys` read-only, and
-    setup with image toolchains failed its smoke check on `/sys/class/net`.
+    setup with image toolchains failed its smoke check on `/sys/class/net`;
+  - `sandbox-ref-34`: the process rlimit fallback set inside each container.
+    Applied at creation with `--ulimit nproc`, it counted every container of
+    the user, and sessions, proxies and qualification failed with
+    `crun: clone: Resource temporarily unavailable`.
 
-  Claude skips `sandbox-ref-29` to `sandbox-ref-32`.
+  Claude skips `sandbox-ref-29` to `sandbox-ref-33`.
 
 **Dry run, 2026-11-24.** `tools/propagate.py` from `sandbox-ref-28` to
-`sandbox-ref-33` gave this plan:
+`sandbox-ref-34` gave this plan:
 - **Update:**
   - `launcher/core.sh`, `launcher/windows/bootstrap.sh`, `launcher/windows/core.ps1`;
-  - `network/agent_profile.py`, `qualification_records.py` and `qualify.py`;
-  - `setup/common.py`, `launch.py`, `setup.py` and `toolchains.py`;
+  - `network/README.md`, `agent_budgets.py`, `agent_profile.py`,
+    `proxy_hardening.py`, `qualification_probe.py`, `qualification_records.py`,
+    `qualify.py` and `session.py`;
+  - `setup/common.py`, `launch.py`, `setup.py`, `smoke.py` and `toolchains.py`;
   - `tests/fake_podman.py`, `test_alignment.py`, `test_launcher.py`,
-    `test_qualification.py`, `test_setup.py`, `test_toolchains.py`,
-    `test_windows_bootstrap.py` and `tests/windows/shim_tests.ps1`.
+    `test_qualification.py`, `test_session.py`, `test_setup.py`,
+    `test_toolchains.py`, `test_windows_bootstrap.py` and
+    `tests/windows/shim_tests.ps1`.
 - **Add:** the six `launcher/engine/` files, `setup/engine.py`, the six
   `setup/toolchain-catalog/` recipes and `tests/test_engine.py`.
 - **Rewrite:** 11 references in `docs/network-contract.md`.
@@ -60,7 +67,7 @@ machine's engine.
 ## Goals / Non-Goals
 
 **Goals:**
-- Claude runs on the `sandbox-ref-33` shared files.
+- Claude runs on the `sandbox-ref-34` shared files.
 - Claude's tests, documentation and specs no longer describe delegation.
 - Claude's runner modes pass from a Claude session with its own engine. That
   session is also the first real use of the feature by an agent wrapper.
@@ -104,7 +111,7 @@ machine's engine.
 
 4. **Validation runs from a Claude session with its engine, before the
    merge.**
-   - The adoption is committed on `adopt-sandbox-ref-33` and not merged.
+   - The adoption is committed on `adopt-sandbox-ref-34` and not merged.
    - The operator reruns setup from Windows with that branch checked out.
      Setup builds `localhost/claude-code-engine` and migrates saved
      delegation.
@@ -129,7 +136,7 @@ machine's engine.
   and explicit limits for nested containers are not applied. → Record them as
   for the reference. They are runner failures, not adoption failures.
 - **[Risk] A shared defect appears only in Claude's session.** → The change
-  pauses: fix in `sandbox-container`, tag `sandbox-ref-33`, and adopt that tag
+  pauses: fix in `sandbox-container`, tag `sandbox-ref-34`, and adopt that tag
   on a fresh branch.
 
 ## Migration Plan
