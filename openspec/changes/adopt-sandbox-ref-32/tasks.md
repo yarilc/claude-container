@@ -1,12 +1,12 @@
 # Tasks
 
-## 1. Adopt `sandbox-ref-31`
+## 1. Adopt `sandbox-ref-32`
 
-- [ ] 1.1 Check that `sandbox-ref-31` exists in `sandbox-container`, then commit this change directory on `main`. From `sandbox-container`, run `python3 -I tools/propagate.py ../claude-container sandbox-ref-28 sandbox-ref-31` (dry run), then `--apply`.
+- [ ] 1.1 Check that `sandbox-ref-32` exists in `sandbox-container`, then commit this change directory on `main`. From `sandbox-container`, run `python3 -I tools/propagate.py ../claude-container sandbox-ref-28 sandbox-ref-32` (dry run), then `--apply`.
 
   Verify:
   - the plan lists the files in design "Context";
-  - the tool switched to `adopt-sandbox-ref-31`;
+  - the tool switched to `adopt-sandbox-ref-32`;
   - `claude-container.ps1` and `.gitattributes` need no copy, because the tag does not change them.
 
 ## 2. Claude's tests and documentation
@@ -39,7 +39,7 @@
   - `tools/shellcheck.sh ../claude-container`;
   - `tools/powershell.sh ../claude-container`.
 
-  Verify: no finding, and every shim case passes. Then commit the adoption on `adopt-sandbox-ref-31`, without merging.
+  Verify: no finding, and every shim case passes. Then commit the adoption on `adopt-sandbox-ref-32`, without merging.
 
 ## 3. Validation from a Claude session with its engine
 
@@ -68,7 +68,7 @@
 
 ## 4. Record, merge and parity
 
-- [ ] 4.1 Add the `sandbox-ref-31` adoption section to `docs/validation.md`, from the tool's template, with every result of tasks 2 and 3. Set Claude's parity row to "Adopted `sandbox-ref-31`", and copy the reference row from `sandbox-container`. Commit with the tool's message and merge into `main`.
+- [ ] 4.1 Add the `sandbox-ref-32` adoption section to `docs/validation.md`, from the tool's template, with every result of tasks 2 and 3. Set Claude's parity row to "Adopted `sandbox-ref-32`", and copy the reference row from `sandbox-container`. Commit with the tool's message and merge into `main`.
 
   Verify: `tests/test_reference_copy.py` passes on `main`.
 - [ ] 4.2 Copy Claude's parity row into `sandbox-container`, `codex-container`, `antigravity-container`, `opencode-container` and `pi-container`, one commit on `main` each.
