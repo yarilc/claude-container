@@ -4,14 +4,14 @@
 
 Claude runs on `sandbox-ref-28`, where container-based tests need host Podman
 delegation. Delegation gives the session host engine authority, and works only
-in unrestricted mode. `sandbox-ref-32` replaces it with a private session
+in unrestricted mode. `sandbox-ref-33` replaces it with a private session
 container engine: the operator adds the images that tests need as toolchains,
 and restricted sessions can use them too. The tag also lets the toolchain
 command add catalog recipes by name, without maintenance consent.
 
 ## What Changes
 
-- **Adopt the tag.** `tools/propagate.py` adopts `sandbox-ref-32` from
+- **Adopt the tag.** `tools/propagate.py` adopts `sandbox-ref-33` from
   `sandbox-ref-28`. The 2026-11-24 dry run gave this plan:
   - update 18 shared files;
   - add 14: `launcher/engine/`, `setup/engine.py`, `setup/toolchain-catalog/`
