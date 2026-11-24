@@ -2,7 +2,7 @@
 
 ## 1. Adopt `sandbox-ref-34`
 
-- [ ] 1.1 Check that `sandbox-ref-34` exists in `sandbox-container`, then commit this change directory on `main`. From `sandbox-container`, run `python3 -I tools/propagate.py ../claude-container sandbox-ref-28 sandbox-ref-34` (dry run), then `--apply`.
+- [x] 1.1 Check that `sandbox-ref-34` exists in `sandbox-container`, then commit this change directory on `main`. From `sandbox-container`, run `python3 -I tools/propagate.py ../claude-container sandbox-ref-28 sandbox-ref-34` (dry run), then `--apply`.
 
   Verify:
   - the plan lists the files in design "Context";
@@ -11,7 +11,7 @@
 
 ## 2. Claude's tests and documentation
 
-- [ ] 2.1 Rewrite Claude's delegation cases (design decision 2):
+- [x] 2.1 Rewrite Claude's delegation cases (design decision 2):
   - `tests/test_wrapper.py`;
   - `tests/test_runtime.py`, with the reference's `SessionEngineTests` and its process rlimit cases beside a crowded container;
   - `tests/test_network_runtime.py`, with the reference's engine cases and the profile's engine image, the reference's `/proc/net/dev` interface checks, and the proxy case beside a crowded container;
@@ -21,8 +21,8 @@
   Verify:
   - the unit discovery passes in the spike engine, on a native copy of the checkout;
   - `grep -rn "_PODMAN_SOCKET\|podman.sock" tests/` finds only refusal or absence checks and the launch service endpoint.
-- [ ] 2.2 Remove `docs/toolchains/`, which the release catalog replaces (design decision 3).
-- [ ] 2.3 Adapt the documentation to the tag, with Claude's names:
+- [x] 2.2 Remove `docs/toolchains/`, which the release catalog replaces (design decision 3).
+- [x] 2.3 Adapt the documentation to the tag, with Claude's names:
   - `README.md`:
     - the container test section, with the host `/sys` view of sessions with an engine;
     - the toolchain section, with catalog names and images;
@@ -35,7 +35,7 @@
   - `grep -n "PODMAN_SOCKET\|PODMAN=1" README.md AGENTS.md docs/setup.md` finds only the migration refusal;
   - no `SANDBOX_CONTAINER_` name appears in the new text;
   - `git diff --check` passes.
-- [ ] 2.4 Run the repository checks from `sandbox-container`, with the spike engine:
+- [x] 2.4 Run the repository checks from `sandbox-container`, with the spike engine:
   - `tools/shellcheck.sh ../claude-container`;
   - `tools/powershell.sh ../claude-container`.
 

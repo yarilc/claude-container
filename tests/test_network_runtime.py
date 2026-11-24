@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'network'))
 from revisions import TLS_ENFORCEMENT  # noqa: E402
 IMAGE = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
+ENGINE_IMAGE = os.environ.get('CLAUDE_CONTAINER_ENGINE_IMAGE', 'localhost/claude-code-engine:latest')
+# A small pinned image that the engine tests copy into the library's store.
+SAMPLE = os.environ.get('SANDBOX_TEST_ENGINE_SAMPLE', 'docker.io/library/alpine@sha256:'
+                        'c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e')
 
 
 @unittest.skipUnless(os.environ.get('SANDBOX_RUNTIME_TESTS') == '1', 'requires real rootless engine')
@@ -35,6 +39,29 @@ class NetworkRuntime(unittest.TestCase):
             env=os.environ | {'CLAUDE_CONTAINER_MAINTENANCE': '1'}, capture_output=True, text=True, timeout=60)
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
+
+    def remove_toolchain_on_cleanup(self, name, values):
+        """Store layers belong to the engine's subordinate IDs: only the toolchain command removes them."""
+        self.addCleanup(subprocess.run, [sys.executable, '-I', str(self.install / 'setup/toolchains.py'), 'remove', name],
+                        cwd=self.project, env=self.env | values, capture_output=True, timeout=300)
+
+    def engine_profile(self):
+        """The engine seccomp profile derived once from the engine host's default, or None without an engine image."""
+        cached = Path(self.guard_output.name) / 'engine-seccomp.json'
+        if cached.exists():
+            return cached
+        if subprocess.run(['podman', 'image', 'exists', ENGINE_IMAGE], capture_output=True).returncode:
+            return None
+        default = subprocess.run(['podman', 'info', '--format', '{{.Host.Security.SECCOMPProfilePath}}'],
+                                 capture_output=True, text=True, check=True).stdout.strip()
+        content = subprocess.run(['podman', 'run', '--rm', '--network=none', '--volume', default + ':/default.json:ro',
+                                  '--entrypoint', 'cat', IMAGE, '/default.json'], capture_output=True, check=True).stdout
+        source = Path(self.guard_output.name) / 'default-seccomp.json'
+        source.write_bytes(content)
+        sys.path.insert(0, str(ROOT / 'setup'))
+        import engine as engine_module
+        engine_module.write_seccomp(source, cached)
+        return cached
 
     def podman(self, *args):
         result = subprocess.run(['podman', *args], capture_output=True, text=True, timeout=60)
@@ -54,16 +81,24 @@ class NetworkRuntime(unittest.TestCase):
             shutil.copyfile(source, self.install / 'network' / source.name)
         (self.install / 'agent/policies').mkdir(mode=0o700, parents=True, exist_ok=True)
         (self.install / 'setup').mkdir(mode=0o700, exist_ok=True)
-        (self.install / 'launcher').mkdir(mode=0o700, exist_ok=True)
+        (self.install / 'launcher/engine').mkdir(mode=0o700, parents=True, exist_ok=True)
         for name in ('agent/profile.json', 'agent/policies/default.json', 'agent/launcher.sh', 'setup/common.py',
-                     'setup/toolchains.py', 'Containerfile', '.containerignore', 'launcher/core.sh'):
+                     'setup/toolchains.py', 'setup/engine.py', 'Containerfile', '.containerignore', 'launcher/core.sh',
+                     'launcher/engine/Containerfile', 'launcher/engine/.containerignore',
+                     'launcher/engine/containers.conf', 'launcher/engine/entrypoint.sh', 'launcher/engine/resolv.conf', 'launcher/engine/storage.conf'):
             shutil.copyfile(ROOT / name, self.install / name)
+        shutil.copytree(ROOT / 'setup/toolchain-catalog', self.install / 'setup/toolchain-catalog', dirs_exist_ok=True)
         binary_dir = self.install / 'network/bin'
         binary_dir.mkdir(mode=0o700, exist_ok=True)
         for name in ('sandbox-egress-guard', 'sandbox-egress-guard.sha256'):
             (binary_dir / name).unlink(missing_ok=True)
             shutil.copyfile(Path(self.guard_output.name) / name, binary_dir / name)
         (binary_dir / 'sandbox-egress-guard').chmod(0o500)
+        # With the engine image prepared, the installation gets the engine's seccomp
+        # profile as setup would write it (qualification then covers the engine).
+        engine_profile = self.engine_profile()
+        if engine_profile:
+            shutil.copyfile(engine_profile, self.install / 'launcher/engine/seccomp.json')
         self.project = self.base / 'project'
         self.project.mkdir()
         self.runtime = self.base / 'runtime'
@@ -127,7 +162,9 @@ class NetworkRuntime(unittest.TestCase):
                 owned.append(ident)
         return owned
 
-    def test_restricted_delegation_grid_and_disabled_override(self):
+    def test_leftover_delegation_opt_in_and_other_values(self):
+        # Host Podman delegation was removed: the exact old opt-in stops every
+        # restricted launch, and other values or the old socket override change nothing.
         _, provider = self.provider_fixture()
         for mode in ('offline', 'provider'):
             # Provider mode checks its own settings first, so the grid supplies them.
@@ -139,8 +176,8 @@ class NetworkRuntime(unittest.TestCase):
                             cwd=self.project, env=self.env | settings | {'CLAUDE_CONTAINER_NETWORK':mode,
                                 'CLAUDE_CONTAINER_STATE_DIR':state, 'CLAUDE_YOLO':yolo,
                                 'CLAUDE_CONTAINER_PODMAN':'1'}, input='', capture_output=True, text=True, timeout=10)
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn('rejects CLAUDE_CONTAINER_PODMAN=1', result.stderr)
+                        self.assertEqual(result.returncode, 1)
+                        self.assertIn('CLAUDE_CONTAINER_PODMAN=1: host Podman delegation was removed', result.stderr)
         for mode in ('offline', 'provider'):
             for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
                 environment = provider | {'CLAUDE_CONTAINER_NETWORK':mode}
@@ -149,14 +186,77 @@ class NetworkRuntime(unittest.TestCase):
                     CLAUDE_CONTAINER_PODMAN='true', CLAUDE_CONTAINER_PODMAN_SOCKET='/absent/disabled.sock')
                 self.assert_success(result)
 
-    def test_offline_defaults_and_delegation_rejection(self):
-        result = self.shell("python3 - <<'PY'\nimport os,socket\nassert os.listdir('/sys/class/net') == ['lo']\nassert 'HTTP_PROXY' not in os.environ\ntry: socket.create_connection(('1.1.1.1',443),1)\nexcept OSError: pass\nelse: raise AssertionError('direct route')\nPY\n")
+    def test_offline_session_engine_has_no_external_path(self):
+        # session-container-engine: Engine shares the session network boundary / Offline nested container.
+        for image in (ENGINE_IMAGE, SAMPLE):
+            if subprocess.run(['podman', 'image', 'exists', image], capture_output=True).returncode:
+                self.skipTest('prepare ' + image + ' in the engine first')
+        sample_id = self.podman('image', 'inspect', '--format', '{{.Id}}', SAMPLE).removeprefix('sha256:')
+        # Bind sources must exist at the same path for the engine service.
+        values = {'TMPDIR': str(self.base), 'CLAUDE_CONTAINER_ENGINE_IMAGE': ENGINE_IMAGE}
+        recipe = self.base / 'sample.json'
+        recipe.write_text(json.dumps({'schema': 2, 'name': 'sample', 'version': '1', 'default': False,
+                                      'images': [{'local': 'sha256:' + sample_id, 'name': 'localhost/sandbox-test-sample:1'}],
+                                      'check': ['podman', 'run', '--rm', '--network=none', 'localhost/sandbox-test-sample:1',
+                                                'true']}))
+        added = subprocess.run([sys.executable, '-I', str(self.install / 'setup/toolchains.py'), 'add', str(recipe)],
+                               cwd=self.project, env=self.env | values, capture_output=True, text=True, timeout=300)
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        self.remove_toolchain_on_cleanup('sample', values)
+        result = self.shell(r"""
+test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+# The namespace has only loopback; /sys/class/net may be the host's (design D1).
+test "$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | sort | tr '\n' ' ')" = 'lo '
+podman network create engine-test-net >/dev/null
+for network in host none default engine-test-net; do
+  flags=(--network="$network"); [ "$network" != default ] || flags=()
+  out=$(podman run --rm "${flags[@]}" localhost/sandbox-test-sample:1 sh -c \
+    'wget -q -T 3 -O /dev/null http://1.1.1.1/ && echo REACHED; nslookup -timeout=2 example.com >/dev/null 2>&1 && echo RESOLVED; echo RAN' 2>&1)
+  case $out in *REACHED*|*RESOLVED*) echo "EXTERNAL_PATH $network: $out"; exit 1 ;; esac
+  case $out in *RAN*) ;; *) echo "NOT_RUN $network: $out"; exit 1 ;; esac
+done
+! podman pull --quiet docker.io/library/busybox:latest >/dev/null 2>&1
+echo OFFLINE_ENGINE_OK
+""", **values)
+        self.assert_success(result)
+        self.assertIn('OFFLINE_ENGINE_OK', result.stdout)
+        self.assertIn('mode=offline', result.stderr)
+
+    def test_image_recipe_check_runs_without_network(self):
+        # toolchain-library: Verified against the runtime image / Image check without network.
+        for image in (ENGINE_IMAGE, SAMPLE):
+            if subprocess.run(['podman', 'image', 'exists', image], capture_output=True).returncode:
+                self.skipTest('prepare ' + image + ' in the engine first')
+        sample_id = self.podman('image', 'inspect', '--format', '{{.Id}}', SAMPLE).removeprefix('sha256:')
+        values = {'CLAUDE_CONTAINER_ENGINE_IMAGE': ENGINE_IMAGE}
+        for name, check, accepted in (
+                ('offline-ok', ['true'], True),
+                ('needs-network', ['wget', '-q', '-T', '3', '-O', '/dev/null', 'http://1.1.1.1/'], False)):
+            with self.subTest(name=name):
+                reference = 'localhost/sandbox-test-' + name + ':1'
+                recipe = self.base / (name + '.json')
+                recipe.write_text(json.dumps({'schema': 2, 'name': name, 'version': '1', 'default': False,
+                                              'images': [{'local': 'sha256:' + sample_id, 'name': reference}],
+                                              'check': ['podman', 'run', '--rm', reference, *check]}))
+                added = subprocess.run([sys.executable, '-I', str(self.install / 'setup/toolchains.py'), 'add',
+                                        str(recipe)], cwd=self.project, env=self.env | values, capture_output=True,
+                                       text=True, timeout=300)
+                self.assertEqual(added.returncode == 0, accepted, added.stdout + added.stderr)
+                if accepted:
+                    self.remove_toolchain_on_cleanup(name, values)
+                library = Path(self.env['HOME']) / '.local/share/sandbox-toolchains'
+                self.assertEqual((library / name / 'toolchain.json').exists(), accepted)
+                if not accepted:
+                    self.assertIn('toolchain check failed', added.stderr)
+
+    def test_offline_defaults_and_leftover_delegation_refusal(self):
+        result = self.shell("python3 - <<'PY'\nimport os,socket\nassert sorted(l.split(':',1)[0].strip() for l in open('/proc/net/dev').read().splitlines()[2:]) == ['lo']\nassert 'HTTP_PROXY' not in os.environ\ntry: socket.create_connection(('1.1.1.1',443),1)\nexcept OSError: pass\nelse: raise AssertionError('direct route')\nPY\n")
         self.assert_success(result)
         self.assertIn('mode=offline', result.stderr)
         self.assertFalse(list(self.runtime.iterdir()))
         result = self.shell('true\n', qualify=False, CLAUDE_CONTAINER_PODMAN='1')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('rejects CLAUDE_CONTAINER_PODMAN=1', result.stderr)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('CLAUDE_CONTAINER_PODMAN=1: host Podman delegation was removed', result.stderr)
 
     def test_restricted_hardening_identity_and_proxy_readiness(self):
         _, provider = self.provider_fixture()
@@ -402,32 +502,13 @@ exit 0"""
         self.assertNotIn('direct-network', output)
 
     @unittest.skipUnless(os.environ.get('SANDBOX_TOOLCHAIN_EXAMPLES') == '1',
-                         'set SANDBOX_TOOLCHAIN_EXAMPLES=1 to download, pull and verify the documented toolchains')
+                         'set SANDBOX_TOOLCHAIN_EXAMPLES=1 to pull, download and verify the catalog toolchains')
     def test_documented_toolchain_examples_in_an_offline_session(self):
-        examples = ROOT / 'docs/toolchains'
-        sources = json.loads((examples / 'sources.json').read_text())
-        environment = self.env | {'CLAUDE_CONTAINER_MAINTENANCE': '1'}
-        rust_image = 'localhost/sandbox-rust-musl:example-' + uuid.uuid4().hex[:8]
-        self.addCleanup(subprocess.run, ['podman', 'image', 'rm', '--force', '--ignore', rust_image],
-                        capture_output=True, timeout=120)
-        build = subprocess.run(['podman', 'build', '--tag', rust_image, '--file', str(examples / sources['rust']),
-                                str(examples)], capture_output=True, text=True, timeout=900)
-        self.assert_success(build)
-        rust_digest = self.podman('image', 'inspect', '--format', '{{.Digest}}', rust_image)
+        # Every catalog recipe is added by name: no maintenance consent, manual download or image build.
+        environment = {key: value for key, value in self.env.items() if key != 'CLAUDE_CONTAINER_MAINTENANCE'}
         results = {}
         for name in ('java21', 'maven3.9', 'go', 'node24', 'python3.13', 'rust'):
-            recipe = json.loads((examples / (name + '.json')).read_text())
-            if 'archive' in recipe['source']:
-                archive = self.base / Path(recipe['source']['archive']).name
-                download = subprocess.run(['curl', '-fsSL', '-o', str(archive), sources[name]],
-                                          capture_output=True, text=True, timeout=600)
-                self.assert_success(download)
-                recipe['source']['archive'] = str(archive)
-            if name == 'rust':
-                recipe['source']['image'] = rust_image.split(':')[0] + '@' + rust_digest
-            path = self.base / (name + '.json')
-            path.write_text(json.dumps(recipe))
-            added = subprocess.run([str(self.wrapper), '--container-toolchain', 'add', str(path)], cwd=self.project,
+            added = subprocess.run([str(self.wrapper), '--container-toolchain', 'add', name], cwd=self.project,
                                    env=environment, capture_output=True, text=True, timeout=900)
             results[name] = added.stdout + added.stderr
             self.assert_success(added)
@@ -489,6 +570,34 @@ print('AGENT_BUDGETS_OK')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f'session lifetime limit reached (4 s); exit status {result.returncode}', result.stderr)
         self.assertEqual(self.owned_proxies(), [])
+        self.assertFalse(list(self.runtime.iterdir()))
+
+    def test_proxy_starts_beside_containers_holding_more_than_its_budget(self):
+        # set-process-limits-inside-containers: on the rlimit fallback the proxy's process
+        # budget is its own. A limit applied at creation would count every container of the
+        # user, and the proxy could not start or pass its effective check.
+        import agent_budgets
+        delegated = agent_budgets.delegated(self.podman('info', '--format', '{{.Host.CgroupControllers}}'),
+                                            self.podman('info', '--format', '{{.Host.CgroupManager}}'))
+        if agent_budgets.process_mechanism(delegated, self.podman('info', '--format', '{{.Host.Kernel}}')) != 'rlimit':
+            self.skipTest('the engine does not use the process rlimit fallback')
+        _, environment = self.provider_fixture()
+        crowd = 'claude-test-crowd-' + uuid.uuid4().hex[:12]
+        self.addCleanup(subprocess.run, ['podman', 'rm', '--force', '--time', '0', '--ignore', crowd],
+                        capture_output=True, timeout=60)
+        self.podman('run', '--detach', '--rm', '--name', crowd, '--userns=keep-id', '--user',
+                    f'{os.getuid()}:{os.getgid()}', '--network=none', '--entrypoint', '/bin/sh', IMAGE, '-c',
+                    'i=0; while [ $i -lt 150 ]; do sleep 600 & i=$((i + 1)); done; wait')
+        deadline = time.monotonic() + 60
+        # The header line, the shell and its 150 sleeping children.
+        while len(self.podman('top', crowd, 'pid').splitlines()) < 152:
+            self.assertLess(time.monotonic(), deadline, 'the crowd container did not start its processes')
+            time.sleep(0.5)
+        result = self.shell('test "$HTTP_PROXY" = http://127.0.0.1:18080\necho PROXY_BESIDE_CROWD_OK\n',
+                            **environment)
+        self.assert_success(result)
+        self.assertIn('PROXY_BESIDE_CROWD_OK', result.stdout)
+        self.assertIn('proxy process budget enforced through the process rlimit (128 tasks', result.stderr)
         self.assertFalse(list(self.runtime.iterdir()))
 
     def test_proxy_death_fails_closed_and_preserves_status(self):

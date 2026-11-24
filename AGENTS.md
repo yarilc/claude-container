@@ -16,8 +16,7 @@ Claude Code:
   the managed installation inside a Podman machine's WSL distribution through
   `launcher/windows/bootstrap.sh`, and runs sessions and setup in the machine's
   systemd namespaces through `launcher/windows/enter.sh`. Windows supports
-  every network mode that setup prepared, without Podman delegation; see the
-  README's Windows section.
+  every network mode that setup prepared; see the README's Windows section.
 - `Containerfile` defines the Claude Code runtime image and its shell/tooling
   baseline, including `nano` with `EDITOR` and `VISUAL` set to it. The image
   disables nano's history log in `/etc/nanorc`, because the home directory is
@@ -104,14 +103,15 @@ shim stay ASCII and run on Windows PowerShell 5.1 and PowerShell 7; Windows
 PowerShell 5.1 itself is validated on a Windows host.
 
 Configured launches require host Podman and its launch engine must verify as
-Linux and rootless. Unrestricted local use requires no API socket with delegation off; explicit same-host
-Unix `CONTAINER_HOST` use verifies that launch service regardless of delegation.
-Reject named connections and TCP/SSH contexts. Delegation requires the exact value
-`CLAUDE_CONTAINER_PODMAN=1`. Select its endpoint by explicit
-`CLAUDE_CONTAINER_PODMAN_SOCKET`, Unix `CONTAINER_HOST`, then
-`${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. Verify that exact endpoint
-before image operations, requiring rootless `true` and an absolute reported host
-socket path; bind the latter when the wrapper sees a remapped socket.
+Linux and rootless. Unrestricted local use requires no API socket; explicit same-host
+Unix `CONTAINER_HOST` use verifies that launch service, which never reaches the
+session. Reject named connections and TCP/SSH contexts. Host Podman delegation was
+removed: an exact `CLAUDE_CONTAINER_PODMAN=1` stops every launch with migration
+guidance before any engine query. Container-based tests use the session container
+engine instead: a private rootless engine started with the session when the
+toolchain library holds image toolchains (`launcher/engine/`, the
+`session-container-engine` capability). Never mount a host Podman socket into a
+session or into the engine.
 
 Setup is the first step for new users. An unset or empty
 `CLAUDE_CONTAINER_NETWORK` selects `provider`, Claude's default; without a
@@ -168,11 +168,15 @@ controllers count as delegated only with the `systemd` cgroup manager
 (`Host.CgroupManager`): a rootless `cgroupfs` engine reports controllers but
 applies no limits, so it delegates none (`delegated()` in
 `network/agent_budgets.py`, mirrored in `launcher/core.sh`). The process
-budget alone falls back to a soft and hard process rlimit (`--ulimit nproc`) when
-the engine kernel (`Host.Kernel`) is Linux 5.14 or later, which counts it per
-container; the mechanism (`cgroup`, `rlimit` or `none`) is one rule in
+budget alone falls back to a soft and hard process rlimit when the engine kernel
+(`Host.Kernel`) is Linux 5.14 or later, which counts it per user namespace; the
+mechanism (`cgroup`, `rlimit` or `none`) is one rule in
 `network/agent_budgets.py` and `launcher/core.sh`, verified and qualified like a
-cgroup budget. Wrapper tests use synthetic
+cgroup budget. Each container's first process sets that limit: a fixed
+`/bin/sh` step for the agent and the proxy, the entrypoint for the engine.
+Never use `--ulimit nproc`: the engine applies it before it creates the
+container's user namespace, so the kernel counts every container of the user
+against it. Wrapper tests use synthetic
 HOME/configuration and fake Podman on executable native temporary storage;
 `SANDBOX_TEST_TMPDIR` overrides the temporary directory. No real credentials or
 remote Git repositories belong in tests.
@@ -181,11 +185,11 @@ With a built image and rootless engine, run `SANDBOX_RUNTIME_TESTS=1 python3 -m
 unittest discover -s tests -p test_runtime.py -v` or `bash tests/run-runtime.sh`.
 The latter uses disposable native state and same-host Unix service access;
 `--wrapper` runs wrapper tests there if host Python is unavailable. Verify both
-state modes, privacy failures, escaped symlinks, exact disabled socket values,
-endpoint precedence/remapping, shell/build/worktree composition, all four
-YOLO/socket combinations, engine errors, argument/stdin forwarding, name races,
-exit codes, signals, and owned cleanup. Disabled delegation skips separate
-endpoint checks, not mandatory launch-engine verification. Record runtime and
+state modes, privacy failures, escaped symlinks, the leftover delegation refusal,
+shell/build/worktree composition, the four YOLO/state combinations, the session
+container engine and its containment in both state modes, engine errors,
+argument/stdin forwarding, name races, exit codes, signals, and owned cleanup.
+Record runtime and
 internal sandbox checks as passed, failed, or unavailable with versions.
 
 Run `bash tests/run-runtime.sh --network-feasibility`, `--network-policy`, and
@@ -238,17 +242,17 @@ security or mount changes, and update `README.md` when usage changes.
 
 ## Security & Configuration
 
-Treat `~/.claude` and the Podman socket as sensitive. Do not copy credentials
+Treat `~/.claude` and the host Podman socket as sensitive. Do not copy credentials
 into the image, broaden mounts unnecessarily, or add `--privileged`. Preserve
 the host workspace's absolute path so containers launched by the host Podman
 service can resolve child bind mounts correctly. Claude configuration is
 intentionally writable because it contains its credentials and session state.
 
-Expose the host Podman API socket only with `CLAUDE_CONTAINER_PODMAN=1` and
-explicit `CLAUDE_CONTAINER_NETWORK=unrestricted`. Reject exact socket opt-in
-in offline/provider modes before image/resource operations.
-This grants control over containers, volumes, and additional host bind mounts
-available to the service user, beyond the selected workspace.
+Never expose the host Podman API socket to a session. The session container
+engine shares the session's network namespace, mounts only the workspace and the
+library's read-only image store, holds no secrets, and keeps only its documented
+hardening exceptions (design D4 of the reference's session engine change); never
+widen them to make a nested tool work.
 
 Host CA trust is opt-in. Mount only the selected CA bundle file, read-only, at
 `/claude-home/ca/bundle.pem`. Never mount the host certificate directory

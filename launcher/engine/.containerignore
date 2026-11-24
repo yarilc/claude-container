@@ -1,0 +1,11 @@
+# Admit only explicit engine build inputs.
+**
+!Containerfile
+!.containerignore
+!containers.conf
+!entrypoint.sh
+!resolv.conf
+!storage.conf
+# Remote Podman clients ship --secret files inside the build context under this
+# name; the secret is mounted only for its RUN step and never copied into a layer.
+!podman-build-secret*

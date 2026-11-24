@@ -76,7 +76,7 @@ class SetupRuntime(unittest.TestCase):
         if mode != 'offline':
             answers += [('Authentication method', 'account')]
         answers += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
-                    ('Delegate the host Podman API', 'no'), ('Enable Claude permission bypass', 'no'),
+                    ('Enable Claude permission bypass', 'no'),
                     ('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
                     ('Agent CPU limit', ''), ('Agent process limit', ''), ('Session lifetime in seconds', ''),
                     ('Trust a host CA bundle', 'yes' if ca else 'no')]

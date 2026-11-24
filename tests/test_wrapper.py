@@ -10,7 +10,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -78,11 +77,6 @@ class WrapperTests(unittest.TestCase):
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.base / 'host-home'),
                     'CLAUDE_CONTAINER_NETWORK': 'unrestricted', 'CLAUDE_CONTAINER_MAINTENANCE': '1',
                     'FAKE_LABEL_HASH': build_inputs_hash(ROOT), 'FAKE_LOG': str(self.log)}
-        self.socket = socket.socket(socket.AF_UNIX)
-        self.socket_path = self.base / 'podman.sock'
-        self.socket.bind(str(self.socket_path))
-        self.addCleanup(self.socket.close)
-        self.env['CLAUDE_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
 
     def run_wrapper(self, *args, wrapper=WRAPPER, **env):
         return subprocess.run([str(wrapper), *args], cwd=self.project, env=self.env | env, input='input payload',
@@ -108,23 +102,24 @@ class WrapperTests(unittest.TestCase):
         self.assertIn('anthropic-api: api.anthropic.com', result.stdout)
         self.assertIn('anthropic-account: api.anthropic.com, platform.claude.com', result.stdout)
         self.assertLess(result.stdout.index('CLAUDE_CONTAINER_NETWORK'), result.stdout.index('CLAUDE_YOLO'))
+        self.assertIn('Host Podman delegation was removed: CLAUDE_CONTAINER_PODMAN=1 stops startup.', result.stdout)
         self.assertEqual(self.calls(), [])
 
     def test_four_independent_permission_combinations(self):
+        # State mode and permission bypass; host Podman delegation was removed.
         for isolated in (False, True):
             for yolo in ('0', '1'):
-                for service in ('0', '1'):
-                    with self.subTest(isolated=isolated, yolo=yolo, service=service):
-                        self.log.unlink(missing_ok=True)
-                        result = self.run_wrapper('-p', 'test', CLAUDE_YOLO=yolo, CLAUDE_CONTAINER_PODMAN=service,
-                                                  CLAUDE_CONTAINER_STATE_DIR=str(self.state) if isolated else '')
-                        self.assertEqual(result.returncode, 0, result.stderr)
-                        create = self.agent_create()
-                        self.assertEqual(BYPASS in create, yolo == '1')
-                        self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, service == '1')
-                        self.assertEqual(create[-2:], ['-p', 'test'])
-                        self.assertNotIn('--privileged', create)
-                        self.assertFalse(any('label=disable' in a for a in create))
+                with self.subTest(isolated=isolated, yolo=yolo):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper('-p', 'test', CLAUDE_YOLO=yolo,
+                                              CLAUDE_CONTAINER_STATE_DIR=str(self.state) if isolated else '')
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    create = self.agent_create()
+                    self.assertEqual(BYPASS in create, yolo == '1')
+                    self.assertFalse(any('podman.sock' in a for a in create))
+                    self.assertEqual(create[-2:], ['-p', 'test'])
+                    self.assertNotIn('--privileged', create)
+                    self.assertFalse(any('label=disable' in a for a in create))
 
     def test_bypass_precedes_claude_arguments_and_never_reaches_the_shell(self):
         result = self.run_wrapper('-p', 'hello world', '', CLAUDE_YOLO='yes')
@@ -176,7 +171,7 @@ class ProviderTests(WrapperTests):
                                 CLAUDE_CONTAINER_NETWORK_PROFILE=profile,
                                 CLAUDE_CONTAINER_NETWORK_POLICY=str(self.policy),
                                 CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR=str(self.runtime),
-                                CLAUDE_CONTAINER_EGRESS_IMAGE='sha256:' + 'e' * 64, CLAUDE_CONTAINER_PODMAN='',
+                                CLAUDE_CONTAINER_EGRESS_IMAGE='sha256:' + 'e' * 64,
                                 ANTHROPIC_API_KEY='host-key', FAKE_NETWORK='1', FAKE_INFO='true linux true',
                                 CONTAINER_HOST='unix:///run/service.sock', **env)
 

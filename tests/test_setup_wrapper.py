@@ -97,8 +97,7 @@ class SetupWrapperTests(unittest.TestCase):
             result += [('Acknowledge that allowed provider hosts', 'yes')]
         if value['network'] != 'offline' and PROFILE.auth:
             result += [('Authentication method', value['auth'])]
-        result += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
-                   ('Delegate the host Podman API', 'no')]
+        result += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state'))]
         if PROFILE.approval_bypass_env:
             result += [('Enable ' + PROFILE.display_name + ' permission bypass', 'no')]
         result += [('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
@@ -229,7 +228,7 @@ class SetupWrapperTests(unittest.TestCase):
         code, output = pty_run(['bash', str(WRAPPER), '--container-setup'], env, self.workspace, answers)
         self.assertEqual(code, 1, output)
         for text in ('No same-host Podman launch service answers', 'network: unrestricted', 'endpoint: local',
-                     'podman: False', 'cancelled before'):
+                     'cancelled before'):
             self.assertIn(text, output)
         for text in ('Network mode [', 'Delegate the host Podman API', 'Podman launch endpoint', runtime):
             self.assertNotIn(text, output)
