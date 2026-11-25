@@ -2888,3 +2888,122 @@ Notes:
 
 The installed launcher core, setup and guard change, so installations rerun
 `--container-setup`.
+
+## Adoption of `sandbox-ref-34`: 2026-11-25
+
+Change `adopt-sandbox-ref-34`, from `sandbox-ref-28` directly. It takes in
+`sandbox-ref-29` to `sandbox-ref-34`:
+- the session container engine for image toolchains, and the removal of host
+  Podman delegation (`sandbox-ref-29`);
+- toolchain recipes by catalog name, with several sources and archive
+  downloads, and no maintenance consent for `add`;
+- the engine fixes found while adopting it: the chroot capability
+  (`sandbox-ref-30`), the engine base pinned to an `-immutable` tag
+  (`sandbox-ref-31`), engine labels read in a form every Podman version accepts
+  (`sandbox-ref-32`), and a restricted session's interfaces checked in its
+  network namespace (`sandbox-ref-33`);
+- the process rlimit fallback set inside each container (`sandbox-ref-34`).
+
+Copied from `sandbox-container` tag `sandbox-ref-34` (commit `a129a03`):
+- updated: `launcher/core.sh`, `launcher/windows/bootstrap.sh`,
+  `launcher/windows/core.ps1`, `network/README.md`, `network/agent_budgets.py`,
+  `network/agent_profile.py`, `network/proxy_hardening.py`,
+  `network/qualification_probe.py`, `network/qualification_records.py`,
+  `network/qualify.py`, `network/session.py`, `setup/common.py`,
+  `setup/launch.py`, `setup/setup.py`, `setup/smoke.py`, `setup/toolchains.py`,
+  `tests/fake_podman.py`, `tests/test_alignment.py`, `tests/test_launcher.py`,
+  `tests/test_qualification.py`, `tests/test_session.py`, `tests/test_setup.py`,
+  `tests/test_toolchains.py`, `tests/test_windows_bootstrap.py` and
+  `tests/windows/shim_tests.ps1`;
+- added: the six `launcher/engine/` files, `setup/engine.py`, the six
+  `setup/toolchain-catalog/` recipes and `tests/test_engine.py`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag. The thin Windows
+entry and `.gitattributes` needed no copy. `docs/toolchains/` was removed: the
+release catalog replaces it.
+
+Claude's own tests changed where the shared behavior did, as in the reference:
+- `tests/test_wrapper.py`: the YOLO grid is YOLO × state mode, and checks that
+  no socket is mounted;
+- `tests/test_runtime.py`: the reference's refusal and `SessionEngineTests`
+  cases, and the process rlimit cases beside a crowded container;
+- `tests/test_network_runtime.py`: the reference's engine cases, with the
+  profile's engine image, its `/proc/net/dev` interface checks, and the proxy
+  case beside a crowded container;
+- `tests/test_setup_wrapper.py` and `tests/test_setup_runtime.py`: no
+  delegation question;
+- `tests/run-runtime.sh`: the reference's, with Claude's image names.
+
+The README, `AGENTS.md` and `docs/setup.md` describe the session engine, the
+toolchain catalog and the migration from delegation, with Claude's names.
+
+**Runner.** A restricted Claude session on the Windows Podman machine, started
+from this branch after setup and installation from it: Podman machine 6.1.4,
+kernel `6.18.58.1-microsoft-standard-WSL2`, `cgroupfs` manager. In that
+session:
+- `CONTAINER_HOST=tcp://127.0.0.1:2375`;
+- the session engine is Podman 6.2.0 and reports rootless operation;
+- `podman images` lists the library images read-only: Claude's runtime and
+  guard toolchain images, the reference's shell and guard toolchain images, the
+  PowerShell tool image, and the pinned alpine, node, python, ShellCheck and
+  engine base images;
+- the session's first process has `Max processes 512 512`, set by the step
+  inside the container.
+
+`tests/run-runtime.sh` ran from the session, against its engine. The unit
+discovery ran in the runtime image, in the previous session's engine, on a
+native copy of the checkout.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` | Passed: 571 tests, 85 skipped |
+| `bash tools/shellcheck.sh ../claude-container`, `bash tools/powershell.sh ../claude-container` (from `sandbox-container`) | Passed: no finding, 62 shim cases |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 120 tests, 1 skipped (no drive root under `/mnt`) |
+| `bash tests/run-runtime.sh --setup` | Passed: 93 tests |
+| `bash tests/run-runtime.sh --qualification` | Passed: 34 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests, including `test_process_rlimit_counts_per_container`; `SessionEngineTests` skipped, because an engine cannot start inside a session's engine |
+| `bash tests/run-runtime.sh --network` | 25 tests, 3 skipped (two engine cases, toolchain examples). The proxy case beside a crowded container passed. Only the subtests that need cgroup limits failed, listed below |
+| `bash tests/run-runtime.sh --setup-runtime` | Unavailable from a session: the provider case stops at the engine qualification, `the qualification container engine did not answer as a rootless engine` (nested engine). It first exposed a test defect, below. On the machine's own engine: passed, 2 tests |
+
+No case in any mode failed with `Resource temporarily unavailable`, and none
+reported missing subordinate IDs (`newuidmap`): the engine cases skip from a
+session before starting an engine.
+
+The `--network` failures are those recorded for the reference on this runner,
+with Claude's provider subtests:
+- `test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy`, offline
+  and provider, default and explicit budgets: no `/sys/fs/cgroup/memory.max`;
+- `test_proxy_budgets_at_maximum_streams_and_slow_inspection`: no
+  `memory.current`;
+- `test_proxy_resource_exhaustion_is_bounded_and_fails_closed`, memory: no
+  memory limit, so the allocation runs until the 15-second timeout;
+- the same test, processes: the test forks in a `podman exec` process, which
+  gets the engine's default limits (the documented exception).
+
+**The setup test defect.** In its first run, `--setup-runtime` stopped with
+`cannot read the program of the proxy image; agent not started`. The podman
+shim of `tests/test_setup_runtime.py` answered every `image inspect` of the
+prepared proxy with its ID, and since `sandbox-ref-34` the session helper reads
+the proxy image's entrypoint and command on the rlimit fallback. The shim now
+answers only `{{.Id}}` lookups, as it does for the runtime image. The shared
+code was correct.
+
+**Windows** (operator, 2026-11-24). Windows PowerShell 5.1.26100.9711, WSL
+3.0.5.0, kernel 6.18.58.1-1, with Ubuntu running. The operator's Claude session
+was open during the runs.
+
+| Step | Result |
+| --- | --- |
+| `claude-container.ps1 --container-setup`, then `--container-install`, on this branch | Engine image built, sandbox ready. The installation was needed to start the session from this workspace, which contains the checkout |
+| `windows-validate.ps1 -Checkout C:\Work\yarilc-github\claude-container`, Windows PowerShell 5.1 | 51 passed, 0 failed, 5 skipped. "Session with library images" passed with network and offline (`engine=tcp://127.0.0.1:2375`); "One engine for sessions and the machine", "Image toolchain", "Offline qualification" and "Offline session" passed. The skips need `-SavedDelegation`, `-Install` or `-StopMachine`, or a setup with prepared restricted mode or a saved worktree scope |
+| `bash tests/run-runtime.sh -k test_engine_process_rlimit_counts_per_container`, from the checkout in the machine, on the machine's engine, after pulling the pinned alpine image | Passed: 1 test in 14.553 seconds. Beside a container holding 520 processes, the engine session started with a process limit of 512/512 and ran a nested container. This also verifies task 4.3 of the reference change `set-process-limits-inside-containers` |
+| `bash tests/run-runtime.sh --setup-runtime`, the same way | Passed: 2 tests in 171.636 seconds |
+
+Setup names the images after the release only. For the two machine runs, the
+operator tagged the active release's images `localhost/claude-code:latest` and
+`localhost/claude-code-engine:latest`, the names the runner and the engine
+cases use.
+
+The installed launcher core, setup, session helper and engine image change, so
+installations rerun `--container-setup`. Setup migrates saved delegation and
+builds `localhost/claude-code-engine`.

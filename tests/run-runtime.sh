@@ -5,8 +5,15 @@ project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 image=${CLAUDE_CONTAINER_IMAGE:-localhost/claude-code:latest}
 rootless=$(podman info --format '{{.Host.Security.Rootless}}')
 [[ "$rootless" == true ]] || { printf 'A rootless engine is required.\n' >&2; exit 1; }
-socket=$(podman info --format '{{.Host.RemoteSocket.Path}}')
-socket=${socket#unix://}
+# Inside a session, CONTAINER_HOST names the session container engine over
+# loopback TCP. The engine also serves its API on its user's Unix socket, which
+# the test containers bind (launcher/engine/entrypoint.sh).
+if [[ "${CONTAINER_HOST:-}" == tcp://127.0.0.1:2375 ]]; then
+    socket=/run/user/1000/podman/podman.sock
+else
+    socket=$(podman info --format '{{.Host.RemoteSocket.Path}}')
+    socket=${socket#unix://}
+fi
 [[ "$socket" == /* ]] || { printf 'Start the rootless Unix Podman service first.\n' >&2; exit 1; }
 pattern=test_runtime.py
 guard_environment=()
@@ -48,19 +55,32 @@ fi
 # Wrapper fixtures need private, executable temporary storage: the image's
 # /tmp is world-writable, and the toolchain library refuses such ancestors.
 volume=''
+copy_volume=''
 cleanup() {
     [[ -z "$volume" ]] || podman volume rm --force "$volume" >/dev/null
+    [[ -z "$copy_volume" ]] || podman volume rm --force "$copy_volume" >/dev/null
 }
 trap cleanup EXIT
 volume=$(podman volume create)
 native_state=$(podman volume inspect --format '{{.Mountpoint}}' "$volume")
+# A checkout that group or other can write, such as a Windows drive under WSL
+# (mode 777), fails the protected-path checks: run the tests on a copy of it in
+# a disposable native volume, without the local test state.
+checkout=$project_root
+if (( 8#$(stat -c %a -- "$project_root") & 8#022 )); then
+    copy_volume=$(podman volume create)
+    checkout=$(podman volume inspect --format '{{.Mountpoint}}' "$copy_volume")
+    tar -C "$project_root" --exclude=./.test-state -cf - . \
+        | podman run --rm --interactive --network=none --userns=keep-id --user "$(id -u):$(id -g)" \
+            --volume "$checkout:$checkout:rw" --entrypoint tar "$image" -C "$checkout" -xf -
+fi
 podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
-    --volume "$project_root:$project_root:rw" \
+    --volume "$checkout:$checkout:rw" \
     --volume "$native_state:$native_state:rw" \
     --volume "$socket:/run/podman/podman.sock:rw" \
     --mount type=tmpfs,destination=/sandbox-test-tmp,tmpfs-mode=0700,U=true,tmpfs-size=1g \
     --env SANDBOX_TEST_TMPDIR=/sandbox-test-tmp \
-    --workdir "$project_root" \
+    --workdir "$checkout" \
     --env CONTAINER_HOST=unix:///run/podman/podman.sock \
     --env SANDBOX_RUNTIME_TESTS=1 \
     --env "CLAUDE_CONTAINER_IMAGE=$image" \

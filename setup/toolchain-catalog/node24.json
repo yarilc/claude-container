@@ -1,12 +1,14 @@
 {
-  "schema": 1,
+  "schema": 2,
   "name": "node24",
   "version": "24.22.3",
-  "source": {
-    "archive": "/ABSOLUTE/PATH/TO/node-v24.22.3-linux-x64.tar.xz",
-    "sha256": "4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb",
-    "strip_components": 1
-  },
+  "sources": [
+    {
+      "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz",
+      "sha256": "4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb",
+      "strip_components": 1
+    }
+  ],
   "path": [
     "bin"
   ],

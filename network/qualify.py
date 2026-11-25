@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import select
 import signal
 import socket
@@ -33,6 +34,19 @@ PREFIX = PROFILE.message_prefix
 module = importlib.util.spec_from_file_location('sandbox_platform', ROOT / 'network/platform_check.py')
 platform = importlib.util.module_from_spec(module)
 module.loader.exec_module(platform)
+module = importlib.util.spec_from_file_location('sandbox_engine', ROOT / 'setup/engine.py')
+engine_module = importlib.util.module_from_spec(module)
+module.loader.exec_module(engine_module)
+# Fixed probes of the session engine (design D10): its effective hardening, and a
+# nested container's views and network reach. They admit no application command.
+ENGINE_STATE = (r'''grep -E '^(CapBnd|NoNewPrivs|Seccomp):' /proc/1/status | tr -s '\t' ' ' && echo "uid=$(id -u)" && '''
+                r'''echo "map=$(tr -s ' ' < /proc/self/uid_map | grep '^ 1000 ' | tr ' ' ':' | cut -c2-)" && '''
+                r'''echo "fuse=$(stat -c %A /dev/fuse | cut -c1) tun=$(stat -c %A /dev/net/tun | cut -c1)" && '''
+                r'''{ touch /var/lib/shared/qualification-write 2>/dev/null && echo store=writable || echo store=read-only; }''')
+NESTED_PROBE = (r'''echo "pid1=$(cat /proc/1/comm)"; echo "procs=$(ls /proc | grep -c '^[0-9]')"; '''
+                r'''echo "host=$(cat /proc/sys/kernel/hostname)"; echo "secrets=$(ls -A /run/secrets 2>/dev/null | wc -l)"; '''
+                r'''echo "routes=$(tail -n +2 /proc/net/route | wc -l)"; '''
+                r'''if timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then echo tcp=open; else echo tcp=closed; fi''')
 
 
 class GateError(ValueError):
@@ -293,6 +307,55 @@ class Gate:
                 finally:
                     os.close(descriptor)
 
+    def engine_case(self, work, identity):
+        """The session engine's containment (session-container-engine, design D10).
+
+        A probe engine is configured like a session's, on an empty read-only
+        store. Nested probes run from the engine image's skeleton root file
+        system with its /usr, so no image store is needed.
+        """
+        store = work / 'engine-store'
+        # An empty read-only store still needs its lock files, as in the engine image's own.
+        for kind in ('images', 'layers'):
+            (store / 'storage' / ('overlay-' + kind)).mkdir(parents=True, mode=0o700)
+            (store / 'storage' / ('overlay-' + kind) / (kind + '.lock')).touch()
+        name = PROFILE.name + '-qualification-engine-' + self.token[:12]
+        options = engine_module.container_options(name=name, seccomp=ROOT / records.ENGINE_SECCOMP, store=store,
+                                                  labels=[PROFILE.label('qualification') + '=' + self.token])
+        self.engine('run', '--detach', *options, '--network=none', identity['engine']['image'],
+                    str(engine_module.PORT), timeout=60)
+        remote = ['exec', name, 'podman', '--remote', '--url', engine_module.ENDPOINT]
+        deadline = time.monotonic() + engine_module.READY_SECONDS
+        while True:
+            try:
+                if self.engine(*remote, 'info', '--format', '{{.Host.Security.Rootless}}') == 'true':
+                    break
+            except GateError:
+                pass
+            if time.monotonic() >= deadline:
+                raise GateError('the qualification container engine did not answer as a rootless engine')
+            time.sleep(1)
+        # The engine container keeps only its documented exceptions (design D4).
+        options = json.loads(self.engine('inspect', '--format', '{{json .HostConfig.SecurityOpt}}', name))
+        expected = {'no-new-privileges', 'label=disable', 'unmask=all',
+                    'seccomp=' + str(ROOT / records.ENGINE_SECCOMP)}
+        if not isinstance(options, list) or set(options) != expected:
+            raise GateError('session engine security options differ from the documented exceptions')
+        state = self.engine('exec', name, 'sh', '-c', ENGINE_STATE)
+        if state.split() != ['CapBnd:', '00000000000400c0', 'NoNewPrivs:', '1', 'Seccomp:', '2', 'uid=1000',
+                             'map=1000:0:1', 'fuse=c', 'tun=c', 'store=read-only']:
+            raise GateError('session engine hardening differs from the documented exceptions: ' + state.replace('\n', ' '))
+        # Nested containers: own process and host-name views, no secrets, and no
+        # path out of the session's network namespace, even with --network=host.
+        probe = self.engine(*remote, 'run', '--rm', '--network=host', '--volume', '/usr:/usr:ro', '--rootfs',
+                            engine_module.PROBE_ROOTFS + ':O', 'bash', '-c', NESTED_PROBE, timeout=120)
+        values = dict(line.split('=', 1) for line in probe.splitlines() if '=' in line)
+        if (values.get('pid1') != 'bash' or not values.get('procs', '').isdigit() or int(values['procs']) > 4
+                or not re.fullmatch(r'[0-9a-f]{12}', values.get('host', '')) or values.get('secrets') != '0'
+                or values.get('routes') != '0' or values.get('tcp') != 'closed'):
+            raise GateError('session engine containment failed: ' + probe.replace('\n', ' '))
+        self.engine('rm', '--force', '--volumes', '--time', '0', '--ignore', name, timeout=20)
+
     def qualify(self, identity):
         trusted_path(ROOT.parent, [], directory=True)
         with tempfile.TemporaryDirectory(prefix='.' + PROFILE.name + '-qualification-', dir=ROOT.parent) as temporary:
@@ -322,6 +385,15 @@ class Gate:
                 self.case(work, identity, network, addresses, isolated=isolated)
             if identity['mode'] == 'provider':
                 self.case(work, identity, network, addresses, isolated=True, tls=True)
+            if identity['engine']:
+                self.engine_case(work, identity)
+
+
+def require_engine(argv, identity):
+    """A launch that starts a container engine needs an installation with a qualified engine."""
+    if argv == ['check', '--engine'] and not identity['engine']:
+        raise GateError('the session container engine is not qualified on this installation: prepare its image '
+                        'and seccomp profile with --container-setup, then rerun --container-qualify')
 
 
 def writable(env):
@@ -336,7 +408,7 @@ def writable(env):
 
 def main():
     global ACTIVE_GATE
-    if sys.argv[1:] not in (['qualify'], ['check']):
+    if sys.argv[1:] not in (['qualify'], ['check'], ['check', '--engine']):
         raise GateError('use --container-qualify alone')
     env = os.environ.copy()
     name = PROFILE.env
@@ -369,6 +441,7 @@ def main():
     try:
         gate.run(preflight)
         identity, reusable = records.fingerprint(ROOT, env, gate.run, platform, gate.token)
+        require_engine(sys.argv[1:], identity)
         if sys.argv[1] == 'check':
             report = records.read(ROOT, identity, paths)
             if reusable and report['reusable']:

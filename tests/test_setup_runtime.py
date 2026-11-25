@@ -47,7 +47,7 @@ class SetupRuntime(unittest.TestCase):
             + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/claude-code:latest', prepared_runtime)) + ":\n"
             + ' print(' + repr(prepared_runtime) + '); sys.exit(0)\n'
             + "if args[:2] == ['image','exists'] and args[-1] in " + repr(('localhost/claude-egress:local', prepared_proxy)) + ": sys.exit(0)\n"
-            + "if args[:2] == ['image','inspect'] and args[-1] in " + repr(('localhost/claude-egress:local', prepared_proxy)) + ":\n"
+            + "if args[:2] == ['image','inspect'] and '{{.Id}}' in args and args[-1] in " + repr(('localhost/claude-egress:local', prepared_proxy)) + ":\n"
             + ' print(Path(' + repr(str(self.proxy_selection)) + ').read_text().strip()); sys.exit(0)\n'
             + 'os.execv(' + repr(self.real_podman) + ',[' + repr(self.real_podman) + ',*args])\n')
         shim.chmod(0o700)
@@ -76,7 +76,7 @@ class SetupRuntime(unittest.TestCase):
         if mode != 'offline':
             answers += [('Authentication method', 'account')]
         answers += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
-                    ('Delegate the host Podman API', 'no'), ('Enable Claude permission bypass', 'no'),
+                    ('Enable Claude permission bypass', 'no'),
                     ('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
                     ('Agent CPU limit', ''), ('Agent process limit', ''), ('Session lifetime in seconds', ''),
                     ('Trust a host CA bundle', 'yes' if ca else 'no')]

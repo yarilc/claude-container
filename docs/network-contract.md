@@ -22,12 +22,16 @@ API check.
 
 ## Portable behavior
 
-| Mode | Agent access | Socket delegation |
+| Mode | Agent access | Session container engine (library images) |
 | --- | --- | --- |
-| unset/empty effective mode | `provider` (Claude's default); setup guidance without a protected installation or the saved provider settings | Rejected |
-| `offline` | Own loopback, pipes and fixed-peer socket pairs only | Rejected |
-| `provider` | Loopback/pipes/pairs and preconnected exact-destination proxy | Rejected |
-| `unrestricted` (explicit only) | Ordinary runtime networking | Exact opt-in allowed |
+| unset/empty effective mode | `provider` (Claude's default); setup guidance without a protected installation or the saved provider settings | As `provider` |
+| `offline` | Own loopback, pipes and fixed-peer socket pairs only | No external path; library images only |
+| `provider` | Loopback/pipes/pairs and preconnected exact-destination proxy | The session's proxy policy; library images only |
+| `unrestricted` (explicit only) | Ordinary runtime networking | The session's network; may also pull |
+
+Host Podman delegation was removed in every mode: an exact `CLAUDE_CONTAINER_PODMAN=1`
+stops the launch with migration guidance. The engine shares the session's
+network namespace, so its containers inherit the boundary of the mode.
 
 New users must first run `bash ./claude-container.sh --container-setup`, then
 use its managed launcher, which supplies validated saved preferences. Explicit
@@ -182,6 +186,37 @@ remove only owned resources within one 20-second budget and preserve the primary
 exit/signal status. Proxy failure leaves outbound connections closed. Protected
 bounded logs contain sanitized destination/port/reason, never secrets or payloads.
 
+## Session container engine
+
+A session whose toolchain library holds images gets a private container engine
+(`session-container-engine`). It does not open a path around the boundary:
+
+- **Network:** the engine owns the session's network namespace, created with the
+  session's own network options (`--network=none` in offline and provider mode),
+  and the session joins it. Nested containers, with their own namespace or with
+  `--network=host`, have no route, DNS or connection that the session lacks; the
+  engine pulls nothing in restricted modes.
+- **Guard:** nested containers do not run under the in-process guard. Their reach
+  is bounded by construction: the session's network namespace, and engine mounts
+  limited to the workspace, the library's read-only image store and the CA
+  bundle when trusted. No Podman socket, state, configuration or credential is
+  mounted, and `/run/secrets` is masked.
+- **Qualification:** restricted qualification adds the `session-engine` check. A
+  probe engine configured like a session's must show its documented hardening
+  (bounding set `cap_setuid,cap_setgid,cap_sys_chroot`, no-new-privileges, the derived seccomp
+  profile, the keep-id mapping, the FUSE and TUN devices) and a read-only store;
+  a nested container started with `--network=host` must see its own procfs and
+  host name, no secrets, no route and no TCP path out. The report binds the engine
+  image ID and the seccomp profile digest, and a launch that starts an engine runs
+  `qualify.py check --engine`, which refuses an installation without them.
+
+| Check | Tests |
+| --- | --- |
+| No path out of an offline session | `tests/test_network_runtime.py::test_offline_session_engine_has_no_external_path`; the `session-engine` probe (`tests/test_qualification.py::test_engine_case_checks_hardening_views_and_reach`, `run-runtime.sh --qualification`) |
+| Private views, no secrets, read-only store | `tests/test_runtime.py::SessionEngineTests`; the `session-engine` probe |
+| Hardening exceptions | `tests/test_engine.py::EngineOptionsTests`; the `session-engine` probe |
+| Qualification binding | `tests/test_qualification.py::test_engine_identity_requires_the_engine_checks`, `test_engine_launch_requires_a_qualified_engine` |
+
 ## Claude migration examples
 
 The following interfaces require the prepared protected guard and a matching
@@ -205,9 +240,8 @@ CLAUDE_CONTAINER_EGRESS_IMAGE="$egress_image" \
 
 # Select anthropic-account (api.anthropic.com, platform.claude.com) for account login/reuse/refresh.
 # Prepare service/image/runtime per README; see validation.md for evidence limits.
-# Explicit broad-network compatibility and host API authority.
-CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_PODMAN=1 \
-./claude-container.sh
+# Explicit broad-network compatibility.
+CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh
 
 # Operator-controlled preparation; runtime mode does not filter build traffic.
 CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 \
@@ -258,15 +292,15 @@ in `sandbox-container`.
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Sandbox (reference) | Reference (`sandbox-ref-28`, shared launcher core) | Guard, qualification and guided setup integrated; Windows entry on a Podman machine (WSL provider) with installer, offline and unrestricted modes, no delegation; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-22); Podman machine on Windows: validation script passed on both PowerShell editions (2026-11-21) | Not applicable |
-| Claude | Adopted `sandbox-ref-28`: shared launcher core | Shared launcher core, mandatory bootstrap, multiplexed proxy and guided setup integrated; Windows entry on a Podman machine (WSL provider) with installer and every network mode, no delegation | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-22); Podman machine on Windows: setup, account login, a Claude session and the validation script on both PowerShell editions passed (2026-11-22) | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
+| Sandbox (reference) | Reference (`sandbox-ref-34`, shared launcher core) | Guard, qualification and guided setup integrated; session container engine for image toolchains, host Podman delegation removed; Windows entry on a Podman machine (WSL provider) with installer, offline and unrestricted modes; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-22); `sandbox-ref-29` to `sandbox-ref-31` runner modes in a nested `cgroupfs` engine passed except the recorded budget and explicit-limit tests, `sandbox-ref-32` and `sandbox-ref-33` modes from a session passed except the nested-engine cases, `sandbox-ref-34` all modes from a session passed except the nested-engine cases and the tests that need cgroup limits, and its engine case passed on the machine's engine (2026-11-24); Podman machine on Windows: validation script passed on both PowerShell editions (2026-11-21) and on 5.1 with the session engine (2026-11-24) | Not applicable |
+| Claude | Adopted `sandbox-ref-34`: shared launcher core | Shared launcher core, mandatory bootstrap, multiplexed proxy and guided setup integrated; session container engine for image toolchains, host Podman delegation removed; Windows entry on a Podman machine (WSL provider) with installer and every network mode | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-22); `sandbox-ref-34` modes from a Claude session with its engine passed except the nested-engine cases and the tests that need cgroup limits, and the engine and setup runtime cases passed on the machine's engine (2026-11-25); Podman machine on Windows: setup, account login, a Claude session and the validation script on both PowerShell editions passed (2026-11-22), and the validation script on 5.1 with the session engine (2026-11-24) | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
 | Codex | Adopted `sandbox-ref-28`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; Windows entry on a Podman machine (WSL provider) with installer and every network mode, no delegation | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-22); Podman machine on Windows: setup, device-code login, a Codex session, Codex's own sandbox in `unrestricted` and the validation script on both PowerShell editions passed (2026-11-22) | Operator session with tool use passed (2026-11-11, `openai-account`; 2026-11-22 on Windows); refresh and real-key API checks pending; synthetic Responses API streaming and tool call passed |
 | Antigravity | Adopted `sandbox-ref-28`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; keyring removed; Windows entry on a Podman machine (WSL provider) with installer and every network mode, no delegation | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-23); Podman machine on Windows: setup, Google sign-in, an `agy` session with tool use, token reuse, the Gemini API key method with a dummy key and the validation script on both PowerShell editions passed (2026-11-23) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`; 2026-11-23 on Windows); refresh and real-key Gemini API checks pending; synthetic Gemini streaming and tool call passed |
 | OpenCode | Adopted `sandbox-ref-28`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; Windows entry on a Podman machine (WSL provider) with installer and every network mode, no delegation | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-23); Podman machine on Windows: setup, an OpenCode session with tool use (`openrouter-api`), native variables through `OPENCODE_CONTAINER_ENV_VARS` and the validation script on both PowerShell editions passed (2026-11-23) | Operator session with tool use passed (2026-11-11, `anthropic-api`; 2026-11-23 on Windows, `openrouter-api`); the `openai-api` and `opencode-zen` profiles pending; synthetic Chat Completions streaming and tool call passed |
 | Pi | Adopted `sandbox-ref-28`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; Windows entry on a Podman machine (WSL provider) with installer and every network mode, no delegation | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-23); Podman machine on Windows: setup, a Pi session with tool use (`openrouter-api`), `PI_NPM_CACHE_SIZE` through `PI_CONTAINER_ENV_VARS` and the validation script on both PowerShell editions passed (2026-11-23) | Operator session with tool use passed (2026-11-11, `anthropic-api`; 2026-11-23 on Windows, `openrouter-api`); the `openai-api` and `gemini-api` profiles pending; synthetic Chat Completions streaming and tool call passed |
 
 For each wrapper, record mode/default parity, operator policy authority, separate
-maintenance permission, authentication/feature inventories, delegation rejection,
+maintenance permission, authentication/feature inventories, leftover delegation refusal, session engine containment,
 kernel/ABI/bootstrap prerequisites, Unix and alternate-transport isolation,
 denied named IPC, fixed-peer pairs and multiplexed transport, preserved file persistence, DNS/address controls,
 TLS/CA compatibility, redacted diagnostics,
@@ -333,7 +367,7 @@ own change. Provider tunnels continue to forward TLS end to end.
 | N04 | Protected installation, static guard digest, policy snapshot/session manifest | Path/alias/ancestor/ELF/digest/mount/readiness rejection tests |
 | N05 | Non-forwarding agent resolver, trusted per-OPEN resolution, numeric connect | DNS/rebinding/mixed/special IPv4/IPv6 and UDP/QUIC bypass tests |
 | N06 | Consistent proxy/bypass variables, confined loopback relay, TLS unchanged | Synthetic real CLI/SSE tool and transport checks; real account request/refresh passed; long-lived/WebSocket transport covered by controlled fixtures |
-| N07 | Exact delegation opt-in rejected before restricted setup | Real mode/state/shell/YOLO grid; unrestricted endpoint regressions |
+| N07 | Leftover exact delegation opt-in refused before any engine query; session engine containment | Real mode/state/shell/YOLO grid; engine containment checks (qualification and runtime) |
 | N08 | Unique ownership, recovery, one bounded shutdown budget | Concurrent/failed/interrupted setup, proxy death, stalled cleanup and statuses |
 | N09 | Explicit host maintenance gate, immutable/prepared artifacts | Build/context/preflight tests; unrelated destinations remain denied |
 | N10 | Protected bounded normalized destination/reason diagnostics | Secret/control-character/framing fuzz and real denial-log checks |

@@ -30,7 +30,7 @@ REAL_QUALIFICATION_LABEL = REAL_PROFILE.label('qualification')
 REAL_WORK_GLOB = '.' + REAL_PROFILE.name + '-qualification-*'
 # Setup modules the installed runtime fixture needs: qualification digests the
 # shared ones, and ordinary launches run the toolchain module.
-FIXTURE_SETUP_FILES = ('setup/common.py', 'setup/toolchains.py')
+FIXTURE_SETUP_FILES = ('setup/common.py', 'setup/toolchains.py', 'setup/engine.py')
 
 
 class QualificationContracts(unittest.TestCase):
@@ -40,7 +40,7 @@ class QualificationContracts(unittest.TestCase):
         self.assertLessEqual(shared, set(FIXTURE_SETUP_FILES))
 
     def identity(self):
-        return dict(mode='provider', revision=records.REVISION, runtime='a'*64, proxy='b'*64,
+        return dict(mode='provider', revision=records.REVISION, runtime='a'*64, proxy='b'*64, engine='',
                     policy='c'*64, platform=dict(abi=3), code={'guard':'d'*64},
                     hardening=dict(capabilities=[], no_new_privs=True, pids=128, memory=268435456,
                                    enforced=['memory', 'pids'], process='cgroup',
@@ -86,6 +86,85 @@ class QualificationContracts(unittest.TestCase):
         for data in (b'{"schema":1,"schema":1}', b'{}\n{}', b'x'*65537):
             with self.assertRaises(ValueError):
                 records.decode(data)
+
+    def test_engine_identity_requires_the_engine_checks(self):
+        # session-container-engine: Engine containment is qualified.
+        identity = dict(self.identity(), engine=dict(image='e' * 64, seccomp='f' * 64))
+        report = dict(self.report(), identity=identity, fingerprint=records.digest(records.canonical(identity)))
+        with self.assertRaises(ValueError):
+            records.validate_report(report, identity)
+        report['checks'] = {name: 'passed' for name in records.expected_checks(True, True)}
+        records.validate_report(report, identity)
+        for key in ('image', 'seccomp'):
+            changed = copy.deepcopy(identity); changed['engine'][key] = '0' * 64
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                records.validate_report(report, changed)
+        # A report from before the engine is stale once the installation has one.
+        with self.assertRaises(ValueError):
+            records.validate_report(self.report(), identity)
+        self.assertIn('setup/engine.py', records.SHARED_CODE)
+        self.assertIn('launcher/engine/Containerfile', records.SHARED_CODE)
+
+    def test_engine_launch_requires_a_qualified_engine(self):
+        qualify.require_engine(['check'], self.identity())
+        qualify.require_engine(['check', '--engine'], dict(self.identity(), engine=dict(image='e' * 64, seccomp='f' * 64)))
+        with self.assertRaisesRegex(qualify.GateError, 'session container engine is not qualified'):
+            qualify.require_engine(['check', '--engine'], self.identity())
+
+    def engine_gate(self, **answers):
+        """A gate whose engine calls answer the session engine probes."""
+        gate = qualify.Gate({}); calls = []
+        security = answers.get('security', ['no-new-privileges', 'label=disable', 'unmask=all',
+                                            'seccomp=' + str(qualify.ROOT / records.ENGINE_SECCOMP)])
+        state = answers.get('state', 'CapBnd: 00000000000400c0\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
+                                     'map=1000:0:1\nfuse=c tun=c\nstore=read-only')
+        probe = answers.get('probe', 'pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=0\nroutes=0\ntcp=closed')
+        ready = iter(answers.get('ready', ['true']))
+        def engine(*args, **_):
+            calls.append(args)
+            if args[:1] == ('inspect',):
+                return json.dumps(security)
+            if args[:1] == ('exec',) and 'info' in args:
+                return next(ready)
+            if args[:1] == ('exec',) and 'run' in args:
+                return probe
+            if args[:1] == ('exec',):
+                return state
+            return 'e' * 64
+        patch.object(gate, 'engine', side_effect=engine).start()
+        self.addCleanup(patch.stopall)
+        return gate, calls
+
+    def test_engine_case_checks_hardening_views_and_reach(self):
+        base = tempfile.TemporaryDirectory(); self.addCleanup(base.cleanup)
+        identity = dict(self.identity(), engine=dict(image='e' * 64, seccomp='f' * 64))
+        gate, calls = self.engine_gate(ready=['false', 'true'])
+        with patch.object(qualify.time, 'sleep'):
+            gate.engine_case(Path(base.name), identity)
+        run = next(call for call in calls if call[:2] == ('run', '--detach'))
+        self.assertIn('--network=none', run)
+        self.assertIn('--userns=keep-id:uid=1000,gid=1000', run)
+        self.assertEqual(run[-2:], ('e' * 64, '2375'))
+        self.assertIn(PROFILE.label('qualification') + '=' + gate.token, run)
+        nested = next(call for call in calls if call[:1] == ('exec',) and 'run' in call)
+        self.assertIn('--network=host', nested)
+        self.assertIn('/opt/sandbox-engine/probe-rootfs:O', nested)
+        self.assertEqual(calls[-1][:3], ('rm', '--force', '--volumes'))
+        failures = {
+            'security': dict(security=['label=disable']),
+            'capabilities': dict(state='CapBnd: 000001ffffffffff\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
+                                       'map=1000:0:1\nfuse=c tun=c\nstore=read-only'),
+            'writable store': dict(state='CapBnd: 00000000000400c0\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
+                                         'map=1000:0:1\nfuse=c tun=c\nstore=writable'),
+            'shared procfs': dict(probe='pid1=podman\nprocs=40\nhost=0123456789ab\nsecrets=0\nroutes=0\ntcp=closed'),
+            'route out': dict(probe='pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=0\nroutes=1\ntcp=open'),
+            'secrets': dict(probe='pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=2\nroutes=0\ntcp=closed'),
+        }
+        for name, answers in failures.items():
+            with self.subTest(name=name):
+                gate, _ = self.engine_gate(**answers)
+                with self.assertRaises(qualify.GateError):
+                    gate.engine_case(Path(tempfile.mkdtemp(dir=base.name)), identity)
 
     def test_ipv6_state_requires_consistent_kernel_evidence(self):
         import errno
@@ -603,6 +682,8 @@ class QualificationRuntime(unittest.TestCase):
         shutil.copyfile(REAL_ROOT/REAL_PROFILE.wrapper, self.install/REAL_PROFILE.wrapper)
         # The wrapper may read its recipe and declared agent files on every launch.
         for relative in ('Containerfile', '.containerignore', 'launcher/core.sh', 'agent/launcher.sh',
+                         'launcher/engine/Containerfile', 'launcher/engine/.containerignore',
+                         'launcher/engine/containers.conf', 'launcher/engine/entrypoint.sh', 'launcher/engine/resolv.conf', 'launcher/engine/storage.conf',
                          *REAL_PROFILE.install_files):
             (self.install/relative).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             shutil.copyfile(REAL_ROOT/relative, self.install/relative)
@@ -616,6 +697,19 @@ class QualificationRuntime(unittest.TestCase):
         for relative in FIXTURE_SETUP_FILES:
             shutil.copyfile(REAL_ROOT/relative, self.install/relative)
         shutil.copytree(self.guard.name, self.install/'network/bin')
+        # With the engine image prepared, the installation gets the engine's seccomp
+        # profile as setup would write it, so qualification also runs the engine case.
+        engine_image = os.environ.get(real_env('ENGINE_IMAGE'), REAL_PROFILE.image('engine', 'latest'))
+        if subprocess.run(['podman', 'image', 'exists', engine_image], capture_output=True).returncode == 0:
+            default = subprocess.run(['podman', 'info', '--format', '{{.Host.Security.SECCOMPProfilePath}}'],
+                                     capture_output=True, text=True, check=True).stdout.strip()
+            content = subprocess.run(['podman', 'run', '--rm', '--network=none', '--volume', default + ':/default.json:ro',
+                                      '--entrypoint', 'cat', os.environ.get(real_env('IMAGE'), AGENT_IMAGE),
+                                      '/default.json'], capture_output=True, check=True).stdout
+            (self.base/'default-seccomp.json').write_bytes(content)
+            sys.path.insert(0, str(REAL_ROOT/'setup'))
+            import engine as engine_module
+            engine_module.write_seccomp(self.base/'default-seccomp.json', self.install/'launcher/engine/seccomp.json')
         self.project=self.base/'project'; self.project.mkdir()
         self.home=self.base/'home'; self.home.mkdir(mode=0o700)
         self.runtime=self.base/'egress'; self.runtime.mkdir(mode=0o700)
