@@ -39,7 +39,7 @@
     - the paragraph names the skip, the unavailable record and the manual session;
     - `grep -n codex-home AGENTS.md` finds nothing;
     - `git diff --check` passes.
-- [ ] 2.5 Run the repository checks, then commit the adoption on `adopt-sandbox-ref-35`, without merging.
+- [x] 2.5 Run the repository checks, then commit the adoption on `adopt-sandbox-ref-35`, without merging.
   - **Checks:**
     - `python3 -m unittest discover -s tests`, with `SANDBOX_TEST_TMPDIR` on executable storage when `/tmp` is `noexec`;
     - `openspec validate adopt-sandbox-ref-35 --strict`;
@@ -59,7 +59,7 @@
   - **Expected:**
     - every mode passes;
     - the terminal tests of `--guard` and the terminal cases of `--network` run, and no test skips because of the probe.
-- [ ] 3.2 Have the operator run the same modes on the Rocky 9 lab host.
+- [x] 3.2 Have the operator run the same modes on the Rocky 9 lab host.
   - **Before:** check the images of task 3.1 and the free space in `/home`.
   - **Discovery:** run the unit discovery in the runtime image, because host Python 3.9 is too old.
   - **Manual evidence:** the operator opens `CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh --container-shell` from the checkout, with the host's client, recorded with `script` (design decision 3). In it, the terminal attaches on `/dev/pts`, and `/dev/shm` is read-only and empty.
