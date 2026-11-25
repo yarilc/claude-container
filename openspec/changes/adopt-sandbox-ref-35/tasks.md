@@ -62,7 +62,7 @@
 - [ ] 3.2 Have the operator run the same modes on the Rocky 9 lab host.
   - **Before:** check the images of task 3.1 and the free space in `/home`.
   - **Discovery:** run the unit discovery in the runtime image, because host Python 3.9 is too old.
-  - **Manual evidence:** the operator opens an offline `claude-container --container-shell` session with the host's client, recorded with `script`. In it, the terminal attaches on `/dev/pts`, and `/dev/shm` is read-only and empty.
+  - **Manual evidence:** the operator opens `CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh --container-shell` from the checkout, with the host's client, recorded with `script` (design decision 3). In it, the terminal attaches on `/dev/pts`, and `/dev/shm` is read-only and empty.
   - **Expected:**
     - every mode passes, except `test_terminal_interrupt_is_delivered_once`, `test_terminal_interrupt_reaches_an_application_without_a_handler` and the two terminal cases of task 2.2. These skip with the probe's reason;
     - `--network-feasibility` and `--guard` pass without IPv6;
