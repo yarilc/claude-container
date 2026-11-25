@@ -285,7 +285,7 @@ Sessions and setup that the entry starts SHALL run as the selected user in the P
 - **THEN** the wrapper receives them unchanged inside the namespaces, and no file of the transport remains
 
 ### Requirement: Network modes from setup, without delegation
-On Windows the entry SHALL pass `<P>_NETWORK` unset, `unrestricted`, `offline` or, when the profile declares authentication methods, `provider` to the launcher, and SHALL accept `--container-qualify`. It SHALL exit with status 1, before running WSL, when `<P>_PODMAN` enables delegation. The launcher in the distribution SHALL apply its usual checks to restricted modes.
+On Windows the entry SHALL pass `<P>_NETWORK` unset, `unrestricted`, `offline` or, when the profile declares authentication methods, `provider` to the launcher, and SHALL accept `--container-qualify`. It SHALL exit with status 1, before running WSL, when `<P>_PODMAN` is exactly `1`, with the launcher's message that host Podman delegation was removed and image toolchains replace it. The launcher in the distribution SHALL apply its usual checks to restricted modes.
 
 #### Scenario: Offline session
 - **WHEN** setup prepared offline networking in the machine and the user launches the entry from a project directory
@@ -306,10 +306,14 @@ On Windows the entry SHALL pass `<P>_NETWORK` unset, `unrestricted`, `offline` o
 
 #### Scenario: Delegation requested
 - **WHEN** `$env:<P>_PODMAN='1'` is set
-- **THEN** the entry exits with status 1 stating that delegation is unsupported on Podman machine, and WSL runs nothing
+- **THEN** the entry exits with status 1 stating that delegation was removed and pointing to image toolchains, and WSL runs nothing
+
+#### Scenario: Session with library images
+- **WHEN** the library in the machine holds an image toolchain and the user launches an offline session from Windows
+- **THEN** the session has its container engine in the machine and runs the image offline
 
 ### Requirement: Saved delegation refused
-The bootstrap SHALL exit with status 1, before running the managed command, when the release's saved preferences enable Podman delegation, and SHALL ask to rerun setup from Windows. Saved unrestricted, offline and provider networking SHALL be accepted.
+The bootstrap SHALL exit with status 1, before running the managed command, when the release's saved preferences enable Podman delegation, and SHALL ask to rerun setup from Windows, which removes the setting. Saved unrestricted, offline and provider networking SHALL be accepted.
 
 #### Scenario: Saved delegation
 - **WHEN** a release saved delegation, for example because setup ran from a Linux shell in the machine

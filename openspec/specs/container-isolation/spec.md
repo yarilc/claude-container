@@ -7,12 +7,12 @@ Define the outer container's filesystem and authority boundaries and require evi
 ## Requirements
 
 ### Requirement: Read-only system and caller identity
-Sessions SHALL use a read-only container root, `--userns=keep-id`, and the caller's UID/GID. Writable persistent binds SHALL be limited to the selected workspace and state mode, plus the delegated socket when enabled. The host CA exception SHALL remain a read-only single-file mount governed by `host-ca-trust`.
+Sessions SHALL use a read-only container root, `--userns=keep-id`, and the caller's UID/GID. Writable persistent binds SHALL be limited to the selected workspace and state mode. No Podman socket SHALL be mounted into a session. The host CA exception SHALL remain a read-only single-file mount governed by `host-ca-trust`.
 
 #### Scenario: Ordinary session boundaries
 - **WHEN** a session writes to its workspace and attempts to change `/usr`
 - **THEN** workspace files belong to the caller and the system write fails
-- **AND** a host sentinel outside all selected mounts is inaccessible when socket delegation is disabled
+- **AND** a host sentinel outside all selected mounts is inaccessible, also through containers started by the session's container engine
 
 #### Scenario: Worktree expansion
 - **WHEN** `--container-git-worktree` selects the immediate physical parent
@@ -79,26 +79,6 @@ The wrapper SHALL NOT add privileged execution, extra capabilities, replacement 
 - **THEN** inherited Landlock and additive seccomp restrictions cover them before their initialization
 - **AND** live writable workspace/state binds grant ordinary file access without granting external Unix services or new Unix listeners or unconnected Unix sockets
 
-### Requirement: Independent approvals and delegation
-`CLAUDE_YOLO` SHALL control only the `--dangerously-skip-permissions` argument that Claude's approval-bypass hook adds in Claude mode. It SHALL accept the shared boolean forms case-insensitively and reject invalid values before image operations. Shell mode SHALL NOT receive the flag.
-
-Socket access SHALL require exact `CLAUDE_CONTAINER_PODMAN=1` and explicit unrestricted network mode, independently of YOLO and state mode. Restricted modes, including the default provider mode, SHALL reject exact socket opt-in.
-
-Shell, YOLO, and native permission settings SHALL NOT weaken the outer network boundary. Disabling YOLO SHALL NOT override native CLI arguments or saved permission settings.
-
-#### Scenario: Four combinations in either state mode
-- **WHEN** unrestricted runtime mode is selected and all enabled/disabled combinations of YOLO and Podman delegation are used in shared and isolated modes
-- **THEN** only YOLO determines flag injection and only exact Podman opt-in determines delegation mounts and variables
-
-#### Scenario: Native permissions explicitly supplied
-- **WHEN** YOLO is disabled but a native permission flag is passed directly to Claude
-- **THEN** the wrapper forwards that argument without claiming to enforce native approvals
-
-#### Scenario: Approvals cannot change egress
-- **WHEN** an offline or provider session uses shell mode, YOLO, or a native permission-bypass setting
-- **THEN** its selected network restriction still applies
-- **AND** exact socket opt-in rejects startup in either state mode
-
 ### Requirement: Evidence-based isolation documentation
 Documentation SHALL distinguish approvals, internal sandboxing, filesystem isolation, network egress enforcement, and socket authority. A validation record SHALL identify environment and versions and label checks as passed, failed, or unavailable. A sandboxed tool operation and its expected output SHALL be verified before claiming internal sandbox compatibility; executable availability or CLI exit status alone SHALL NOT establish it.
 
@@ -136,24 +116,6 @@ Offline/provider agent containers and session egress proxy containers SHALL drop
 - **WHEN** the operator explicitly selects unrestricted networking
 - **THEN** the agent container receives the same capability, no-new-privileges and resource-budget settings as restricted sessions
 - **AND** no egress proxy, guard or network restriction is added to that session
-
-### Requirement: Every agent container drops capabilities and privilege gains
-Every agent container SHALL drop all Linux capabilities and enable container-level no-new-privileges, in all network modes, in Claude and shell mode, and with Podman delegation. The wrapper SHALL NOT add a capability back to resolve an incompatibility. A tool that needs a capability SHALL be documented as unsupported.
-
-#### Scenario: Unrestricted Claude session starts
-- **WHEN** an explicitly unrestricted Claude or shell session starts with shared or isolated state
-- **THEN** its container has zero inheritable, permitted, effective, bounding and ambient capabilities and no-new-privileges set
-- **AND** Claude, Bash, Git and OpenSpec run with caller-owned persistence
-
-#### Scenario: Delegated Podman client works without capabilities
-- **WHEN** an unrestricted session with exact `CLAUDE_CONTAINER_PODMAN=1` runs `podman info` and creates a child container through the mounted socket
-- **THEN** the client succeeds without capabilities in the agent container
-- **AND** the documentation states that the socket still grants host engine authority beyond these limits
-
-#### Scenario: Incompatible tool is documented, not re-privileged
-- **WHEN** a tool inside the session fails only because capabilities or privilege gains are unavailable
-- **THEN** the wrapper adds no capability and does not disable no-new-privileges
-- **AND** the limitation is recorded in the validation record
 
 ### Requirement: Agent containers have explicit resource budgets
 Every agent container SHALL be created with a memory limit, a CPU limit and a process limit for each budget whose cgroup v2 controller (`memory`, `cpu`, `pids`) the verified rootless engine delegates. The defaults are 4 GiB memory, 2 CPUs and 512 processes. `CLAUDE_CONTAINER_MEMORY_LIMIT`, `CLAUDE_CONTAINER_CPU_LIMIT` and `CLAUDE_CONTAINER_PIDS_LIMIT` SHALL override them. No value SHALL disable a budget; only a missing controller leaves it unenforced.
@@ -222,11 +184,12 @@ A reported cgroup v2 controller SHALL count as delegated only when the verified 
 - **THEN** the wrapper exits non-zero before image operations or container creation
 
 ### Requirement: Process budget falls back to the process rlimit
-When the verified engine does not delegate the `pids` controller and the engine host counts the process rlimit per container, the agent container SHALL be created with a soft and hard process rlimit equal to the selected process budget. When per-container counting is not established, the process budget SHALL stay unenforced. The memory and CPU budgets SHALL have no fallback.
+When the verified engine does not delegate the `pids` controller and the engine host counts the process rlimit per container, the agent container's first process SHALL set its soft and hard process rlimit to the selected process budget before the container's program runs. The engine SHALL apply no process rlimit for the budget: one applied at creation counts every container of the user. Otherwise the process budget SHALL stay unenforced. Memory and CPU SHALL have no fallback.
 
 #### Scenario: Process controller missing on a per-container host
 - **WHEN** a session starts with the default budgets on an engine delegating `cpu` and `memory` but not `pids`, on a host that counts the process rlimit per container
-- **THEN** the container is created with a soft and hard process rlimit of 512 and without a cgroup process limit
+- **THEN** the container's first process sets a soft and hard process rlimit of 512 before the application, or the guard in restricted modes, runs
+- **AND** the container is created without a cgroup process limit and without a process rlimit requested from the engine
 - **AND** the memory and CPU limits are applied as before
 
 #### Scenario: Process controller delegated
@@ -251,11 +214,19 @@ When the verified engine does not delegate the `pids` controller and the engine 
 - **WHEN** two sessions on the fallback run at the same time and the first holds processes up to its limit
 - **THEN** the second session can still create processes up to its own limit
 
+#### Scenario: Other containers do not consume the session's budget
+- **WHEN** other containers of the same user, such as proxies, engines or their nested containers, together hold more processes than the session's budget
+- **THEN** the session starts, and can create processes up to its own budget
+
+#### Scenario: The limit cannot be set
+- **WHEN** the container's first process cannot set the process rlimit to the selected budget
+- **THEN** the container stops before the application or the guard runs, and the launch exits non-zero
+
 ### Requirement: Process rlimit fallback is verified
-When the process budget uses the rlimit fallback, each launch SHALL require the created agent container to carry a soft and hard process rlimit equal to the selected budget. Setup smoke and restricted qualification SHALL measure the same effective limit inside the agent container. A mismatch SHALL stop startup or setup with an actionable diagnostic, without a retry using weaker limits.
+When the process budget uses the rlimit fallback, each launch SHALL require the created agent container to start with the step that sets the selected budget, and to carry no process rlimit requested by the wrapper. Setup smoke and restricted qualification SHALL measure the effective limit inside the agent container. A mismatch SHALL stop startup or setup with an actionable diagnostic, without a retry using weaker limits.
 
 #### Scenario: Engine drops the process rlimit
-- **WHEN** the created container reports no process rlimit, or a soft or hard value different from the selected budget
+- **WHEN** the created container does not start with the step that sets the selected budget, for example because the engine dropped or replaced its entry command, or the step sets another value, or the container carries a process rlimit requested by the wrapper
 - **THEN** the wrapper removes only its own container and exits non-zero before the application starts
 - **AND** the diagnostic names the process rlimit fallback
 
@@ -263,3 +234,41 @@ When the process budget uses the rlimit fallback, each launch SHALL require the 
 - **WHEN** setup smoke or the restricted qualification probe runs inside an agent container on the fallback
 - **THEN** it reads the effective soft and hard process rlimit and requires both to equal the selected budget
 - **AND** it requires the cgroup process interface to be absent or unlimited
+
+### Requirement: Independent approvals
+`CLAUDE_YOLO` SHALL control only the `--dangerously-skip-permissions` argument that Claude's approval-bypass hook adds in Claude mode. It SHALL accept the shared boolean forms case-insensitively and reject invalid values before image operations. Shell mode SHALL NOT receive the flag.
+
+Shell, YOLO and native permission settings SHALL NOT weaken the outer network boundary, and a session container engine SHALL NOT widen it.
+
+#### Scenario: Four combinations in either state mode
+- **WHEN** unrestricted runtime mode is selected with YOLO enabled and disabled, in shared and isolated modes
+- **THEN** only YOLO determines flag injection, and no session receives a Podman socket or a delegation variable
+- **AND** a leftover exact Podman opt-in stops startup with migration guidance in both modes
+
+#### Scenario: Native permissions explicitly supplied
+- **WHEN** YOLO is disabled but a native permission flag is passed directly to Claude
+- **THEN** the wrapper forwards that argument without claiming to enforce native approvals
+- **AND** disabled YOLO overrides neither native CLI arguments nor saved permission settings
+
+#### Scenario: Approvals cannot change egress
+- **WHEN** an offline or provider session uses shell mode, YOLO, or a native permission-bypass setting
+- **THEN** its selected network restriction still applies
+- **AND** a leftover exact `CLAUDE_CONTAINER_PODMAN=1` stops startup in either state mode, and containers started by the session's engine get no network path that the session lacks
+
+### Requirement: Agent containers drop all capabilities and privilege gains
+Every agent container SHALL drop all Linux capabilities and enable container-level no-new-privileges, in all network modes, in Claude and shell mode, and when the session has a container engine. The wrapper SHALL NOT add a capability back to resolve an incompatibility. A tool that needs a capability SHALL be documented as unsupported.
+
+#### Scenario: Unrestricted Claude session starts
+- **WHEN** an explicitly unrestricted Claude or shell session starts with shared or isolated state
+- **THEN** its container has zero inheritable, permitted, effective, bounding and ambient capabilities and no-new-privileges set
+- **AND** Claude, Bash, Git and OpenSpec run with caller-owned persistence
+
+#### Scenario: Engine client works without capabilities
+- **WHEN** a session with a container engine runs `podman info` and creates a child container through its `CONTAINER_HOST`
+- **THEN** the client succeeds without capabilities in the agent container
+- **AND** the documentation states the engine container's own hardening exceptions
+
+#### Scenario: Incompatible tool is documented, not re-privileged
+- **WHEN** a tool inside the session fails only because capabilities or privilege gains are unavailable
+- **THEN** the wrapper adds no capability and does not disable no-new-privileges
+- **AND** the limitation is recorded in the validation record

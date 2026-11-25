@@ -332,7 +332,7 @@ Documentation SHALL map N01–N14 to implementation and acceptance, publish the 
 #### Scenario: Provider profile readiness
 - **WHEN** a profile is declared verified for a CLI/authentication version
 - **THEN** evidence covers login, token refresh, streaming, long-lived requests, supported WebSockets, proxy/CA behavior, shell and native permission modes
-- **AND** credential-free bypass tests separately cover DNS/UDP/IPv6, direct IP/ports, deceptive hosts, redirects, host/LAN/metadata, administration, concurrency, delegation rejection, failure closure, and cleanup
+- **AND** credential-free bypass tests separately cover DNS/UDP/IPv6, direct IP/ports, deceptive hosts, redirects, host/LAN/metadata, administration, concurrency, leftover delegation opt-in rejection, containment of the session container engine and its nested containers, failure closure, and cleanup
 - **AND** IPC evidence covers existing and late-created host sockets, persistent socket placement, aliases, explicit datagram sends, abstract endpoints, inherited descriptors, compat/x32 and asynchronous syscall bypasses, pair retargeting, descendant enforcement, denied private named listeners, permitted pairs/loopback, ordinary files and alternate host transports
 
 #### Scenario: Real API key unavailable during acceptance
@@ -732,11 +732,11 @@ The shared guard runtime test SHALL run the real Claude image with the wrapper's
 - **THEN** the guarded production-container test passes without a read-only file system error
 
 ### Requirement: Proxy process budget falls back to the process rlimit
-When the verified engine does not delegate the `pids` controller and the engine host counts the process rlimit per container, each session proxy SHALL be created with a soft and hard process rlimit of 128. The configured and effective limit SHALL be verified before agent execution. Otherwise the proxy process budget SHALL stay unenforced with a notice. The proxy memory budget SHALL have no fallback.
+When the verified engine does not delegate the `pids` controller and the engine host counts the process rlimit per container, each session proxy's first process SHALL set its soft and hard process rlimit to 128 before the proxy program runs, and the engine SHALL apply no process rlimit for the budget. The created proxy and its effective limit SHALL be verified before agent execution. Otherwise the proxy process budget SHALL stay unenforced with a notice. The proxy memory budget SHALL have no fallback.
 
 #### Scenario: Proxy on the process rlimit fallback
 - **WHEN** a restricted session prepares its proxy on an engine that delegates `memory` but not `pids`, on a host that counts the process rlimit per container
-- **THEN** the proxy is created with a soft and hard process rlimit of 128 and without a cgroup process limit
+- **THEN** the proxy's first process sets a soft and hard process rlimit of 128, and the proxy is created without a cgroup process limit and without a process rlimit requested from the engine
 - **AND** the effective process rlimit inside the proxy is verified before the agent starts
 - **AND** the session prints a notice that the proxy process budget is enforced through the process rlimit
 
@@ -749,6 +749,10 @@ When the verified engine does not delegate the `pids` controller and the engine 
 - **WHEN** the engine does not delegate `pids` and per-container counting is not established
 - **THEN** the session requests neither a cgroup process limit nor a process rlimit for the proxy
 - **AND** the session prints a notice naming the unenforced proxy process budget and why the fallback was not applied
+
+#### Scenario: Other containers do not consume the proxy's budget
+- **WHEN** other containers of the same user, such as other sessions, their proxies and engines, together hold more than 128 processes
+- **THEN** the proxy starts, passes its effective-limit check, and serves the session
 
 ### Requirement: Restricted sessions run the application under a confined init
 After confinement, the guard SHALL run the application as its child in a new process group that becomes the controlling terminal's foreground group, forward the termination and user signals it receives to the application, reap orphaned processes, and exit with the application's status, or 128 plus the signal number when a signal ended it. The waiting guard SHALL keep no proxy channel and no standard input or output.
