@@ -72,7 +72,7 @@
 
 ## 4. Record, merge and parity
 
-- [ ] 4.1 Record the adoption and merge it.
+- [x] 4.1 Record the adoption and merge it.
   - **Record:** add the `sandbox-ref-35` adoption section to `docs/validation.md`, from the tool's template, with every result of tasks 2 and 3:
     - the terminal cases on Rocky as unavailable, with the engine's error;
     - the manual session as their evidence.
@@ -81,7 +81,7 @@
     - copy the reference row from `sandbox-container`.
   - **Merge:** commit with the tool's message and the co-author trailer, then merge into `main`.
   - **Verify:** `python3 -m unittest tests.test_reference_copy tests.test_alignment` passes on `main`.
-- [ ] 4.2 Copy Claude's parity row into `sandbox-container`, `codex-container`, `antigravity-container`, `opencode-container` and `pi-container`, one commit on `main` each.
+- [x] 4.2 Copy Claude's parity row into `sandbox-container`, `codex-container`, `antigravity-container`, `opencode-container` and `pi-container`, one commit on `main` each.
 
   Verify: the reference and Claude rows are identical in the six repositories.
 
