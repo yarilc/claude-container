@@ -191,11 +191,18 @@ container engine and its containment in both state modes, engine errors,
 argument/stdin forwarding, name races, exit codes, signals, and owned cleanup.
 Record runtime and
 internal sandbox checks as passed, failed, or unavailable with versions.
+Where no terminal attaches to a `--read-only` container through the runner's
+Podman client, because the engine gives it a read-only `/dev` (the runtime
+image's Podman 4.3.1 against Podman 5.8 with crun 1.27), the guarded terminal
+tests skip with the engine's error (`tests/guard_terminal_probe.py`). Record
+them as unavailable there. Then record an interactive session opened on that
+host with its own client: it is the evidence for the `container-isolation`
+scenario "Terminal attaches on an engine that mounts /dev read-only".
 
 Run `bash tests/run-runtime.sh --network-feasibility`, `--network-policy`, and
 `--network` for the isolated topology, trusted policy/proxy tests, and production
 wrapper acceptance. Use disposable native storage with protected ancestors for
-policy path tests; do not weaken path checks for `/tmp`, `/codex-home`, or `/mnt/d`
+policy path tests; do not weaken path checks for `/tmp`, `/claude-home`, or `/mnt/d`
 permissions. Existing runtime regressions explicitly select unrestricted mode
 and maintenance authorization. Authenticated API/account tests are separate from
 automated synthetic state and require explicit credential/model-call approval.

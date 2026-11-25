@@ -17,6 +17,8 @@ import hashlib
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'network'))
 from revisions import TLS_ENFORCEMENT  # noqa: E402
+sys.path.insert(0, str(ROOT / 'tests'))
+from guard_terminal_probe import terminal_skip_reason  # noqa: E402
 IMAGE = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
 ENGINE_IMAGE = os.environ.get('CLAUDE_CONTAINER_ENGINE_IMAGE', 'localhost/claude-code-engine:latest')
 # A small pinned image that the engine tests copy into the library's store.
@@ -541,17 +543,43 @@ echo examples-ok
                                      env=self.env, capture_output=True, text=True, timeout=120)
             self.assert_success(removed)
 
+    def engine_budgets(self):
+        """Delegated controllers and process mechanism of the engine, by the launcher's rule."""
+        import agent_budgets
+        delegated = agent_budgets.delegated(self.podman('info', '--format', '{{.Host.CgroupControllers}}'),
+                                            self.podman('info', '--format', '{{.Host.CgroupManager}}'))
+        return delegated, agent_budgets.process_mechanism(delegated, self.podman('info', '--format', '{{.Host.Kernel}}'))
+
     def test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy(self):
+        # Each budget is checked as the engine enforces it: a cgroup limit only for a
+        # delegated controller, the process rlimit as fallback (agent_budgets).
+        delegated, mechanism = self.engine_budgets()
         _, provider = self.provider_fixture()
         check = """from pathlib import Path
 import sys
 memory, nano, pids = map(int, sys.argv[1:4])
+delegated, mechanism = sys.argv[4].split(','), sys.argv[5]
 root = Path('/sys/fs/cgroup')
 assert Path('/proc/self/cgroup').read_text() == '0::/\\n'
-assert int((root / 'memory.max').read_text()) == memory
-assert int((root / 'pids.max').read_text()) == pids
-quota, period = (root / 'cpu.max').read_text().split()
-assert int(quota) * 10**9 == nano * int(period)
+def limit(name):
+    path = root / name
+    return path.read_text().split() if path.exists() else ['max']
+if 'memory' in delegated:
+    assert int(limit('memory.max')[0]) == memory
+else:
+    assert limit('memory.max') == ['max'], limit('memory.max')
+quota, *period = limit('cpu.max')
+if 'cpu' in delegated:
+    assert int(quota) * 10**9 == nano * int(period[0])
+else:
+    assert quota == 'max', quota
+if mechanism == 'cgroup':
+    assert int(limit('pids.max')[0]) == pids
+else:
+    assert limit('pids.max') == ['max'], limit('pids.max')
+if mechanism == 'rlimit':
+    line = next(l for l in Path('/proc/self/limits').read_text().splitlines() if l.startswith('Max processes'))
+    assert line.split()[2:4] == [str(pids), str(pids)], line
 print('AGENT_BUDGETS_OK')
 """
         cases = (({}, (4 << 30, 2 * 10**9, 512)),
@@ -561,7 +589,8 @@ print('AGENT_BUDGETS_OK')
             for budgets, expected in cases:
                 with self.subTest(mode=mode, budgets=budgets):
                     environment = provider | budgets | {'CLAUDE_CONTAINER_NETWORK': mode}
-                    script = ("python3 - " + ' '.join(map(str, expected)) + " <<'PY'\n" + check + 'PY\n')
+                    script = ("python3 - " + ' '.join(map(str, [*expected, ','.join(delegated) or 'none', mechanism]))
+                              + " <<'PY'\n" + check + 'PY\n')
                     result = self.shell(script, **environment)
                     self.assert_success(result)
                     self.assertIn('AGENT_BUDGETS_OK', result.stdout)
@@ -576,10 +605,7 @@ print('AGENT_BUDGETS_OK')
         # set-process-limits-inside-containers: on the rlimit fallback the proxy's process
         # budget is its own. A limit applied at creation would count every container of the
         # user, and the proxy could not start or pass its effective check.
-        import agent_budgets
-        delegated = agent_budgets.delegated(self.podman('info', '--format', '{{.Host.CgroupControllers}}'),
-                                            self.podman('info', '--format', '{{.Host.CgroupManager}}'))
-        if agent_budgets.process_mechanism(delegated, self.podman('info', '--format', '{{.Host.Kernel}}')) != 'rlimit':
+        if self.engine_budgets()[1] != 'rlimit':
             self.skipTest('the engine does not use the process rlimit fallback')
         _, environment = self.provider_fixture()
         crowd = 'claude-test-crowd-' + uuid.uuid4().hex[:12]
@@ -824,26 +850,33 @@ sys.exit(37)
                 self.fail(f'guarded pipe timed out; isolated={bool(state)} stdout={error.stdout!r} stderr={error.stderr!r}')
             self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
             self.assertEqual(json.loads(result.stdout), {'argv':arguments, 'stdin':'synthetic stdin\n', 'tty':False})
-            master, slave = pty.openpty()
-            try:
-                proc = subprocess.Popen([str(self.wrapper), '--tty-probe'], cwd=self.project, env=environment,
-                    stdin=slave, stdout=slave, stderr=subprocess.PIPE)
-                os.close(slave); slave = -1
-                _, error = proc.communicate(timeout=30)
-                self.assertEqual(proc.returncode, 37, error.decode())
-                output = b''
-                while True:
-                    try:
-                        data = os.read(master, 65536)
-                    except OSError:
-                        break
-                    if not data: break
-                    output += data
-                records = [json.loads(line) for line in output.decode().splitlines() if line.startswith('{"argv"')]
-                self.assertEqual(records, [{'argv':['--tty-probe'], 'stdin':'', 'tty':True}])
-            finally:
-                if slave >= 0: os.close(slave)
-                os.close(master)
+            with self.subTest(terminal=True, isolated=bool(state)):
+                # Through the runner's older client, a Podman 5.8 server with crun 1.27 cannot
+                # attach a terminal to a read-only /dev (guard_terminal_probe). The piped case
+                # above still runs.
+                reason = terminal_skip_reason(IMAGE)
+                if reason:
+                    self.skipTest(reason)
+                master, slave = pty.openpty()
+                try:
+                    proc = subprocess.Popen([str(self.wrapper), '--tty-probe'], cwd=self.project, env=environment,
+                        stdin=slave, stdout=slave, stderr=subprocess.PIPE)
+                    os.close(slave); slave = -1
+                    _, error = proc.communicate(timeout=30)
+                    self.assertEqual(proc.returncode, 37, error.decode())
+                    output = b''
+                    while True:
+                        try:
+                            data = os.read(master, 65536)
+                        except OSError:
+                            break
+                        if not data: break
+                        output += data
+                    records = [json.loads(line) for line in output.decode().splitlines() if line.startswith('{"argv"')]
+                    self.assertEqual(records, [{'argv':['--tty-probe'], 'stdin':'', 'tty':True}])
+                finally:
+                    if slave >= 0: os.close(slave)
+                    os.close(master)
 
     def test_bootstrap_failure_after_proxy_setup_cleans_owned_resources(self):
         _, environment = self.provider_fixture()

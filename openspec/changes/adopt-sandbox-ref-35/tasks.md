@@ -2,7 +2,7 @@
 
 ## 1. Adopt `sandbox-ref-35`
 
-- [ ] 1.1 Check that `sandbox-ref-35` exists in `sandbox-container`, then commit this change directory on `main`. From `sandbox-container`, run `python3 -I tools/propagate.py ../claude-container sandbox-ref-34 sandbox-ref-35` (dry run), then `--apply`.
+- [x] 1.1 Check that `sandbox-ref-35` exists in `sandbox-container`, then commit this change directory on `main`. From `sandbox-container`, run `python3 -I tools/propagate.py ../claude-container sandbox-ref-34 sandbox-ref-35` (dry run), then `--apply`.
 
   Verify:
   - the plan lists the files in proposal "What Changes", with 5 references in `docs/network-contract.md`;
@@ -32,7 +32,7 @@
   - **Verify:** `bash tests/run-runtime.sh --setup-runtime` passes both tests on Rocky, where the bundle is at the RHEL path. On each host, compare `podman images --format '{{.Repository}}:{{.Tag}}'` before and after the mode:
     - no `:setup-` tag of the test's releases remains;
     - the operator's tags, such as `localhost/claude-code-engine:latest`, are still present.
-- [ ] 2.4 Update the Testing Guidelines of `AGENTS.md` (design decision 4).
+- [x] 2.4 Update the Testing Guidelines of `AGENTS.md` (design decision 4).
   - **Terminal check:** add the reference's paragraph. Where no terminal attaches to a `--read-only` container through the runner's client, the guarded terminal tests skip with the engine's error (`tests/guard_terminal_probe.py`), and validation records them as unavailable. The operator's interactive session on that host is the evidence for the `container-isolation` scenario "Terminal attaches on an engine that mounts /dev read-only".
   - **Home path:** the policy path rule names `/claude-home` instead of `/codex-home`.
   - **Verify:**

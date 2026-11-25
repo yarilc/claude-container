@@ -15,8 +15,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_TAG = 'sandbox-ref-34'
-REFERENCE_COMMIT = 'a129a0367b2ee3dbd1caab501d91d3c30f469fa2'
+REFERENCE_TAG = 'sandbox-ref-35'
+REFERENCE_COMMIT = '2f407bf5bcb881a1e05912e98e5e5832460146ae'
 SIBLING = ROOT.parent / 'sandbox-container'
 # Shared directories whose complete file set is fixed by the manifest.
 CLOSED_DIRECTORIES = ('launcher', 'network', 'setup')
@@ -84,21 +84,22 @@ MANIFEST = {
     'tests/fixtures/shell-agent/profile.json': 'd254b6c0fdc5531c7fef98de074b206a753f4313394c4bfb2f0217134072376b',
     'tests/guard_bind_fixture.py': 'd6e4eb85cedb249ec9c6b4f2a026d14acbd5e1309a63ac036647be06781287cc',
     'tests/guard_mux_fixture.py': 'c641e419f5f2939c0c0af34d8a19dfcbcdf42302e0686e2d446bfad1bfc85f3d',
-    'tests/guard_runtime_fixture.py': '73461452420305dfbacdb24ccb2336c490667f961e816f5b285ef15d35455597',
+    'tests/guard_runtime_fixture.py': '6b41803115d149891213e6aa9940549ee91c10daf1ec066094cf3f9ab290905c',
     'tests/guard_syscall_mock.c': '56ba41dcf49c0f07b40dff43b5527b697f5682beb3f6ed14827230f8d7c86670',
+    'tests/guard_terminal_probe.py': 'a4e5a6486c73c8cd3a43867e349e9cbe7b3721514e763152e2045c9cb6155f03',
     'tests/idle_mux_fixture.py': 'a85aff09892732f71f1c8436465a9d531dd027eab7cdc158c9073005d6508d58',
     'tests/mux_failure_fixture.py': 'a53da415f54bf98cceca6e546d705969c69a4d5619f5b3584cb35214353669b6',
     'tests/mux_fault_boundary.py': 'faf7aaa356dabd64306df8f5c0cb4054f9d267263db653bc0359c3d2cf2672fd',
-    'tests/network_fixture.py': '90311f5240f14c373dc83ce0d2c4d023c4aa247adcf361ccebfaa2009c3e3675',
+    'tests/network_fixture.py': '1ca72af54ca825c4c081d04a26fd2a7deeeee9b785bd8da6aa945c2e87050786',
     'tests/proxy_budget_fixture.py': 'cde9c888d3842045752a93ec1963110749a3d9cd4d48ef76d199e0b4847fea67',
     'tests/sandbox_profile.py': 'ca73c66b3dc2e814197ca714b4dbe8ce7c3c4063b8dfd48b864a6869a563b87f',
     'tests/test_agent_profile.py': '51072b5c037496f5ad057610247d508c03ebe07e6b855ab440f8b9179c0b3ea6',
-    'tests/test_alignment.py': '25a6d8f30ad3892be17fa721cb31c023ff3a523ac4aa710d7238e8ce8bd23718',
+    'tests/test_alignment.py': '09451b6d5fbbc5ba5faa31d89d146c8ada57e1c562e4afb2c2efbd7840b4cbf9',
     'tests/test_engine.py': 'd2665ad9f812b1b3e0b19e319ba32a27e223be9f937cd5713c521ce2325c73f4',
-    'tests/test_guard.py': '0f4bd7a721805177a3b750c92b2db8fbf7e7580f6b65d819456f076e65341953',
+    'tests/test_guard.py': 'aba9caeeb7084bd609e6c299e85cd048162b4f924e988ae4fcc569277ce97546',
     'tests/test_launcher.py': '549645b943d27d583b36360ee3c457b1cc5d1aaa5ef1464ae52cc1130a1767f6',
     'tests/test_mux.py': 'fb3a7cf8675d247c6609a337d56682d484cde6296e14ea939bfde70537cc8446',
-    'tests/test_network_feasibility.py': '4cff9c50b996fd38f2b21b75abe73de77531e554522b04641fcb5288178d1e1c',
+    'tests/test_network_feasibility.py': '9d17c308598e4c51739f9a9b4f171b59d521acf19acd109fa2fdcab64fe0b1c7',
     'tests/test_network_policy.py': 'f57b3fe72deca821510855b6a474efb2e606471c4d231c210a699627e056f032',
     'tests/test_platform.py': 'e5e30cbb9edb3561e0a6cac67641ab27986ce9e6bd425e5be96976c39fb5fecf',
     'tests/test_qualification.py': 'b0df2ad151193f66ea665836132ffac464883a5e2ae7e47d29511f07d9997dfa',
