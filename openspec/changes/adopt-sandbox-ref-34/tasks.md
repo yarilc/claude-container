@@ -75,7 +75,7 @@
 - [x] 4.1 Add the `sandbox-ref-34` adoption section to `docs/validation.md`, from the tool's template, with every result of tasks 2 and 3. Set Claude's parity row to "Adopted `sandbox-ref-34`", and copy the reference row from `sandbox-container`. Commit with the tool's message and merge into `main`.
 
   Verify: `tests/test_reference_copy.py` passes on `main`.
-- [ ] 4.2 Copy Claude's parity row into `sandbox-container`, `codex-container`, `antigravity-container`, `opencode-container` and `pi-container`, one commit on `main` each.
+- [x] 4.2 Copy Claude's parity row into `sandbox-container`, `codex-container`, `antigravity-container`, `opencode-container` and `pi-container`, one commit on `main` each.
 
   Verify: the reference and Claude rows are identical in the six repositories.
 
