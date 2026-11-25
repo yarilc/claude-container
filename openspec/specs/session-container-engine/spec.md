@@ -52,6 +52,10 @@ The engine and every container it runs SHALL have no network path other than the
 - **WHEN** a container started by an offline session's engine tries direct DNS, TCP or UDP to an external address, or the engine tries to pull an image
 - **THEN** every attempt fails, and no network path appears that the session lacks
 
+#### Scenario: Interfaces of a restricted session with an engine
+- **WHEN** a restricted session with an engine lists the interfaces of its network namespace (`/proc/net/dev`)
+- **THEN** only loopback is present, although the host's `/sys`, which Podman bind-mounts read-only into a container that joins another network namespace, lists the host's interfaces
+
 #### Scenario: Unrestricted pull
 - **WHEN** an unrestricted session's engine pulls an image that is not in the library
 - **THEN** the pull uses the session's network and the image stays in the session's storage
@@ -188,6 +192,7 @@ A restricted session SHALL NOT start an engine on an installation whose current 
 The README SHALL describe:
 - when a session has an engine, its endpoint and how images reach it;
 - its storage lifecycle, budgets and hardening exceptions;
+- that a session with an engine sees the host's `/sys` read-only;
 - the checks that still need a host engine, such as explicit cgroup limits for nested containers.
 
 #### Scenario: Operator reads the documentation
