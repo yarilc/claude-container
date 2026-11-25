@@ -12,7 +12,7 @@
 
 ## 2. Claude's tests and documentation
 
-- [ ] 2.1 Make the budget test of `tests/test_network_runtime.py` follow the shared budget rule (design decision 1).
+- [x] 2.1 Make the budget test of `tests/test_network_runtime.py` follow the shared budget rule (design decision 1).
   - **Helper:** `engine_budgets()` returns the delegated controllers and the process mechanism from `Host.CgroupControllers`, `Host.CgroupManager` and `Host.Kernel`, through `agent_budgets.delegated()` and `process_mechanism()`. `test_proxy_starts_beside_containers_holding_more_than_its_budget` uses it instead of its inline copy.
   - **Check:** in `test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy`, each offline and provider subtest receives both values:
     - a delegated controller's file holds the budget;
@@ -21,12 +21,12 @@
 
     The lifetime and proxy cleanup part is unchanged.
   - **Verify:** `bash tests/run-runtime.sh --network -k test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy` passes on WSL, checking all three limits, and on Rocky, where `cpu` is not delegated.
-- [ ] 2.2 Run the terminal case of `test_guarded_arguments_stdin_status_and_tty_both_state_modes` in its own subtest (design decision 1).
+- [x] 2.2 Run the terminal case of `test_guarded_arguments_stdin_status_and_tty_both_state_modes` in its own subtest (design decision 1).
   - **Where:** in each state mode, `subTest(terminal=True, isolated=bool(state))` calls `terminal_skip_reason(IMAGE)` from `tests/guard_terminal_probe.py` and skips with its reason. The piped case still runs in both state modes.
   - **Verify:**
     - on WSL, `bash tests/run-runtime.sh --network -k test_guarded_arguments_stdin_status_and_tty_both_state_modes` passes, with both terminal cases run;
     - on Rocky it passes, with both terminal cases skipped with the engine's error.
-- [ ] 2.3 Fix the CA case and the tag cleanup of `tests/test_setup_runtime.py` (design decision 1).
+- [x] 2.3 Fix the CA case and the tag cleanup of `tests/test_setup_runtime.py` (design decision 1).
   - **CA:** for the CA case, `answers()` copies `/etc/ssl/certs/ca-certificates.crt` to `self.base / 'ca-bundle.pem'` and answers the prompt with that path.
   - **Tags:** `clean_tags` adds, for each `releases/*/setup.json`, `REAL_PROFILE.image(kind, 'setup-' + release)` for `engine`, `toolchain` and `proxy`, beside the recorded `image`. `REAL_PROFILE` comes from `sandbox_profile`.
   - **Verify:** `bash tests/run-runtime.sh --setup-runtime` passes both tests on Rocky, where the bundle is at the RHEL path. On each host, compare `podman images --format '{{.Repository}}:{{.Tag}}'` before and after the mode:
@@ -48,7 +48,7 @@
 
 ## 3. Validation on the native hosts
 
-- [ ] 3.1 Have the operator run the modes on WSL, from the branch (design decision 3).
+- [x] 3.1 Have the operator run the modes on WSL, from the branch (design decision 3).
   - **Before:** check that the runner's images exist, and build missing ones from the branch:
     - `localhost/claude-code:latest` and `localhost/claude-code-engine:latest`;
     - `localhost/claude-guard-toolchain:development`.

@@ -3044,6 +3044,52 @@ names `/claude-home` instead of `/codex-home`. The `session-container-engine`
 spec takes the reference's interface scenario and the README's read-only
 `/sys` item, which Claude's tests and README already had.
 
+### WSL (task 3.1)
+
+The operator ran the modes on WSL2 x86_64 `6.18.58.1-microsoft-standard-WSL2`:
+- Podman server 4.9.3 with crun 1.14.1, reached by the runner's 4.3.1 client;
+- the `systemd` manager with `[cpu memory pids]`;
+- IPv6 present.
+
+The checkout was a native clone of branch `adopt-sandbox-ref-35` at `ffe18c5`,
+beside the reference checkout with its tags. The images were present, and the
+builds from the branch were cache hits:
+- runtime `localhost/claude-code:latest`, `11c3c6b0ee93`;
+- engine `localhost/claude-code-engine:latest`, `96c2d398a65e`, the
+  reference's engine image on this host;
+- guard toolchain `localhost/claude-guard-toolchain:development`,
+  `101d7cadcd1c`.
+
+| Mode | Result |
+| --- | --- |
+| unit discovery, in the runtime image | Passed: 571 tests, 85 skipped (the runtime suites, without an engine). `test_reference_copy` (5 tests) and `test_alignment` (21 tests) ran |
+| `--setup-runtime` | Passed: 2 tests. The 90 image tags were identical before and after the mode |
+| `--network-feasibility` | Passed: 1 test, with IPv6 present |
+| `--guard` | Passed: 25 tests, 1 skipped (the opt-in idle check). `test_terminal_interrupt_is_delivered_once` and `test_terminal_interrupt_reaches_an_application_without_a_handler` ran and passed |
+| `--network` | 25 tests, 2 skipped (the opt-in toolchain examples and the proxy's rlimit case). Both terminal cases of `test_guarded_arguments_stdin_status_and_tty_both_state_modes` ran and passed. The budget test checked the memory, CPU and process budgets. `test_toolchain_added_during_offline_session_without_network` passed. `test_interrupted_and_failed_creation_recovers_both_roles` failed in the full run, below. Alone, it passed twice, in 145 and 124 seconds |
+
+**The interrupted creation case.** In the full `--network` run, the six
+subtests of `test_interrupted_and_failed_creation_recovers_both_roles` failed:
+- five launches exceeded the test's windows. Three did not exit within 25
+  seconds, and two did not reach the intercepted `create` within 15 seconds;
+- the launches that timed out kept running. The sixth launch exited in time,
+  but its subtest found a session directory left by them, and the end of the
+  test found 2 proxies.
+
+After the run, no container with Claude's egress or session label remained.
+Alone, the test passed twice. The test is Claude's own, this change does not
+touch it, and none of the shared files it uses changed. It last ran natively on
+this host with `sandbox-ref-28`, before the session engine. Before each
+intercepted `create`, a provider launch checks its qualification: about ten
+Podman calls and one probe container. That check probably takes most of the
+windows on this host; it was not timed. On Rocky the test passed in the full
+run.
+
+**Follow-up.** The test's windows are tight for WSL. A later change in the
+wrappers can widen them and stop the launch when a window expires, so that a
+timeout does not carry into the next subtests. Codex, Antigravity, OpenCode
+and Pi have the same test.
+
 ### Rocky 9 lab host (task 3.2)
 
 The operator ran the modes on the lab host: kernel `5.14.0-687.12.1.el9_8`
