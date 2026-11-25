@@ -43,7 +43,7 @@
 
 ## 3. Validation from a Claude session with its engine
 
-- [ ] 3.1 Have the operator run design decision 4:
+- [x] 3.1 Have the operator run design decision 4:
   - setup from Windows on the branch;
   - the image toolchains;
   - a new Claude session.
@@ -52,7 +52,7 @@
   - in the new session, `CONTAINER_HOST=tcp://127.0.0.1:2375`;
   - `podman info` reports rootless operation;
   - `podman images` lists the library images.
-- [ ] 3.2 From that session, run `bash tests/run-runtime.sh` with:
+- [x] 3.2 From that session, run `bash tests/run-runtime.sh` with:
   - `--wrapper`, `--setup`, `--setup-runtime` and `--qualification`;
   - `--network`;
   - no mode, for the default runtime run.
@@ -63,16 +63,16 @@
   - a nested level that runs out of subordinate IDs is recorded with its measured range.
 
   A failure in shared code pauses the change.
-- [ ] 3.3 Have the operator run `.\tools\windows-validate.ps1 -Checkout C:\Work\yarilc-github\claude-container` from `sandbox-container`, on Windows PowerShell 5.1.
+- [x] 3.3 Have the operator run `.\tools\windows-validate.ps1 -Checkout C:\Work\yarilc-github\claude-container` from `sandbox-container`, on Windows PowerShell 5.1.
 
   Verify: no case fails, and "Session with library images" passes for Claude.
-- [ ] 3.4 Have the operator run the engine case beside a crowded container on the machine's own engine, where an engine can start: from the checkout in the Podman machine, `bash tests/run-runtime.sh -k test_engine_process_rlimit_counts_per_container`, after the pinned alpine sample image is pulled into that engine.
+- [x] 3.4 Have the operator run the engine case beside a crowded container on the machine's own engine, where an engine can start: from the checkout in the Podman machine, `bash tests/run-runtime.sh -k test_engine_process_rlimit_counts_per_container`, after the pinned alpine sample image is pulled into that engine.
 
   Verify: the case passes. It also verifies task 4.3 of the reference change `set-process-limits-inside-containers`.
 
 ## 4. Record, merge and parity
 
-- [ ] 4.1 Add the `sandbox-ref-34` adoption section to `docs/validation.md`, from the tool's template, with every result of tasks 2 and 3. Set Claude's parity row to "Adopted `sandbox-ref-34`", and copy the reference row from `sandbox-container`. Commit with the tool's message and merge into `main`.
+- [x] 4.1 Add the `sandbox-ref-34` adoption section to `docs/validation.md`, from the tool's template, with every result of tasks 2 and 3. Set Claude's parity row to "Adopted `sandbox-ref-34`", and copy the reference row from `sandbox-container`. Commit with the tool's message and merge into `main`.
 
   Verify: `tests/test_reference_copy.py` passes on `main`.
 - [ ] 4.2 Copy Claude's parity row into `sandbox-container`, `codex-container`, `antigravity-container`, `opencode-container` and `pi-container`, one commit on `main` each.
