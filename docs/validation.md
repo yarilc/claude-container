@@ -3007,3 +3007,133 @@ cases use.
 The installed launcher core, setup, session helper and engine image change, so
 installations rerun `--container-setup`. Setup migrates saved delegation and
 builds `localhost/claude-code-engine`.
+
+## Adoption of `sandbox-ref-35`: 2026-11-25
+
+Change `adopt-sandbox-ref-35`, from `sandbox-ref-34`. The runner suites now run
+on kernels without IPv6, on engines without the `cpu` controller, and where no
+terminal attaches to a `--read-only` container through the runner's Podman
+client. Only tests, the shared probe and `AGENTS.md` changed. No product code
+changed, so installations rerun nothing.
+
+Copied from `sandbox-container` tag `sandbox-ref-35` (commit `2f407bf`):
+- updated: `tests/guard_runtime_fixture.py`, `tests/network_fixture.py`,
+  `tests/test_alignment.py`, `tests/test_guard.py` and
+  `tests/test_network_feasibility.py`;
+- added: `tests/guard_terminal_probe.py`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag. The thin Windows
+entry and `.gitattributes` needed no copy. `tools/propagate.py` also moved
+three history entries of the parity table to `sandbox-ref-35`. They name the
+tag each check ran at, so they were restored by hand.
+
+Claude's own tests changed as the reference's did:
+- `tests/test_network_runtime.py`: an `engine_budgets()` helper gives the
+  delegated controllers and the process mechanism, by the launcher's rule. The
+  budget test checks each budget as the engine enforces it, in its offline and
+  provider cases, and the proxy's rlimit case uses the same helper. The
+  terminal case of `test_guarded_arguments_stdin_status_and_tty_both_state_modes`
+  runs in its own subtest, which skips with `terminal_skip_reason()`;
+- `tests/test_setup_runtime.py`: the provider case trusts a copy of the
+  runner's CA bundle in the native test state, and `clean_tags` removes the
+  engine, guard toolchain and proxy tags that setup names after the test's
+  releases.
+
+`AGENTS.md` has the reference's manual terminal check, and its policy path rule
+names `/claude-home` instead of `/codex-home`. The `session-container-engine`
+spec takes the reference's interface scenario and the README's read-only
+`/sys` item, which Claude's tests and README already had.
+
+### WSL (task 3.1)
+
+The operator ran the modes on WSL2 x86_64 `6.18.58.1-microsoft-standard-WSL2`:
+- Podman server 4.9.3 with crun 1.14.1, reached by the runner's 4.3.1 client;
+- the `systemd` manager with `[cpu memory pids]`;
+- IPv6 present.
+
+The checkout was a native clone of branch `adopt-sandbox-ref-35` at `ffe18c5`,
+beside the reference checkout with its tags. The images were present, and the
+builds from the branch were cache hits:
+- runtime `localhost/claude-code:latest`, `11c3c6b0ee93`;
+- engine `localhost/claude-code-engine:latest`, `96c2d398a65e`, the
+  reference's engine image on this host;
+- guard toolchain `localhost/claude-guard-toolchain:development`,
+  `101d7cadcd1c`.
+
+| Mode | Result |
+| --- | --- |
+| unit discovery, in the runtime image | Passed: 571 tests, 85 skipped (the runtime suites, without an engine). `test_reference_copy` (5 tests) and `test_alignment` (21 tests) ran |
+| `--setup-runtime` | Passed: 2 tests. The 90 image tags were identical before and after the mode |
+| `--network-feasibility` | Passed: 1 test, with IPv6 present |
+| `--guard` | Passed: 25 tests, 1 skipped (the opt-in idle check). `test_terminal_interrupt_is_delivered_once` and `test_terminal_interrupt_reaches_an_application_without_a_handler` ran and passed |
+| `--network` | 25 tests, 2 skipped (the opt-in toolchain examples and the proxy's rlimit case). Both terminal cases of `test_guarded_arguments_stdin_status_and_tty_both_state_modes` ran and passed. The budget test checked the memory, CPU and process budgets. `test_toolchain_added_during_offline_session_without_network` passed. `test_interrupted_and_failed_creation_recovers_both_roles` failed in the full run, below. Alone, it passed twice, in 145 and 124 seconds |
+
+**The interrupted creation case.** In the full `--network` run, the six
+subtests of `test_interrupted_and_failed_creation_recovers_both_roles` failed:
+- five launches exceeded the test's windows. Three did not exit within 25
+  seconds, and two did not reach the intercepted `create` within 15 seconds;
+- the launches that timed out kept running. The sixth launch exited in time,
+  but its subtest found a session directory left by them, and the end of the
+  test found 2 proxies.
+
+After the run, no container with Claude's egress or session label remained.
+Alone, the test passed twice. The test is Claude's own, this change does not
+touch it, and none of the shared files it uses changed. It last ran natively on
+this host with `sandbox-ref-28`, before the session engine. Before each
+intercepted `create`, a provider launch checks its qualification: about ten
+Podman calls and one probe container. That check probably takes most of the
+windows on this host; it was not timed. On Rocky the test passed in the full
+run.
+
+**Follow-up.** The test's windows are tight for WSL. A later change in the
+wrappers can widen them and stop the launch when a window expires, so that a
+timeout does not carry into the next subtests. Codex, Antigravity, OpenCode
+and Pi have the same test.
+
+### Rocky 9 lab host (task 3.2)
+
+The operator ran the modes on the lab host: kernel `5.14.0-687.12.1.el9_8`
+without IPv6, Podman 5.8.0, crun 1.27, and `systemd` with `[memory pids]`. The
+checkout was branch `adopt-sandbox-ref-35` at `ffe18c5`, beside the reference
+checkout with its tags. The images were present, and the builds from the
+branch were cache hits:
+- runtime `localhost/claude-code:latest`, `bf6c79761376`;
+- engine `localhost/claude-code-engine:latest`, `12895fbaa9ea`, the
+  reference's engine image;
+- guard toolchain `localhost/claude-guard-toolchain:development`,
+  `c6562a3f25f8`.
+
+`/home` had 1.3 GB free after the runs.
+
+| Mode | Result |
+| --- | --- |
+| unit discovery, in the runtime image (host Python 3.9 is too old) | Passed: 571 tests, 85 skipped (the runtime suites, without an engine). `test_reference_copy` (5 tests) and `test_alignment` (21 tests) ran |
+| `--setup-runtime` | Passed: 2 tests. The provider case trusted the CA bundle copied into the test state. The 32 image tags were identical before and after the mode. 19 `:setup-` tags from earlier runs, present before it, remained |
+| `--network-feasibility` | Passed: 1 test, on the kernel without IPv6 |
+| `--guard` | Passed: 25 tests, 3 skipped. `test_production_filter_and_landlock_on_real_rootless_kernel` passed without IPv6. **Unavailable:** `test_terminal_interrupt_is_delivered_once` and `test_terminal_interrupt_reaches_an_application_without_a_handler`, skipped by the probe with `crun: unlink /dev/console: Read-only file system`. The third skip is the opt-in 305-second idle check |
+| `--network` | Passed: 25 tests, 4 skipped. The budget test checked the memory and process budgets, and found `cpu` undelegated. **Unavailable:** the two terminal cases of `test_guarded_arguments_stdin_status_and_tty_both_state_modes`, skipped by the probe. Its piped cases passed in both state modes. The other skips are the opt-in toolchain examples and the proxy's rlimit case. `test_toolchain_added_during_offline_session_without_network` passed in the first run |
+
+In `--network`, the probe's terminal start failed with `container create
+failed (no logs from conmon)`, the other error the old client gets for
+`run -t --read-only` on this host (2026-11-10, operator probes of the
+reference). The probe had found `/dev` read-only, as in `--guard`.
+
+**Manual terminal evidence.** The operator opened
+`CLAUDE_CONTAINER_NETWORK=unrestricted claude-container.sh --container-shell`
+from the checkout, with the host's own client, recorded with `script`
+(design decision 3). The terminal attached at `/dev/pts/0` and the shell
+started. `/dev/pts` was present, and `/dev/shm` was mounted `ro` and empty.
+Ctrl-C ended `sleep 30` (the whole session took 19 seconds), and the shell then
+ran the next command and exited with status 0. This is the evidence for the
+`container-isolation` scenario "Terminal attaches on an engine that mounts
+/dev read-only".
+
+When the launcher started the session's engine, the host's Podman printed
+`ERRO … Capabilities requested by user or image are not allowed by default:
+"CAP_CHOWN,CAP_DAC_OVERRIDE,CAP_FOWNER,CAP_FSETID,CAP_KILL,CAP_NET_BIND_SERVICE,CAP_SETFCAP,CAP_SETPCAP"`.
+The engine options come from `setup/engine.py`, identical to the reference's:
+`--cap-drop=all --cap-add=SETUID,SETGID,SYS_CHROOT`. The listed capabilities
+are Podman's other defaults. The engine started with the launcher's budgets,
+and the session ran normally. The reference's offline session on the same host
+printed no such line. **Follow-up:** find what requests these capabilities, in
+the reference.

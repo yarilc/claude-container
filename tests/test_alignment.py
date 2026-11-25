@@ -27,7 +27,7 @@ SHARED_TESTS = (
     'tests/test_tls_proxy.py', 'tests/test_platform.py', 'tests/test_qualification.py',
     'tests/test_guard.py', 'tests/test_setup.py', 'tests/test_network_feasibility.py',
     'tests/guard_bind_fixture.py', 'tests/guard_mux_fixture.py', 'tests/guard_runtime_fixture.py',
-    'tests/guard_syscall_mock.c', 'tests/idle_mux_fixture.py', 'tests/mux_failure_fixture.py',
+    'tests/guard_terminal_probe.py', 'tests/guard_syscall_mock.c', 'tests/idle_mux_fixture.py', 'tests/mux_failure_fixture.py',
     'tests/mux_fault_boundary.py', 'tests/network_fixture.py', 'tests/proxy_budget_fixture.py',
     'tests/tls_binding_fixture.py', 'tests/test_session.py', 'tests/test_toolchains.py', 'tests/test_engine.py',
     'tests/fixtures/agent/profile.json', 'tests/fixtures/agent/policies/default.json',

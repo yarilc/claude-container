@@ -83,9 +83,13 @@ proposal.md, Why). The reference validated it on 2026-11-25 on two native hosts:
      `--setup-runtime` and the unit discovery (proposal.md, Impact). On
      Rocky, host Python 3.9 is too old for the discovery, so it runs in the
      runtime image, as for the reference.
-   - **Manual terminal evidence on Rocky:** the operator opens an offline
-     `claude-container --container-shell` session with the host's client,
-     recorded with `script`. No model request is needed.
+   - **Manual terminal evidence on Rocky:** the operator opens a
+     `--container-shell` session with the host's client, recorded with
+     `script`. It starts from the branch's checkout in unrestricted mode, which
+     needs no installation: the lab host's installation may predate
+     `sandbox-ref-34`. Every mode starts the agent container with
+     `--read-only`, so the terminal attach is the same. No model request is
+     needed.
    - Alternative: Rocky only. Rejected: it cannot show that the probe lets
      the terminal cases run where they work.
 
