@@ -3137,3 +3137,109 @@ are Podman's other defaults. The engine started with the launcher's budgets,
 and the session ran normally. The reference's offline session on the same host
 printed no such line. **Follow-up:** find what requests these capabilities, in
 the reference.
+
+## Adoption of `sandbox-ref-36`: 2026-11-26
+
+Change `adopt-sandbox-ref-36`, from `sandbox-ref-35`. Sessions on an eligible
+engine can run systemd in nested containers, and explicit nested limits apply
+for each controller the engine has. The engine image declares its four
+capabilities in `io.containers.capabilities`, which resolves the follow-up of
+the `sandbox-ref-35` Rocky record: the error came from the label the engine
+image inherited from its base. This adoption was validated on the components
+the tag touches, on WSL only (design decision 3 of the change).
+
+Copied from `sandbox-container` tag `sandbox-ref-36` (commit `ce2c9d2`):
+- updated: `launcher/core.sh`, `launcher/engine/.containerignore`,
+  `launcher/engine/Containerfile`, `launcher/engine/entrypoint.sh`,
+  `network/qualification_records.py`, `network/qualify.py`,
+  `setup/common.py`, `setup/engine.py`, `setup/toolchains.py`,
+  `tests/fake_podman.py`, `tests/test_engine.py`, `tests/test_launcher.py`,
+  `tests/test_qualification.py` and `tests/test_toolchains.py`;
+- added: `launcher/engine/cgroup.sh` and `launcher/engine/start.sh`.
+
+The `tests/test_reference_copy.py` manifest moved to the tag. The thin Windows
+entry and `.gitattributes` needed no copy. `tools/propagate.py` rewrote the two
+contract adoption cells of the parity table and kept its four history entries.
+
+Claude's own changes:
+- `tests/test_network_runtime.py`: the fixture installs the engine's build
+  inputs from their one list, `engine.INPUTS`. Its own list lacked `start.sh`
+  and `cgroup.sh`, so the network suite could not have installed the engine;
+- `README.md`: the engine's budgets and hardening exceptions take the
+  reference's text, with the startup step and the label, and the new item
+  "Systemd containers and nested limits";
+- `AGENTS.md`: the startup step joins the engine's hardening exceptions.
+
+### Repository checks in the development environment (task 2.4)
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment` | Passed: 26 tests |
+| The modules of the changed files: `test_reference_copy`, `test_alignment`, `test_engine`, `test_toolchains`, `test_launcher`, `test_setup`, `test_qualification` and `test_network_runtime` | 377 tests, 49 failures and 166 errors, 32 skipped, all in `test_launcher`, `test_setup` and `test_toolchains`. This environment's storage refuses `chmod` (drvfs, mode 777) and `AF_UNIX` sockets. On `main`, the same storage fails the same 200 tests; the one addition, `test_engine_cgroup_delegation_state_is_reported`, is new in the tag and stops in the same `setUp`. `test_engine`, `test_qualification` and the alignment and copy tests passed, and the network suite skipped without an engine. The three modules passed on WSL (task 3.1) |
+| `openspec validate adopt-sandbox-ref-36 --strict`, `git diff --check` | Passed |
+
+### WSL (task 3.1)
+
+The operator ran one line on WSL2 x86_64 `6.18.58.1-microsoft-standard-WSL2`:
+- Podman 4.9.3 with crun 1.14.1, reached by the runner's 4.3.1 client;
+- the `systemd` manager with `[cpu memory pids]`;
+- 113 GB free on `/`.
+
+The checkout was a native clone of branch `adopt-sandbox-ref-36` at `90f4ef7`,
+beside the reference checkout with its tags. The runtime image
+`localhost/claude-code:latest` (`11c3c6b0ee93`), the guard toolchain
+`localhost/claude-guard-toolchain:development` (`101d7cadcd1c`) and the pinned
+alpine sample image were present. `localhost/claude-code-engine:latest` was
+rebuilt from the branch with `podman build --pull=never`: it moved from
+`96c2d398a65e` to `5f8a47ee207e`, the image the reference built from
+`sandbox-ref-36` on this host. Its `io.containers.capabilities` label reads
+`SETUID,SETGID,SYS_CHROOT,CHOWN`.
+
+| Command | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_reference_copy tests.test_alignment tests.test_engine tests.test_toolchains` | First run: 113 tests, 24 failures and 36 errors, all in `test_toolchains` with `Unsafe protected path: /tmp`. The line set no `SANDBOX_TEST_TMPDIR`, and the toolchain library refuses the world-writable `/tmp` as an ancestor. Rerun with `SANDBOX_TEST_TMPDIR=~/sbx-tmp` (mode 0700): passed, 113 tests |
+| `bash tests/run-runtime.sh --setup` | Passed: 93 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests. The 93 image tags were identical before and after the mode |
+| `bash tests/run-runtime.sh --qualification` | Passed: 34 tests |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 121 tests, 1 skipped: `test_wsl_drive_roots_refused_but_subdirectories_accepted`, because the runner's container has no single-letter drive root under `/mnt` |
+| `bash tests/run-runtime.sh -k SessionEngineTests` | Passed: 4 tests, 1 skipped: `test_engine_process_rlimit_counts_per_container`, because the engine does not use the process rlimit fallback. `test_session_engine_runs_library_images_inside_the_session_boundaries`, `test_live_image_and_isolated_concurrent_sessions` and `test_no_engine_without_library_images` passed with the new engine image |
+| `bash tests/run-runtime.sh --network -k test_offline_session_engine_has_no_external_path` | Passed: the fixture installed the engine from `engine.INPUTS`, and the offline engine had no external path |
+
+No log contains `Capabilities requested` or `level=error`, and no launch
+printed the notice of an ineligible engine.
+
+### Installation on WSL (task 3.2)
+
+The operator reran `claude-container --container-setup` from the branch on
+their WSL installation (`~/.local/lib/claude-container`). Its saved
+preferences, schema 3, name:
+- the engine image `5f8a47ee207e`, the one built in task 3.1, with engine
+  sources `67a9be393587`;
+- the runtime image `11c3c6b0ee93` and the guard toolchain `101d7cadcd1c`,
+  unchanged;
+- `provider` mode with account authentication and the host CA bundle trusted,
+  with 4g of memory, 2 CPUs and 512 processes.
+
+The operator reported that setup completed, and that a session with library
+images worked as expected. The output of the session check was not recorded.
+
+### Not run
+
+The perimeter covers the components the tag changes (design decision 3). These
+were not rerun:
+- the full unit discovery, `--guard`, the full `--network` and
+  `--network-feasibility`: no guard, proxy, session or feasibility file
+  changed;
+- the Rocky 9 lab host and the Windows validation script: no Windows file
+  changed, and Claude adds no host-specific code to the changed components.
+
+The shared files are byte-identical to the tag (`tests/test_reference_copy.py`),
+and the reference ran its suites on WSL and on the Rocky 9 lab host before
+tagging (`sandbox-container` record "Reference tag `sandbox-ref-36`"). The
+systemd runtime cases, the systemd sample recipe and its pin check stay in the
+reference (design decision 4). Their evidence is the reference's
+`test_systemd_runs_in_nested_containers` and
+`test_engine_cgroup_delegation_in_sessions`, which passed on both hosts.
+`test_interrupted_and_failed_creation_recovers_both_roles`, part of the full
+`--network`, did not run; its follow-up stands. A Claude regression outside
+the changed components would show only in the next full run.

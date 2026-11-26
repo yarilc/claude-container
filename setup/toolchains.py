@@ -1073,7 +1073,10 @@ def check_engine(library, env):
             if started.returncode != 0:
                 raise SetupError('Cannot start the check engine: ' + started.stderr.strip()[-400:])
             for _ in range(engine.READY_SECONDS):
-                ready = run(['exec', name, 'podman', '--remote', '--url', engine.ENDPOINT, 'info', '--format',
+                # As the engine user: an exec defaults to the engine's startup user, its root
+                # (support-nested-systemd-containers, design D4).
+                ready = run(['exec', '--user', engine.ENGINE_USER, name, 'podman', '--remote', '--url', engine.ENDPOINT,
+                             'info', '--format',
                              '{{.Host.Security.Rootless}}'], timeout=20)
                 if ready.returncode == 0 and ready.stdout.strip() == 'true':
                     break

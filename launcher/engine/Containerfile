@@ -22,12 +22,24 @@ RUN rm -f /usr/share/containers/containers.conf.d/00-vendor.conf \
     && cd /opt/sandbox-engine/probe-rootfs \
     && mkdir dev etc proc run sys tmp usr var \
     && ln -s usr/bin bin && ln -s usr/sbin sbin && ln -s usr/lib lib && ln -s usr/lib64 lib64 \
-    && install -d -o podman -g podman -m 0700 /run/user/1000 /var/lib/sandbox-engine
+    && install -d -o podman -g podman -m 0700 /run/user/1000 /var/lib/sandbox-engine \
+    && test -x /usr/libexec/podman/catatonit && command -v capsh >/dev/null
+# The startup program (start.sh) is the engine's first process: it delegates the
+# engine's own cgroup subtree when the engine is eligible (cgroup.sh), then runs
+# the services (entrypoint.sh) under catatonit as the engine user. The launcher
+# starts it as root; any other use of the image starts as the podman user.
+COPY --chmod=0755 start.sh /usr/local/bin/sandbox-engine-start
+COPY --chmod=0755 cgroup.sh /usr/local/bin/sandbox-engine-cgroup
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/sandbox-engine
 # The resolver of restricted sessions: an engine created with --network=none has
 # no generated /etc/resolv.conf, which nested bridge networks need. Engines with a
 # network get Podman's generated file over it.
 COPY resolv.conf /etc/resolv.conf
 ENV XDG_RUNTIME_DIR=/run/user/1000
+# The capabilities the engine is started with (container_options() in
+# setup/engine.py); the startup program keeps CHOWN only in the bounding set.
+# The base labels itself with Podman's defaults, which the engine drops, so
+# Podman would log an error at every engine start.
+LABEL io.containers.capabilities="SETUID,SETGID,SYS_CHROOT,CHOWN"
 USER podman
-ENTRYPOINT ["/usr/local/bin/sandbox-engine"]
+ENTRYPOINT ["/usr/local/bin/sandbox-engine-start"]

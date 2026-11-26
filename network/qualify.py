@@ -39,7 +39,12 @@ engine_module = importlib.util.module_from_spec(module)
 module.loader.exec_module(engine_module)
 # Fixed probes of the session engine (design D10): its effective hardening, and a
 # nested container's views and network reach. They admit no application command.
-ENGINE_STATE = (r'''grep -E '^(CapBnd|NoNewPrivs|Seccomp):' /proc/1/status | tr -s '\t' ' ' && echo "uid=$(id -u)" && '''
+# PID 1 is the engine's init (catatonit) after the startup program's hand-over: the engine user,
+# with the ownership-change capability in its bounding set only, and no root process in the engine
+# (support-nested-systemd-containers, design D5).
+ENGINE_STATE = (r'''grep -E '^(Uid|CapPrm|CapEff|CapBnd|CapAmb|NoNewPrivs|Seccomp):' /proc/1/status | tr -s '\t' ' ' && '''
+                r'''echo "root=$(grep -l '^Uid:[[:space:]]*0[[:space:]]' /proc/[0-9]*/status 2>/dev/null | wc -l)" && '''
+                r'''echo "uid=$(id -u)" && '''
                 r'''echo "map=$(tr -s ' ' < /proc/self/uid_map | grep '^ 1000 ' | tr ' ' ':' | cut -c2-)" && '''
                 r'''echo "fuse=$(stat -c %A /dev/fuse | cut -c1) tun=$(stat -c %A /dev/net/tun | cut -c1)" && '''
                 r'''{ touch /var/lib/shared/qualification-write 2>/dev/null && echo store=writable || echo store=read-only; }''')
@@ -47,6 +52,23 @@ NESTED_PROBE = (r'''echo "pid1=$(cat /proc/1/comm)"; echo "procs=$(ls /proc | gr
                 r'''echo "host=$(cat /proc/sys/kernel/hostname)"; echo "secrets=$(ls -A /run/secrets 2>/dev/null | wc -l)"; '''
                 r'''echo "routes=$(tail -n +2 /proc/net/route | wc -l)"; '''
                 r'''if timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then echo tcp=open; else echo tcp=closed; fi''')
+
+
+# Write each limit file of the engine's cgroup namespace root back with its own value; never
+# cgroup.kill or cgroup.freeze. Every write must fail: the kernel's nsdelegate rule protects the
+# session budgets, whoever owns the files (support-nested-systemd-containers, design D5).
+LIMIT_PROBE = (r'''for f in memory.max memory.high pids.max cpu.max cgroup.max.descendants cgroup.max.depth; do '''
+               r'''[ -e /sys/fs/cgroup/$f ] || continue; v=$(cat /sys/fs/cgroup/$f); '''
+               r'''if { printf '%s\n' "$v" > /sys/fs/cgroup/$f; } 2>/dev/null; then echo "limit=$f:writable"; '''
+               r'''else echo "limit=$f:denied"; fi; done''')
+# A nested container in the engine's cgroup namespace: its own cgroup, then the limit probe.
+NESTED_CGROUP_PROBE = r'''echo "cgroup=$(cat /proc/self/cgroup)"; ''' + LIMIT_PROBE
+
+
+def limits_denied(output):
+    """Whether every limit file probe line reports a denied write, with at least the two of any cgroup."""
+    results = [line.split('=', 1)[1] for line in output.splitlines() if line.startswith('limit=')]
+    return len(results) >= 2 and all(re.fullmatch(r'[a-z.]+:denied', result) for result in results)
 
 
 class GateError(ValueError):
@@ -78,6 +100,8 @@ class Gate:
         self.token = uuid.uuid4().hex
         self.process = None
         self.cancelled = False
+        # The engine's cgroup delegation state, recorded with its checks.
+        self.engine_cgroup = None
 
     def run(self, command, *, env=None, timeout=30, input=None, cwd=None):
         remaining = min(timeout, self.deadline - time.monotonic())
@@ -324,7 +348,9 @@ class Gate:
                                                   labels=[PROFILE.label('qualification') + '=' + self.token])
         self.engine('run', '--detach', *options, '--network=none', identity['engine']['image'],
                     str(engine_module.PORT), timeout=60)
-        remote = ['exec', name, 'podman', '--remote', '--url', engine_module.ENDPOINT]
+        # Commands in the engine run as its user, never as its startup root (design D4).
+        as_user = ['exec', '--user', engine_module.ENGINE_USER, name]
+        remote = [*as_user, 'podman', '--remote', '--url', engine_module.ENDPOINT]
         deadline = time.monotonic() + engine_module.READY_SECONDS
         while True:
             try:
@@ -341,10 +367,20 @@ class Gate:
                     'seccomp=' + str(ROOT / records.ENGINE_SECCOMP)}
         if not isinstance(options, list) or set(options) != expected:
             raise GateError('session engine security options differ from the documented exceptions')
-        state = self.engine('exec', name, 'sh', '-c', ENGINE_STATE)
-        if state.split() != ['CapBnd:', '00000000000400c0', 'NoNewPrivs:', '1', 'Seccomp:', '2', 'uid=1000',
-                             'map=1000:0:1', 'fuse=c', 'tun=c', 'store=read-only']:
+        state = self.engine(*as_user, 'sh', '-c', ENGINE_STATE)
+        if state.split() != ['Uid:', '1000', '1000', '1000', '1000', 'CapPrm:', '00000000000400c0',
+                             'CapEff:', '00000000000400c0', 'CapBnd:', '00000000000400c1', 'CapAmb:', '00000000000400c0',
+                             'NoNewPrivs:', '1', 'Seccomp:', '2', 'root=0', 'uid=1000', 'map=1000:0:1', 'fuse=c',
+                             'tun=c', 'store=read-only']:
             raise GateError('session engine hardening differs from the documented exceptions: ' + state.replace('\n', ' '))
+        # Its cgroup delegation state: delegated, or ineligible with a reason, which is no failure.
+        cgroup = self.engine(*as_user, engine_module.CGROUP_PROGRAM)
+        if not records.ENGINE_CGROUP.fullmatch(cgroup):
+            raise GateError('session engine cgroup delegation state is unexpected: ' + cgroup[:80].replace('\n', ' '))
+        # Its limit files: unwritable from the engine user without capabilities, on every engine.
+        written = self.engine(*as_user, 'capsh', '--caps==', '--', '-c', LIMIT_PROBE)
+        if not limits_denied(written):
+            raise GateError('session engine limit files are writable from the engine: ' + written.replace('\n', ' '))
         # Nested containers: own process and host-name views, no secrets, and no
         # path out of the session's network namespace, even with --network=host.
         probe = self.engine(*remote, 'run', '--rm', '--network=host', '--volume', '/usr:/usr:ro', '--rootfs',
@@ -354,6 +390,17 @@ class Gate:
                 or not re.fullmatch(r'[0-9a-f]{12}', values.get('host', '')) or values.get('secrets') != '0'
                 or values.get('routes') != '0' or values.get('tcp') != 'closed'):
             raise GateError('session engine containment failed: ' + probe.replace('\n', ' '))
+        # A nested root in the engine's cgroup namespace, mounted read-write, cannot write the
+        # engine's limit files either; on a delegated engine it runs in a cgroup of its own.
+        probe = self.engine(*remote, 'run', '--rm', '--network=none', '--cgroupns=host', '--security-opt=unmask=ALL',
+                            '--volume', '/usr:/usr:ro', '--rootfs', engine_module.PROBE_ROOTFS + ':O',
+                            'bash', '-c', NESTED_CGROUP_PROBE, timeout=120)
+        membership = next((line[len('cgroup='):] for line in probe.splitlines() if line.startswith('cgroup=')), '')
+        if not limits_denied(probe):
+            raise GateError('session engine limit files are writable from a nested container: ' + probe.replace('\n', ' '))
+        if cgroup == 'delegated' and not re.fullmatch(r'0::/(?!engine$)[^\n]+', membership):
+            raise GateError('a nested container of the delegated session engine has no cgroup of its own: ' + membership)
+        self.engine_cgroup = cgroup
         self.engine('rm', '--force', '--volumes', '--time', '0', '--ignore', name, timeout=20)
 
     def qualify(self, identity):
@@ -456,7 +503,7 @@ def main():
             raise GateError('enforcement inputs changed during qualification')
     finally:
         gate.cleanup()
-    records.publish(ROOT, identity, reusable, paths)
+    records.publish(ROOT, identity, reusable, paths, gate.engine_cgroup)
     report_status = records.status(ROOT, identity, paths)
     print(PREFIX + 'status=' + report_status
           + ('; this installation is not release-measured' if report_status == 'locally-qualified' else ''), file=sys.stderr)

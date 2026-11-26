@@ -19,6 +19,8 @@ sys.path.insert(0, str(ROOT / 'network'))
 from revisions import TLS_ENFORCEMENT  # noqa: E402
 sys.path.insert(0, str(ROOT / 'tests'))
 from guard_terminal_probe import terminal_skip_reason  # noqa: E402
+sys.path.insert(0, str(ROOT / 'setup'))
+import engine  # noqa: E402
 IMAGE = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
 ENGINE_IMAGE = os.environ.get('CLAUDE_CONTAINER_ENGINE_IMAGE', 'localhost/claude-code-engine:latest')
 # A small pinned image that the engine tests copy into the library's store.
@@ -84,10 +86,10 @@ class NetworkRuntime(unittest.TestCase):
         (self.install / 'agent/policies').mkdir(mode=0o700, parents=True, exist_ok=True)
         (self.install / 'setup').mkdir(mode=0o700, exist_ok=True)
         (self.install / 'launcher/engine').mkdir(mode=0o700, parents=True, exist_ok=True)
+        # The engine's build inputs from their one list (setup/engine.py), so a new input is never missing.
         for name in ('agent/profile.json', 'agent/policies/default.json', 'agent/launcher.sh', 'setup/common.py',
                      'setup/toolchains.py', 'setup/engine.py', 'Containerfile', '.containerignore', 'launcher/core.sh',
-                     'launcher/engine/Containerfile', 'launcher/engine/.containerignore',
-                     'launcher/engine/containers.conf', 'launcher/engine/entrypoint.sh', 'launcher/engine/resolv.conf', 'launcher/engine/storage.conf'):
+                     *engine.INPUTS):
             shutil.copyfile(ROOT / name, self.install / name)
         shutil.copytree(ROOT / 'setup/toolchain-catalog', self.install / 'setup/toolchain-catalog', dirs_exist_ok=True)
         binary_dir = self.install / 'network/bin'

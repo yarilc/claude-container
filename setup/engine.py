@@ -16,9 +16,9 @@ ENDPOINT = f'tcp://127.0.0.1:{PORT}'
 STORE = '.images'
 STORE_MOUNT = '/var/lib/shared'
 # Engine build inputs in a release, and the seccomp profile setup writes beside them.
-INPUTS = ('launcher/engine/Containerfile', 'launcher/engine/.containerignore',
+INPUTS = ('launcher/engine/Containerfile', 'launcher/engine/.containerignore', 'launcher/engine/cgroup.sh',
           'launcher/engine/containers.conf', 'launcher/engine/entrypoint.sh', 'launcher/engine/resolv.conf',
-          'launcher/engine/storage.conf')
+          'launcher/engine/start.sh', 'launcher/engine/storage.conf')
 SECCOMP = 'launcher/engine/seccomp.json'
 # Every session engine carries this label with its store path, for every wrapper:
 # the toolchain command finds the engines that use the shared library's store.
@@ -29,6 +29,14 @@ OWNER_LABEL = 'sandbox-engine.owner'
 # The engine runs as its image's unprivileged podman user, mapped to the caller,
 # so nested containers' root writes caller-owned files (design D4).
 USERNS = '--userns=keep-id:uid=1000,gid=1000'
+# The engine's first process, its startup program, runs as the root of the
+# engine's user namespace, never the caller (support-nested-systemd-containers,
+# design D1); every later process runs as ENGINE_USER.
+START_USER = '0:0'
+START_PROGRAM = '/usr/local/bin/sandbox-engine-start'
+# The engine's cgroup delegation state: delegated, eligible or "ineligible: <reason>".
+CGROUP_PROGRAM = '/usr/local/bin/sandbox-engine-cgroup'
+ENGINE_USER = 'podman'
 # The engine's graph root lives below a neutral path (launcher/engine/storage.conf)
 # that no workspace mount at the same path can shadow.
 STORAGE = '/var/lib/sandbox-engine'
@@ -83,15 +91,20 @@ def container_options(*, name, seccomp, store, mounts=(), ca_bundle='', labels=(
     """podman run options of an engine container (design D2, D4, D5, D6).
 
     SETUID and SETGID serve the user-namespace helpers; SYS_CHROOT serves layer
-    extraction (pull, load) and image builds, whose helpers chroot.
+    extraction (pull, load) and image builds, whose helpers chroot. The engine
+    starts as the root of its user namespace with CHOWN as well: its startup
+    program delegates the engine's own cgroup subtree, then runs catatonit and
+    the services as the podman user with the other three capabilities only
+    (support-nested-systemd-containers, design D1). No --init: catatonit is the
+    startup program's own last exec, so no root process remains.
 
     The caller adds the network and budget options, then the image and PORT. The
     engine mounts only an anonymous storage volume, which --rm removes with the
     engine, the library's store read-only, the given workspace paths at the same
     paths, and the CA bundle when trusted.
     """
-    options = ['--name', name, '--rm', '--init', '--user', 'podman', USERNS,
-               '--cap-drop=all', '--cap-add=SETUID,SETGID,SYS_CHROOT', '--security-opt=no-new-privileges',
+    options = ['--name', name, '--rm', '--user', START_USER, USERNS,
+               '--cap-drop=all', '--cap-add=SETUID,SETGID,SYS_CHROOT,CHOWN', '--security-opt=no-new-privileges',
                '--security-opt=unmask=ALL', '--security-opt=label=disable', '--security-opt=seccomp=' + str(seccomp),
                '--device=/dev/fuse', '--device=/dev/net/tun', '--http-proxy=false',
                '--mount', 'type=tmpfs,destination=/run/secrets,ro=true',

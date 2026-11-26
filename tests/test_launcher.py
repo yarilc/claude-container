@@ -535,9 +535,14 @@ class LauncherTests(unittest.TestCase):
                 self.assertIsNotNone(run)
                 calls = self.calls()
                 self.assertLess(calls.index(run), calls.index(create))
-                for option in ('--rm', '--init', '--userns=keep-id:uid=1000,gid=1000', '--cap-drop=all',
-                               '--cap-add=SETUID,SETGID,SYS_CHROOT', '--security-opt=no-new-privileges', '--http-proxy=false'):
+                # support-nested-systemd-containers: the startup program runs as the user
+                # namespace's root with CHOWN, without --init (design D1).
+                for option in ('--rm', '--userns=keep-id:uid=1000,gid=1000', '--cap-drop=all',
+                               '--cap-add=SETUID,SETGID,SYS_CHROOT,CHOWN', '--security-opt=no-new-privileges',
+                               '--http-proxy=false'):
                     self.assertIn(option, run)
+                self.assertNotIn('--init', run)
+                self.assertEqual(run[run.index('--user') + 1], '0:0')
                 name = run[run.index('--name') + 1]
                 self.assertTrue(name.startswith('my-project-engine-'), name)
                 self.assertEqual(run[-2:], ['localhost/fixture-shell-engine:latest', '2375'])
@@ -556,8 +561,13 @@ class LauncherTests(unittest.TestCase):
                 for variable in ('CONTAINER_HOST', 'DOCKER_HOST'):
                     self.assertIn(variable + '=tcp://127.0.0.1:2375', create)
                     self.assertNotIn(variable, [a for i, a in enumerate(create[1:]) if create[i] == '--unsetenv'])
-                self.assertIn(['exec', self.ENGINE, 'podman', '--remote', '--url', 'tcp://127.0.0.1:2375', 'info',
-                               '--format', '{{.Host.Security.Rootless}}'], calls)
+                self.assertIn(['exec', '--user', 'podman', self.ENGINE, 'podman', '--remote', '--url',
+                               'tcp://127.0.0.1:2375', 'info', '--format', '{{.Host.Security.Rootless}}'], calls)
+                # Every launcher command in the engine runs as its user (design D4).
+                in_engine = [call for call in calls if call[0] == 'exec' and self.ENGINE in call]
+                self.assertTrue(in_engine)
+                self.assertEqual([call[:4] for call in in_engine],
+                                 [['exec', '--user', 'podman', self.ENGINE]] * len(in_engine))
                 self.assertIn(['rm', '--force', '--volumes', '--time', '0', '--ignore', self.ENGINE], calls)
                 hosts = Path(str(self.log) + '.hosts').read_text()
                 self.assertIn('127.0.0.1\tlocalhost\n', hosts)
@@ -637,12 +647,13 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(run[run.index('localhost/fixture-shell-engine:latest') + 1:],
                                  ['2375', '512'] if fallback else ['2375'])
                 self.assertEqual(self.has_step(create), fallback)
-                self.assertEqual(['exec', self.ENGINE, 'grep', '^Max processes ', '/proc/2/limits'] in self.calls(),
-                                 fallback)
+                self.assertEqual(['exec', '--user', 'podman', self.ENGINE, 'grep', '^Max processes ', '/proc/1/limits']
+                                 in self.calls(), fallback)
 
     def test_engine_process_rlimit_is_verified_before_the_session(self):
-        # set-process-limits-inside-containers: the engine's entrypoint, PID 2 under
-        # --init, must run with the budget; an exec process would show the engine's default.
+        # set-process-limits-inside-containers: the engine's first process, its startup
+        # program (support-nested-systemd-containers), must run with the budget; an exec
+        # process would show the engine's default.
         engine_env = self.image_library() | {'FAKE_CGROUP_MANAGER': 'cgroupfs'}
         result = self.run_wrapper('-c', 'true', **engine_env)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -651,10 +662,15 @@ class LauncherTests(unittest.TestCase):
                 ({'FAKE_ENGINE_LIMIT': '512 1024'}, 'does not run with the process rlimit fallback'),
                 ({'FAKE_ENGINE_LIMIT': '256 256'}, 'does not run with the process rlimit fallback'),
                 ({'FAKE_ENGINE_LIMIT': 'missing'}, 'cannot read the process rlimit of the container engine'),
-                ({'FAKE_ENGINE_COMMAND': json.dumps(['/run/podman-init', '--', '/usr/local/bin/sandbox-engine',
-                                                      '2375'])}, 'container engine resource budgets were not applied'),
-                ({'FAKE_ENGINE_COMMAND': json.dumps(['/run/podman-init', '--', '/usr/local/bin/sandbox-engine',
-                                                      '2375', '256'])}, 'container engine resource budgets were not applied'),
+                ({'FAKE_ENGINE_COMMAND': json.dumps(['/usr/local/bin/sandbox-engine-start', '2375'])},
+                 'container engine resource budgets were not applied'),
+                ({'FAKE_ENGINE_COMMAND': json.dumps(['/usr/local/bin/sandbox-engine-start', '2375', '256'])},
+                 'container engine resource budgets were not applied'),
+                # An engine still started under --init, or by its services directly.
+                ({'FAKE_ENGINE_COMMAND': json.dumps(['/run/podman-init', '--', '/usr/local/bin/sandbox-engine-start',
+                                                      '2375', '512'])}, 'container engine resource budgets were not applied'),
+                ({'FAKE_ENGINE_COMMAND': json.dumps(['/usr/local/bin/sandbox-engine', '2375', '512'])},
+                 'container engine resource budgets were not applied'),
                 ({'FAKE_ENGINE_BUDGETS': '0 0 -1 [RLIMIT_NPROC=512:512,]'},
                  'container engine resource budgets were not applied')):
             with self.subTest(env=env):
@@ -664,6 +680,39 @@ class LauncherTests(unittest.TestCase):
                 self.assertIn(message, result.stderr)
                 self.assertFalse(any(c[0] == 'create' for c in self.calls()))
                 self.assertIn(['rm', '--force', '--volumes', '--time', '0', '--ignore', self.ENGINE], self.calls())
+
+    def test_engine_cgroup_delegation_state_is_reported(self):
+        # support-nested-systemd-containers: Ineligible engines are announced; a
+        # delegated engine is silent, and any other state stops the launch.
+        engine_env = self.image_library()
+        notice = 'systemd containers and explicit limits for nested containers are unavailable'
+        for state, status, message in (
+                (None, 0, None),
+                ('ineligible: /sys/fs/cgroup is mounted without nsdelegate', 0,
+                 notice + ': /sys/fs/cgroup is mounted without nsdelegate'),
+                ('eligible', 1, 'reports an unexpected cgroup delegation state'),
+                ('delegated extra', 1, 'reports an unexpected cgroup delegation state'),
+                ('fail', 1, 'cannot read the cgroup delegation state'),
+                ('ineligible: \x1b[2Jcleared', 1, 'invalid cgroup delegation state'),
+                ('ineligible: ', 1, 'invalid cgroup delegation state'),
+                ('delegated\r', 1, 'invalid cgroup delegation state')):
+            with self.subTest(state=state):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('-c', 'true', **engine_env,
+                                          **({} if state is None else {'FAKE_ENGINE_CGROUP': state}))
+                self.assertEqual(result.returncode, status, result.stderr)
+                calls = self.calls()
+                self.assertIn(['exec', '--user', 'podman', self.ENGINE, '/usr/local/bin/sandbox-engine-cgroup'], calls)
+                if status == 0:
+                    self.assertTrue(any(call[0] == 'create' for call in calls))
+                    if message:
+                        self.assertIn(message, result.stderr)
+                    else:
+                        self.assertNotIn(notice, result.stderr)
+                    continue
+                self.assertIn(message, result.stderr)
+                self.assertFalse(any(call[0] == 'create' for call in calls))
+                self.assertIn(['rm', '--force', '--volumes', '--time', '0', '--ignore', self.ENGINE], calls)
 
     def test_engines_of_launchers_that_no_longer_run_are_removed(self):
         # session-container-engine: Session-owned engine storage / Interrupted session.

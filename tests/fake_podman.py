@@ -190,21 +190,34 @@ elif args[:2] == ['run', '--detach']:
     engine_budgets.write_text(requested_budgets(args))
     image = next(i for i, a in enumerate(args)
                  if a.endswith('-engine:latest') or a == os.environ.get('FAKE_ENGINE_IMAGE', '-'))
-    engine_command.write_text(json.dumps(created_command(args, image, ['/usr/local/bin/sandbox-engine'])))
+    engine_command.write_text(json.dumps(created_command(args, image, ['/usr/local/bin/sandbox-engine-start'])))
     if os.environ.get('FAKE_ENGINE_STATUS'):
         print('engine failed to start', file=sys.stderr)
         sys.exit(int(os.environ['FAKE_ENGINE_STATUS']))
     print(ENGINE_ID)
-elif args[0] == 'exec' and args[1] == ENGINE_ID and args[2:] == ['grep', '^Max processes ', '/proc/2/limits']:
-    # The entrypoint's limits: the process limit it was given after the port, or
-    # the user's own (FAKE_ENGINE_LIMIT='soft hard', or 'missing').
-    started = json.loads(engine_command.read_text()) if engine_command.exists() else []
-    limit = os.environ.get('FAKE_ENGINE_LIMIT', ' '.join([started[4]] * 2 if len(started) > 4 else ['63948'] * 2))
-    if limit == 'missing':
-        sys.exit(1)
-    print('Max processes             ' + '                 '.join(limit.split()) + '                processes')
-elif args[0] == 'exec' and args[1] == ENGINE_ID:
-    print(os.environ.get('FAKE_ENGINE_READY', 'true'))
+elif args[0] == 'exec' and ENGINE_ID in args[1:4]:
+    # Launcher commands in the engine run as its user, never as its startup root
+    # (support-nested-systemd-containers, design D4).
+    if args[1:4] != ['--user', 'podman', ENGINE_ID]:
+        print('fake podman: a command in the engine must run as --user podman', file=sys.stderr)
+        sys.exit(97)
+    inner = args[4:]
+    if inner == ['grep', '^Max processes ', '/proc/1/limits']:
+        # The startup program's limits (PID 1): the process limit it was given after
+        # the port, or the user's own (FAKE_ENGINE_LIMIT='soft hard', or 'missing').
+        started = json.loads(engine_command.read_text()) if engine_command.exists() else []
+        limit = os.environ.get('FAKE_ENGINE_LIMIT', ' '.join([started[2]] * 2 if len(started) > 2 else ['63948'] * 2))
+        if limit == 'missing':
+            sys.exit(1)
+        print('Max processes             ' + '                 '.join(limit.split()) + '                processes')
+    elif inner == ['/usr/local/bin/sandbox-engine-cgroup']:
+        # The engine's cgroup delegation state (FAKE_ENGINE_CGROUP, or 'fail').
+        state = os.environ.get('FAKE_ENGINE_CGROUP', 'delegated')
+        if state == 'fail':
+            sys.exit(1)
+        print(state)
+    else:
+        print(os.environ.get('FAKE_ENGINE_READY', 'true'))
 elif args[0] == 'inspect' and args[-1] == ENGINE_ID and ('{{.Path}}' in args or '{{index .Args' in args[-2]):
     report_command(engine_command, 'FAKE_ENGINE_COMMAND')
 elif args[0] == 'inspect' and args[-1] == ENGINE_ID:

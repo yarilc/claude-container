@@ -122,7 +122,12 @@ class Engine:
         elif args[:2] == ['run', '--detach']:
             output = 'e' * 64 + '\n'
         elif args[:1] == ['exec']:
-            output = self.engine_ready + '\n'
+            # Commands in an engine run as its user, never as its startup root
+            # (support-nested-systemd-containers, design D4).
+            if args[1:3] == ['--user', 'podman']:
+                output = self.engine_ready + '\n'
+            else:
+                status, error = 97, 'fake podman: a command in the engine must run as --user podman\n'
         elif args[:1] == ['run'] and '--entrypoint' in args and args[args.index('--entrypoint') + 1] == 'podman':
             status, output, error = self.helper(args[args.index('--entrypoint') + 3:])
         elif args[:2] == ['image', 'exists']:
@@ -610,6 +615,10 @@ class ToolchainTests(unittest.TestCase):
         for variable in ('CONTAINER_HOST', 'DOCKER_HOST'):
             self.assertIn(variable + '=tcp://127.0.0.1:2375', check)
         self.assertIn(['rm', '--force', '--volumes', '--time', '0', name], self.engine.calls)
+        # The check engine starts like a session's, and is queried as its user.
+        self.assertEqual(started[started.index('--user') + 1], '0:0')
+        self.assertNotIn('--init', started)
+        self.assertTrue([call for call in self.engine.calls if call[:4] == ['exec', '--user', 'podman', name]])
         # A toolchain without images is checked without network and without an engine.
         self.engine.calls.clear()
         toolchains.add(self.library, self.recipe(), self.env)

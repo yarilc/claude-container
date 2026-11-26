@@ -1495,7 +1495,7 @@ engine_reconcile() {
 # network namespace (design D1). Shutdown removes it with its storage.
 core_engine_start() {
     local seccomp="$script_dir/launcher/engine/seccomp.json" default_profile index ready='' attempt owner
-    local engine_limit engine_soft engine_hard network_args=() engine_args=() engine_command=()
+    local engine_limit engine_soft engine_hard engine_cgroup network_args=() engine_args=() engine_command=()
     engine_reconcile
     if [[ ! -f "$seccomp" ]]; then
         # A checkout has no prepared profile: derive one from the engine host's default.
@@ -1520,27 +1520,47 @@ core_engine_start() {
         --label "sandbox-engine.owner=$owner" >"$session_dir/engine.args" || die 'invalid container engine options'
     mapfile -d '' -t engine_args <"$session_dir/engine.args"
     ((${#engine_args[@]})) || die 'invalid container engine options'
-    # On the process rlimit fallback, the engine's entrypoint sets the limit
-    # given after the port before it starts its services.
-    engine_command=(/usr/local/bin/sandbox-engine 2375)
+    # The engine's first process is its startup program (no --init): it sets the
+    # process limit given after the port, delegates the engine's cgroup subtree
+    # when eligible, and hands over to the services as the engine user.
+    engine_command=(/usr/local/bin/sandbox-engine-start 2375)
     [[ "$process_budget" != rlimit ]] || engine_command+=("$pids_limit")
     engine_id=$(podman run --detach "${engine_args[@]}" "${network_args[@]}" "${budget_args[@]}" \
         "$engine_image_name" "${engine_command[@]:1}" </dev/null) || die "cannot start the container engine $engine_name"
     [[ "$engine_id" =~ ^[a-f0-9]{64}$ ]] || die 'invalid container engine ID returned by Podman'
-    budgets_applied "$engine_id" 'container engine' "$init_program" -- "${engine_command[@]}" \
+    budgets_applied "$engine_id" 'container engine' "${engine_command[@]}" \
         || die "container engine resource budgets were not applied as expected; engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; agent not started"
     printf '%s: container engine %s: the session budgets apply to it as well\n' "$AGENT_NAME" "$engine_name" >&2
     for ((attempt = 0; attempt < 30; attempt++)); do
-        ready=$(engine exec "$engine_id" podman --remote --url tcp://127.0.0.1:2375 info \
+        # Commands in the engine run as its user, never as its startup root.
+        ready=$(engine exec --user podman "$engine_id" podman --remote --url tcp://127.0.0.1:2375 info \
             --format '{{.Host.Security.Rootless}}' 2>/dev/null) && [[ "$ready" == true ]] && break
         ready=''
         sleep 1
     done
     [[ "$ready" == true ]] || die "the container engine $engine_name did not answer as a rootless engine within 30 seconds; agent not started"
+    # The engine's cgroup delegation (support-nested-systemd-containers): a
+    # delegated engine is silent, an ineligible one is announced with its reason,
+    # and any other state stops the launch.
+    capture_response engine_cgroup engine exec --user podman "$engine_id" /usr/local/bin/sandbox-engine-cgroup \
+        || die "cannot read the cgroup delegation state of the container engine $engine_name; agent not started"
+    single_record engine_cgroup "invalid cgroup delegation state from the container engine $engine_name; agent not started"
+    # shellcheck disable=SC2154 # set by capture_response
+    case $engine_cgroup in
+        delegated) ;;
+        'ineligible: '*)
+            [[ "${engine_cgroup#ineligible: }" =~ ^[[:print:]]{1,200}$ ]] \
+                || die "invalid cgroup delegation state from the container engine $engine_name; agent not started"
+            printf '%s: container engine %s: systemd containers and explicit limits for nested containers are unavailable: %s\n' \
+                "$AGENT_NAME" "$engine_name" "${engine_cgroup#ineligible: }" >&2
+            ;;
+        *) die "the container engine $engine_name reports an unexpected cgroup delegation state; agent not started" ;;
+    esac
     if [[ "$process_budget" == rlimit ]]; then
-        # The entrypoint is PID 2 under --init. A process started with exec gets
-        # the engine-applied limits instead, so only its reading is evidence.
-        capture_response engine_limit engine exec "$engine_id" grep '^Max processes ' /proc/2/limits \
+        # The startup program is PID 1 and keeps the limit through its exec calls.
+        # A process started with exec gets the engine-applied limits instead, so
+        # only PID 1's reading is evidence.
+        capture_response engine_limit engine exec --user podman "$engine_id" grep '^Max processes ' /proc/1/limits \
             || die "cannot read the process rlimit of the container engine $engine_name; agent not started"
         # shellcheck disable=SC2154 # set by capture_response
         read -r _ _ engine_soft engine_hard _ <<<"${engine_limit%$'\n'}"
