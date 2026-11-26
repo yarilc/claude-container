@@ -46,14 +46,14 @@
 
 ## 3. Validation on WSL, within the reduced perimeter
 
-- [ ] 3.1 Give the operator one `;`-joined line for WSL, run from the branch, that writes every log to `sbx-logs-c36/` and packs `sbx-logs-c36-$(hostname).tar.gz` in the workspace root (design decisions 3, 5 and 6).
+- [x] 3.1 Give the operator one `;`-joined line for WSL, run from the branch, that writes every log to `sbx-logs-c36/` and packs `sbx-logs-c36-$(hostname).tar.gz` in the workspace root (design decisions 3, 5 and 6).
   - **Preparation:**
     - record the commit, `podman version`, `df -h` and the image list;
     - stop if `localhost/claude-code:latest`, `localhost/claude-guard-toolchain:development` or the pinned alpine sample image is missing;
     - rebuild `localhost/claude-code-engine:latest` with `podman build --pull=never --tag localhost/claude-code-engine:latest launcher/engine`;
     - record its `io.containers.capabilities` label.
   - **Commands, each to its own full log, with its exit status in the summary:**
-    - `python3 -m unittest tests.test_reference_copy tests.test_alignment tests.test_engine tests.test_toolchains`;
+    - `python3 -m unittest tests.test_reference_copy tests.test_alignment tests.test_engine tests.test_toolchains`, with `SANDBOX_TEST_TMPDIR` on a private native directory (`~/sbx-tmp`, mode 0700), because the toolchain library refuses the world-writable `/tmp` as an ancestor;
     - `bash tests/run-runtime.sh --setup`;
     - `bash tests/run-runtime.sh --setup-runtime`;
     - `bash tests/run-runtime.sh --qualification`;
@@ -68,7 +68,7 @@
     - the image tags before and after `--setup-runtime` are the same, apart from the rebuilt engine image.
 
   Analyse the archive in a new empty directory. A failure in shared code pauses the change for a fix in `sandbox-container` under a new tag. A Claude-only failure is fixed on the branch, and the failing command alone is rerun.
-- [ ] 3.2 Have the operator check real use on the installation they use (design decision 7).
+- [x] 3.2 Have the operator check real use on the installation they use (design decision 7).
   - **Steps:** rerun `claude-container --container-setup` from the branch, then open one session that has library images.
   - **Verify:**
     - setup completes and builds the engine image;
