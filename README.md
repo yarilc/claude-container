@@ -586,21 +586,66 @@ with its storage when the session ends. Without images in the library, or with
 - **Budgets:** the engine gets the session's memory, CPU and process budgets,
   checked like the agent's; together the session can therefore use twice the
   agent's budget, and the launch says so. On the process rlimit fallback the
-  engine's entrypoint sets the limit before its services start, and the launch
+  engine's first process sets the limit before anything else, and the launch
   reads it from that process before the session starts; the engine and
   everything it runs share that one limit. Explicit `--memory` or
-  `--pids-limit` limits on nested containers are not guaranteed: on an engine
-  without delegated cgroup controllers they fail.
+  `--pids-limit` limits on nested containers apply for every cgroup controller
+  the engine has (see **Systemd containers and nested limits** below); a limit
+  that needs a controller the engine lacks fails, and the container does not
+  start.
 - **Hardening exceptions:** the engine container is the one container that
   relaxes the standard policy, only as nested rootless containers and image
   operations need: the `SETUID` and `SETGID` capabilities for the
   user-namespace helpers and `SYS_CHROOT` for layer extraction and builds
   (with no-new-privileges kept on), the FUSE and TUN devices, an unmasked procfs,
-  SELinux labelling disabled, and a seccomp profile derived from the host's
-  default that also allows `sethostname` and `setdomainname`. It runs as an
-  unprivileged user mapped to you (`--userns=keep-id:uid=1000,gid=1000`), which
-  needs 65535 of your subordinate IDs in one contiguous range. A tool that
-  needs more privilege is unsupported.
+  SELinux labelling disabled, a seccomp profile derived from the host's
+  default that also allows `sethostname` and `setdomainname`, and a startup
+  step that delegates the engine's own cgroup subtree. That step is the
+  engine's first process: it starts as the root of the engine's user namespace
+  (never you) with the `CHOWN` capability as well, hands the subtree to the
+  engine user, and then runs everything else as that user. Afterwards no
+  engine process runs as root, and `CHOWN` stays only in the bounding set,
+  where no-new-privileges keeps it unreachable. The engine user is unprivileged
+  and mapped to you (`--userns=keep-id:uid=1000,gid=1000`), which needs 65535
+  of your subordinate IDs in one contiguous range. A tool that needs more
+  privilege is unsupported. The engine image declares these four capabilities
+  (`SETUID`, `SETGID`, `SYS_CHROOT` and `CHOWN`) in its
+  `io.containers.capabilities` label, so Podman starts the engine without a
+  capability error. An engine image built before `sandbox-ref-36` keeps its
+  base's label, and Podman logs `Capabilities requested by user or image are
+  not allowed by default` at each start. The message is harmless, because
+  Podman keeps the engine's capabilities. Rerun
+  `claude-container --container-setup` to rebuild the image.
+- **Systemd containers and nested limits:** on an eligible engine, nested
+  containers get cgroups of their own, so an image that starts systemd runs it
+  as PID 1, for example to test Ansible roles that manage services:
+
+  ```bash
+  # an image toolchain whose image starts /sbin/init, such as a Rocky Linux 9 init image
+  podman run --detach --name target --systemd=always docker.io/rockylinux/rockylinux@sha256:<digest>
+  podman exec target timeout 120 sh -c 'until systemctl is-system-running | grep -qE "^(running|degraded)$"; do sleep 1; done'
+  podman exec target systemd-run --unit=probe --property=Type=oneshot /bin/true
+  ```
+
+  The second command waits until boot completes (`running` or `degraded`).
+  `systemctl is-system-running --wait` does the same only when the image
+  has D-Bus; init images without it answer `Failed to connect to bus`.
+
+  An engine is eligible when its cgroup namespace is private and its cgroup
+  v2 root is mounted read-write with `nsdelegate` and belongs to the root of
+  its user namespace. This holds for native Linux with the `systemd` cgroup
+  manager and for the Windows Podman machine (`cgroupfs`); no host change is
+  needed. Explicit nested limits apply for each controller the engine has:
+  `memory` and `pids` where the rootless engine delegates them (native Linux
+  with the `systemd` manager); the Windows Podman machine delegates none, so
+  there they fail, and systemd's resource-control unit settings (such as
+  `MemoryMax=` or `TasksMax=`) have no effect. The engine's own limit files,
+  and so the session budgets, stay unwritable from the engine and from nested
+  containers. When an engine is not eligible, for example on a host with
+  cgroup v1, the launch says `systemd containers and explicit limits for nested
+  containers are unavailable` with the reason, and the session starts without
+  them. Systemd containers and the delegation are untested with SELinux
+  enforcing or an active AppArmor profile.
 - **Host `/sys` in the session:** the session joins the engine's network
   namespace, and a rootless container that joins another namespace cannot
   mount a sysfs of its own: Podman bind-mounts the host's `/sys` read-only

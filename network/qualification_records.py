@@ -20,6 +20,9 @@ PROVIDER_CHECKS = ('proxy-policy', 'proxy-budgets', 'tls-match', 'tls-mismatch-z
 # The session container engine's containment, when the installation has an engine.
 ENGINE_CHECKS = ('session-engine',)
 ENGINE_SECCOMP = 'launcher/engine/seccomp.json'
+# The engine's cgroup delegation state the gate measured (support-nested-systemd-containers):
+# recorded with the engine's checks; an ineligible engine is not a failure.
+ENGINE_CGROUP = re.compile(r'delegated|ineligible: [ -~]{1,200}')
 GUARD = 'sandbox-egress-guard'
 # Shared code plus the agent profile and provider policy. The wrapper name comes
 # from the profile, so ``code_files`` binds the profile that selected it.
@@ -30,9 +33,10 @@ SHARED_CODE = ('network/control.py', 'network/platform_check.py', 'network/agent
                'network/qualification_proxy.py', 'network/relay.py', 'network/mux.py',
                'network/resolv.conf', 'network/bin/' + GUARD, 'network/bin/' + GUARD + '.sha256',
                'setup/toolchains.py', 'setup/engine.py', 'launcher/core.sh',
-               'launcher/engine/Containerfile', 'launcher/engine/.containerignore',
+               'launcher/engine/Containerfile', 'launcher/engine/.containerignore', 'launcher/engine/cgroup.sh',
                'launcher/engine/containers.conf', 'launcher/engine/entrypoint.sh', 'launcher/engine/resolv.conf',
-               'launcher/engine/storage.conf', agent_profile.PROFILE, agent_profile.POLICY)
+               'launcher/engine/start.sh', 'launcher/engine/storage.conf', agent_profile.PROFILE,
+               agent_profile.POLICY)
 
 
 def selected_mode(profile, env):
@@ -246,8 +250,15 @@ print(json.dumps({'boot':Path('/proc/sys/kernel/random/boot_id').read_text().str
     return identity, not (value['selinux'] or value['apparmor'])
 
 
+def report_keys(identity):
+    return {'schema', 'identity', 'fingerprint', 'checks', 'reusable', 'measured_at',
+            *(('engine_cgroup',) if identity['engine'] else ())}
+
+
 def validate_report(value, identity):
-    if (type(value) is not dict or set(value) != {'schema', 'identity', 'fingerprint', 'checks', 'reusable', 'measured_at'} or
+    if (type(value) is not dict or set(value) != report_keys(identity) or
+            (identity['engine'] and (type(value['engine_cgroup']) is not str
+                                     or not ENGINE_CGROUP.fullmatch(value['engine_cgroup']))) or
             type(value['schema']) is not int or value['schema'] != 1 or
             canonical(value['identity']) != canonical(identity) or value['fingerprint'] != digest(canonical(identity)) or
             type(value['reusable']) is not bool or not isinstance(value['measured_at'], str) or
@@ -283,7 +294,7 @@ def read(root, identity, writable):
         return validate_report(decode(source.read(65537)), identity)
 
 
-def publish(root, identity, reusable, writable):
+def publish(root, identity, reusable, writable, engine_cgroup=None):
     root = trusted_path(root, writable, directory=True)
     directory = Path(root) / 'qualification'
     if directory.is_symlink():
@@ -297,6 +308,8 @@ def publish(root, identity, reusable, writable):
                  measured_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
                  checks={name: 'passed' for name in expected_checks(identity['mode'] == 'provider',
                                                                     bool(identity['engine']))}, reusable=reusable)
+    if identity['engine']:
+        value['engine_cgroup'] = engine_cgroup
     validate_report(value, identity)
     destination = directory / (value['fingerprint'] + '.json')
     if destination.is_symlink():

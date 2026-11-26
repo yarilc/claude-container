@@ -90,11 +90,22 @@ class QualificationContracts(unittest.TestCase):
     def test_engine_identity_requires_the_engine_checks(self):
         # session-container-engine: Engine containment is qualified.
         identity = dict(self.identity(), engine=dict(image='e' * 64, seccomp='f' * 64))
-        report = dict(self.report(), identity=identity, fingerprint=records.digest(records.canonical(identity)))
+        report = dict(self.report(), identity=identity, fingerprint=records.digest(records.canonical(identity)),
+                      engine_cgroup='delegated')
         with self.assertRaises(ValueError):
             records.validate_report(report, identity)
         report['checks'] = {name: 'passed' for name in records.expected_checks(True, True)}
         records.validate_report(report, identity)
+        # support-nested-systemd-containers: the engine's cgroup delegation state is recorded.
+        for state in ('delegated', 'ineligible: cgroup v1 hierarchies are present'):
+            records.validate_report(dict(report, engine_cgroup=state), identity)
+        for state in (None, '', 'eligible', 'ineligible: ', 'ineligible: \x1b[2J', 'delegated\n', 1):
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                records.validate_report(dict(report, engine_cgroup=state), identity)
+        with self.assertRaises(ValueError):
+            records.validate_report({key: value for key, value in report.items() if key != 'engine_cgroup'}, identity)
+        with self.assertRaises(ValueError):
+            records.validate_report(dict(self.report(), engine_cgroup='delegated'), self.identity())
         for key in ('image', 'seccomp'):
             changed = copy.deepcopy(identity); changed['engine'][key] = '0' * 64
             with self.subTest(key=key), self.assertRaises(ValueError):
@@ -111,23 +122,39 @@ class QualificationContracts(unittest.TestCase):
         with self.assertRaisesRegex(qualify.GateError, 'session container engine is not qualified'):
             qualify.require_engine(['check', '--engine'], self.identity())
 
+    # PID 1 after the engine's startup hand-over, with no root process (design D5).
+    ENGINE_STATE = ('Uid: 1000 1000 1000 1000\nCapPrm: 00000000000400c0\nCapEff: 00000000000400c0\n'
+                    'CapBnd: 00000000000400c1\nCapAmb: 00000000000400c0\nNoNewPrivs: 1\nSeccomp: 2\nroot=0\n'
+                    'uid=1000\nmap=1000:0:1\nfuse=c tun=c\nstore=read-only')
+
     def engine_gate(self, **answers):
         """A gate whose engine calls answer the session engine probes."""
         gate = qualify.Gate({}); calls = []
         security = answers.get('security', ['no-new-privileges', 'label=disable', 'unmask=all',
                                             'seccomp=' + str(qualify.ROOT / records.ENGINE_SECCOMP)])
-        state = answers.get('state', 'CapBnd: 00000000000400c0\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
-                                     'map=1000:0:1\nfuse=c tun=c\nstore=read-only')
+        state = answers.get('state', self.ENGINE_STATE)
         probe = answers.get('probe', 'pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=0\nroutes=0\ntcp=closed')
+        cgroup = answers.get('cgroup', 'delegated')
+        limits = 'limit=memory.max:denied\nlimit=pids.max:denied\nlimit=cgroup.max.descendants:denied\n' \
+                 'limit=cgroup.max.depth:denied'
+        written = answers.get('written', limits)
+        nested = answers.get('nested', 'cgroup=0::/' + 'c' * 64 + '\n' + limits)
         ready = iter(answers.get('ready', ['true']))
         def engine(*args, **_):
             calls.append(args)
             if args[:1] == ('inspect',):
                 return json.dumps(security)
+            if args[:1] == ('exec',):
+                # Commands in the engine run as its user (support-nested-systemd-containers, design D4).
+                self.assertEqual(args[1:3], ('--user', 'podman'))
             if args[:1] == ('exec',) and 'info' in args:
                 return next(ready)
             if args[:1] == ('exec',) and 'run' in args:
-                return probe
+                return nested if '--cgroupns=host' in args else probe
+            if args[:1] == ('exec',) and args[-1] == '/usr/local/bin/sandbox-engine-cgroup':
+                return cgroup
+            if args[:1] == ('exec',) and 'capsh' in args:
+                return written
             if args[:1] == ('exec',):
                 return state
             return 'e' * 64
@@ -141,30 +168,59 @@ class QualificationContracts(unittest.TestCase):
         gate, calls = self.engine_gate(ready=['false', 'true'])
         with patch.object(qualify.time, 'sleep'):
             gate.engine_case(Path(base.name), identity)
+        self.assertEqual(gate.engine_cgroup, 'delegated')
         run = next(call for call in calls if call[:2] == ('run', '--detach'))
         self.assertIn('--network=none', run)
         self.assertIn('--userns=keep-id:uid=1000,gid=1000', run)
+        self.assertEqual(run[run.index('--user') + 1], '0:0')
+        self.assertNotIn('--init', run)
         self.assertEqual(run[-2:], ('e' * 64, '2375'))
         self.assertIn(PROFILE.label('qualification') + '=' + gate.token, run)
         nested = next(call for call in calls if call[:1] == ('exec',) and 'run' in call)
         self.assertIn('--network=host', nested)
         self.assertIn('/opt/sandbox-engine/probe-rootfs:O', nested)
+        # The limit files: from the engine user without capabilities, and from a nested root.
+        self.assertIn(('exec', '--user', 'podman', run[run.index('--name') + 1],
+                       'capsh', '--caps==', '--', '-c', qualify.LIMIT_PROBE), calls)
+        cgroup = next(call for call in calls if call[:1] == ('exec',) and '--cgroupns=host' in call)
+        self.assertIn('--security-opt=unmask=ALL', cgroup)
+        self.assertEqual(cgroup[-3:], ('bash', '-c', qualify.NESTED_CGROUP_PROBE))
         self.assertEqual(calls[-1][:3], ('rm', '--force', '--volumes'))
+        # An ineligible engine passes, and its reason is recorded.
+        ineligible = 'ineligible: /sys/fs/cgroup is mounted without nsdelegate'
+        gate, _ = self.engine_gate(cgroup=ineligible, nested='cgroup=0::/\nlimit=cgroup.max.descendants:denied\n'
+                                                              'limit=cgroup.max.depth:denied')
+        gate.engine_case(Path(tempfile.mkdtemp(dir=base.name)), identity)
+        self.assertEqual(gate.engine_cgroup, ineligible)
+        state = self.ENGINE_STATE
         failures = {
             'security': dict(security=['label=disable']),
-            'capabilities': dict(state='CapBnd: 000001ffffffffff\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
-                                       'map=1000:0:1\nfuse=c tun=c\nstore=read-only'),
-            'writable store': dict(state='CapBnd: 00000000000400c0\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
-                                         'map=1000:0:1\nfuse=c tun=c\nstore=writable'),
+            'capabilities': dict(state=state.replace('CapBnd: 00000000000400c1', 'CapBnd: 000001ffffffffff')),
+            'bounding set without CHOWN': dict(state=state.replace('CapBnd: 00000000000400c1', 'CapBnd: 00000000000400c0')),
+            'CHOWN permitted': dict(state=state.replace('CapPrm: 00000000000400c0', 'CapPrm: 00000000000400c1')),
+            'root PID 1': dict(state=state.replace('Uid: 1000 1000 1000 1000', 'Uid: 0 0 0 0')),
+            'root process': dict(state=state.replace('root=0', 'root=1')),
+            'writable store': dict(state=state.replace('store=read-only', 'store=writable')),
             'shared procfs': dict(probe='pid1=podman\nprocs=40\nhost=0123456789ab\nsecrets=0\nroutes=0\ntcp=closed'),
             'route out': dict(probe='pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=0\nroutes=1\ntcp=open'),
             'secrets': dict(probe='pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=2\nroutes=0\ntcp=closed'),
+            'eligible but not delegated': dict(cgroup='eligible'),
+            'unexpected cgroup state': dict(cgroup='ineligible: \x1b[2J'),
+            'limit writable by the engine': dict(written='limit=memory.max:writable\nlimit=cgroup.max.depth:denied'),
+            'limit probe without results': dict(written='capsh: command not found'),
+            'limit writable by a nested root': dict(nested='cgroup=0::/' + 'c' * 64 + '\nlimit=pids.max:writable\n'
+                                                           'limit=cgroup.max.depth:denied'),
+            'nested container at the delegated root': dict(nested='cgroup=0::/\nlimit=cgroup.max.descendants:denied\n'
+                                                                  'limit=cgroup.max.depth:denied'),
+            'nested container in the engine leaf': dict(nested='cgroup=0::/engine\nlimit=cgroup.max.descendants:denied\n'
+                                                               'limit=cgroup.max.depth:denied'),
         }
         for name, answers in failures.items():
             with self.subTest(name=name):
                 gate, _ = self.engine_gate(**answers)
                 with self.assertRaises(qualify.GateError):
                     gate.engine_case(Path(tempfile.mkdtemp(dir=base.name)), identity)
+                self.assertIsNone(gate.engine_cgroup)
 
     def test_ipv6_state_requires_consistent_kernel_evidence(self):
         import errno
@@ -681,10 +737,9 @@ class QualificationRuntime(unittest.TestCase):
         (self.install/'network').mkdir(mode=0o700)
         shutil.copyfile(REAL_ROOT/REAL_PROFILE.wrapper, self.install/REAL_PROFILE.wrapper)
         # The wrapper may read its recipe and declared agent files on every launch.
+        # The engine's build inputs from their one list (setup/engine.py), so a new input is never missing.
         for relative in ('Containerfile', '.containerignore', 'launcher/core.sh', 'agent/launcher.sh',
-                         'launcher/engine/Containerfile', 'launcher/engine/.containerignore',
-                         'launcher/engine/containers.conf', 'launcher/engine/entrypoint.sh', 'launcher/engine/resolv.conf', 'launcher/engine/storage.conf',
-                         *REAL_PROFILE.install_files):
+                         *qualify.engine_module.INPUTS, *REAL_PROFILE.install_files):
             (self.install/relative).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             shutil.copyfile(REAL_ROOT/relative, self.install/relative)
         (self.install/'agent/policies').mkdir(mode=0o700, parents=True)
