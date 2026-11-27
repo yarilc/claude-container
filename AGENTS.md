@@ -100,7 +100,8 @@ Every tracked `*.ps1` file passes `tools/powershell.sh` of `sandbox-container`
 (pinned PSScriptAnalyzer, warning level), which also runs the shared shim tests
 `tests/windows/shim_tests.ps1` against a fake `wsl.exe`. The thin entry and the
 shim stay ASCII and run on Windows PowerShell 5.1 and PowerShell 7; Windows
-PowerShell 5.1 itself is validated on a Windows host.
+PowerShell 5.1 itself is validated on a Windows host, as follow-up after
+closure.
 
 Configured launches require host Podman and its launch engine must verify as
 Linux and rootless. Unrestricted local use requires no API socket; explicit same-host
@@ -152,6 +153,37 @@ environment/configuration variables. Keep image and file names descriptive and
 lowercase (`Containerfile`, `claude-container.sh`). Write documentation, code
 comments, help text, and user-facing messages in English.
 
+## Change workflow and validation environments
+
+A change is validated and closed in the environment where it is developed:
+the session the work runs in. Once a change is applied, no task waits for
+another environment or for the operator: not the WSL host outside the
+session, a native Linux host, a Windows host, nor a real installation.
+
+- **Before the change starts:** while exploring, proposing or designing, a
+  spike may run on another environment to answer one specific question. The
+  design records the question, the environment, the command and the result.
+  A spike is never a task.
+- **During the change:** run every check the session supports. A check the
+  session cannot run, or one that fails because of the session's
+  environment, is recorded in `docs/validation.md` as unavailable in the
+  session, with its reason. It moves to the follow-up and does not block
+  closure. A failure caused by the change is fixed in the change.
+- **Test storage in a session:** `$HOME`, `/tmp` and `/var/tmp` are `noexec`
+  there. Point `SANDBOX_TEST_TMPDIR` at a new directory on the workspace
+  mount, and remove it afterwards, or tests with stubs fail for the
+  session's reasons.
+- **After closure:** runs on other environments are follow-up verification:
+  runner modes on WSL and on the native Linux host, `tools/adoption-run.sh`,
+  `tools/windows-validate.ps1` on Windows PowerShell 5.1, sessions opened on
+  another host, and operator checks with real accounts. `tasks.md` lists
+  them as plain bullets under "Follow-up after closure", never as
+  checkboxes. `docs/validation.md` lists them as pending, then their
+  results. A defect they find opens a new change.
+
+`CLAUDE.md` imports this file for Claude Code and holds nothing else: edit
+only `AGENTS.md`.
+
 ## Testing Guidelines
 
 Run `python3 -m unittest discover -s tests -p 'test_launcher.py' -v` and
@@ -195,9 +227,10 @@ Where no terminal attaches to a `--read-only` container through the runner's
 Podman client, because the engine gives it a read-only `/dev` (the runtime
 image's Podman 4.3.1 against Podman 5.8 with crun 1.27), the guarded terminal
 tests skip with the engine's error (`tests/guard_terminal_probe.py`). Record
-them as unavailable there. Then record an interactive session opened on that
-host with its own client: it is the evidence for the `container-isolation`
-scenario "Terminal attaches on an engine that mounts /dev read-only".
+them as unavailable there. After closure, as follow-up, record an interactive
+session opened on that host with its own client: it is the evidence for the
+`container-isolation` scenario "Terminal attaches on an engine that mounts /dev
+read-only".
 
 Run `bash tests/run-runtime.sh --network-feasibility`, `--network-policy`, and
 `--network` for the isolated topology, trusted policy/proxy tests, and production
